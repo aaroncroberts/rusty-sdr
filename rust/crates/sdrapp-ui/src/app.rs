@@ -377,9 +377,16 @@ impl SdrApp {
         }
 
         // Signal path status
-        let (center_freq, is_recording, rds_ps_name) = {
+        let (center_freq, is_recording, rds_ps_name, rds_pty, rds_ta, rds_rt) = {
             let s = self.shared.read();
-            (s.center_freq_hz, s.is_recording, s.rds_ps_name.clone())
+            (
+                s.center_freq_hz,
+                s.is_recording,
+                s.rds_ps_name.clone(),
+                s.rds_pty.map(|c| sdrapp_core::dsp::rds::pty_to_str(c).to_string()),
+                s.rds_ta,
+                s.rds_rt.clone(),
+            )
         };
 
         ui.add_space(6.0);
@@ -407,12 +414,43 @@ impl SdrApp {
             });
         }
 
-        if let Some(ref ps) = rds_ps_name {
+        if rds_ps_name.is_some() || rds_rt.is_some() {
+            ui.add_space(4.0);
+            ui.separator();
             ui.add_space(2.0);
+
+            // PS name row: "RDS" badge · station name · PTY · TA badge
             ui.horizontal(|ui| {
                 ui.label(RichText::new("RDS").color(theme::ACCENT).small().strong());
-                ui.label(RichText::new(ps).color(theme::TEXT_PRIMARY).strong());
+                if let Some(ref ps) = rds_ps_name {
+                    ui.label(RichText::new(ps).color(theme::TEXT_PRIMARY).strong());
+                }
+                if let Some(ref pty) = rds_pty {
+                    ui.label(RichText::new(pty).color(theme::TEXT_MUTED).small());
+                }
+                if rds_ta {
+                    ui.label(RichText::new("TA").color(theme::AMBER).small().strong());
+                }
             });
+
+            // RadioText row
+            if let Some(ref rt) = rds_rt {
+                ui.horizontal(|ui| {
+                    let avail = ui.available_width();
+                    let rt_display = if rt.len() > 32 {
+                        format!("{}…", &rt[..31])
+                    } else {
+                        rt.clone()
+                    };
+                    ui.label(
+                        RichText::new(rt_display)
+                            .color(theme::TEXT_MUTED)
+                            .small()
+                    )
+                    .on_hover_text(rt.as_str());
+                    let _ = avail; // suppress unused warning
+                });
+            }
         }
 
         if is_recording {

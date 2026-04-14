@@ -43,6 +43,20 @@ pub enum DemodMode {
     Am,
 }
 
+/// A saved frequency bookmark.
+#[derive(Debug, Clone)]
+pub struct Bookmark {
+    pub name: String,
+    pub freq_hz: u64,
+    pub mode: DemodMode,
+}
+
+impl Bookmark {
+    pub fn new(name: impl Into<String>, freq_hz: u64, mode: DemodMode) -> Self {
+        Self { name: name.into(), freq_hz, mode }
+    }
+}
+
 /// Shared display state written by the signal path, read by the UI.
 #[derive(Default)]
 pub struct SharedState {
@@ -74,6 +88,24 @@ pub struct SharedState {
     pub is_stereo: bool,
     /// RDS Programme Service name, if decoded (WBFM only).
     pub rds_ps_name: Option<String>,
+    /// RDS Programme Type code (0-31).
+    pub rds_pty: Option<u8>,
+    /// RDS Traffic Programme flag.
+    pub rds_tp: bool,
+    /// RDS Traffic Announcement flag.
+    pub rds_ta: bool,
+    /// RDS RadioText (up to 64 chars).
+    pub rds_rt: Option<String>,
+    /// Spectrum zoom level: 1.0 = full bandwidth, 0.1 = 10× zoom.
+    pub zoom_level: f32,
+    /// Waterfall scroll speed multiplier (1.0 = normal).
+    pub waterfall_speed: f32,
+    /// Frequency step size for keyboard/scroll tuning (Hz).
+    pub tune_step_hz: u64,
+    /// Saved frequency bookmarks.
+    pub bookmarks: Vec<Bookmark>,
+    /// Index of the currently selected bookmark (for MIDI navigation).
+    pub bookmark_cursor: usize,
 }
 
 impl SharedState {
@@ -82,6 +114,12 @@ impl SharedState {
             fft_magnitudes: vec![-120.0; FFT_SIZE],
             volume: 0.8,
             squelch_threshold: -50.0,
+            zoom_level: 1.0,
+            waterfall_speed: 1.0,
+            tune_step_hz: 100_000,
+            bookmarks: vec![
+                Bookmark::new("BBC Radio 4", 93_500_000, DemodMode::Wbfm),
+            ],
             ..Default::default()
         }
     }
@@ -97,6 +135,16 @@ pub enum SignalPathCommand {
     SetSquelchThreshold(f32),
     StartRecording,
     StopRecording,
+    /// Adjust zoom level (1.0 = full BW, lower = zoomed in).
+    SetZoom(f32),
+    /// Adjust waterfall scroll speed multiplier.
+    SetWaterfallSpeed(f32),
+    /// Set keyboard/scroll tuning step in Hz.
+    SetTuneStep(u64),
+    /// Add a bookmark at the current frequency and mode.
+    AddBookmark(String),
+    /// Remove bookmark at the given index.
+    RemoveBookmark(usize),
     Stop,
 }
 
@@ -173,7 +221,13 @@ impl SignalPath {
                             }
                             demod.reset();
                             rds.reset();
-                            shared_clone.write().rds_ps_name = None;
+                            {
+                                let mut s = shared_clone.write();
+                                s.rds_ps_name = None;
+                                s.rds_pty = None;
+                                s.rds_ta = false;
+                                s.rds_rt = None;
+                            }
                         }
                         SignalPathCommand::SetVolume(v) => {
                             vol.set(v);
@@ -193,6 +247,9 @@ impl SignalPath {
                             s.demod_mode = mode;
                             s.is_stereo = false;
                             s.rds_ps_name = None;
+                            s.rds_pty = None;
+                            s.rds_ta = false;
+                            s.rds_rt = None;
                             tracing::info!(?mode, "demod mode changed");
                         }
                         SignalPathCommand::SetSquelchThreshold(t) => {
@@ -204,6 +261,31 @@ impl SignalPath {
                         }
                         SignalPathCommand::StopRecording => {
                             shared_clone.write().is_recording = false;
+                        }
+                        SignalPathCommand::SetZoom(z) => {
+                            shared_clone.write().zoom_level = z.clamp(0.01, 1.0);
+                        }
+                        SignalPathCommand::SetWaterfallSpeed(s) => {
+                            shared_clone.write().waterfall_speed = s.clamp(0.1, 10.0);
+                        }
+                        SignalPathCommand::SetTuneStep(step) => {
+                            shared_clone.write().tune_step_hz = step;
+                        }
+                        SignalPathCommand::AddBookmark(name) => {
+                            let (freq, mode) = {
+                                let s = shared_clone.read();
+                                (s.center_freq_hz, s.demod_mode)
+                            };
+                            shared_clone.write().bookmarks.push(Bookmark::new(name, freq, mode));
+                        }
+                        SignalPathCommand::RemoveBookmark(idx) => {
+                            let mut s = shared_clone.write();
+                            if idx < s.bookmarks.len() {
+                                s.bookmarks.remove(idx);
+                                if s.bookmark_cursor >= s.bookmarks.len() && !s.bookmarks.is_empty() {
+                                    s.bookmark_cursor = s.bookmarks.len() - 1;
+                                }
+                            }
                         }
                         SignalPathCommand::Stop => {
                             shared_clone.write().is_running = false;
@@ -246,8 +328,12 @@ impl SignalPath {
                             d.process_with_composite(&iq_complex);
                         shared_clone.write().is_stereo = is_stereo;
                         if rds.process(&composite) {
-                            let ps = rds.data.ps_name.clone();
-                            shared_clone.write().rds_ps_name = ps;
+                            let mut s = shared_clone.write();
+                            s.rds_ps_name = rds.data.ps_name.clone();
+                            s.rds_pty = rds.data.pty;
+                            s.rds_tp = rds.data.tp;
+                            s.rds_ta = rds.data.ta;
+                            s.rds_rt = rds.data.rt.clone();
                         }
                         frames
                     }

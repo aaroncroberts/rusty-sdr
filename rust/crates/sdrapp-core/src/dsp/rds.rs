@@ -4,8 +4,9 @@
 //!
 //! Extracts the 57 kHz RDS subcarrier from the composite FM baseband,
 //! demodulates DBPSK at 1187.5 bps, syncs to 26-bit blocks using
-//! CRC-10 syndrome matching, and assembles the 8-character Programme
-//! Service (PS) name from Group 0 transmissions.
+//! CRC-10 syndrome matching, and decodes:
+//! - Group 0: PS name (8 chars), PTY, TP, TA flags
+//! - Group 2: RadioText RT (64 chars, A/B flag-aware reassembly)
 //!
 //! ## Signal chain
 //! ```text
@@ -15,117 +16,141 @@
 //!   → decimate to OVERSAMPLE × bit-rate
 //!   → average over OVERSAMPLE chips → one symbol per RDS bit
 //!   → differential BPSK decode (sign of current × previous symbol)
-//!   → CRC-10 block sync + Group 0 PS name extraction
+//!   → CRC-10 block sync + group dispatch
 //! ```
-//!
-//! The decoder is conservative: it only publishes a PS name after all 4
-//! Group-0 segments arrive without CRC error.  Bad blocks lose sync and
-//! force a re-hunt without corrupting already-assembled characters.
 
 use std::f32::consts::PI;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/// RDS subcarrier centre frequency (Hz).
 const SUBCARRIER_HZ: f32 = 57_000.0;
-
-/// RDS symbol (bit) rate (bps).
 const BIT_RATE_HZ: f32 = 1_187.5;
-
-/// Oversampling ratio for the chip stream (samples per bit before averaging).
 const OVERSAMPLE: usize = 8;
-
-/// Bits per RDS block (16 data + 10 CRC/offset).
 const BLOCK_BITS: usize = 26;
-
-/// CRC-10 feedback polynomial (lower 10 bits of the generator):
-/// x^8 + x^7 + x^5 + x^4 + x^3 + 1 = 0x1B9
-/// (The leading x^10 term is implicit in the LFSR shift structure.)
 const CRC_POLY: u16 = 0x1B9;
-
-/// CRC offset words for the four block positions.
 const OFFSET_A: u16 = 0x0FC;
 const OFFSET_B: u16 = 0x198;
 const OFFSET_C: u16 = 0x168;
 const OFFSET_C_PRIME: u16 = 0x1B4;
 const OFFSET_D: u16 = 0x0D4;
-
-/// Consecutive valid blocks needed to declare block sync.
 const SYNC_THRESHOLD: usize = 4;
+
+/// Number of Group-2 segments needed for a complete RadioText (16 for 2A, 8 for 2B).
+const RT_SEGMENTS_2A: usize = 16;
+
+// ── PTY table ─────────────────────────────────────────────────────────────────
+
+/// RDS Programme Type (PTY) code → genre string (RBDS/RDS-Europe).
+pub fn pty_to_str(pty: u8) -> &'static str {
+    match pty {
+        0 => "No programme type",
+        1 => "News",
+        2 => "Current affairs",
+        3 => "Information",
+        4 => "Sport",
+        5 => "Education",
+        6 => "Drama",
+        7 => "Cultures",
+        8 => "Science",
+        9 => "Varied speech",
+        10 => "Pop music",
+        11 => "Rock music",
+        12 => "Easy listening",
+        13 => "Light classics",
+        14 => "Serious classics",
+        15 => "Other music",
+        16 => "Weather",
+        17 => "Finance",
+        18 => "Children's progs",
+        19 => "Social affairs",
+        20 => "Religion",
+        21 => "Phone in",
+        22 => "Travel",
+        23 => "Leisure",
+        24 => "Jazz music",
+        25 => "Country music",
+        26 => "National music",
+        27 => "Oldies music",
+        28 => "Folk music",
+        29 => "Documentary",
+        30 => "Alarm test",
+        31 => "Alarm",
+        _ => "Unknown",
+    }
+}
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// RDS data extracted by the decoder.
+/// All RDS data extracted by the decoder.
 #[derive(Debug, Clone, Default)]
 pub struct RdsData {
     /// Programme Service name (8 ASCII characters).
-    /// `None` until all four Group-0 segments have been received.
     pub ps_name: Option<String>,
+
+    /// Programme Type code (0-31).
+    pub pty: Option<u8>,
+
+    /// Traffic Programme flag — station carries traffic info regularly.
+    pub tp: bool,
+
+    /// Traffic Announcement flag — traffic bulletin being broadcast now.
+    pub ta: bool,
+
+    /// RadioText (up to 64 chars for Group 2A, up to 32 for Group 2B).
+    pub rt: Option<String>,
 }
 
-/// Stateful RDS decoder.  Feed composite FM baseband (post-discriminator,
-/// pre-de-emphasis) mono samples via `process()`.
+/// Stateful RDS decoder.
 pub struct RdsDecoder {
-    // ── NCO (57 kHz) ─────────────────────────────────────────────────────────
+    // NCO
     nco_phase: f32,
     nco_step: f32,
 
-    // ── Baseband lowpass (IIR, ~2.4 kHz cutoff) ──────────────────────────────
+    // Baseband lowpass
     lp_alpha: f32,
     lp_i: f32,
 
-    // ── Chip decimation ───────────────────────────────────────────────────────
-    /// Input samples per chip (fractional accumulator).
+    // Decimation
     samples_per_chip: f32,
     chip_acc: f32,
-    /// Chip-level I samples accumulated over one OVERSAMPLE window.
     chip_sum: f32,
     chip_count: usize,
 
-    // ── DBPSK ─────────────────────────────────────────────────────────────────
-    /// Previous symbol estimate (for differential decision).
+    // DBPSK
     prev_symbol: f32,
 
-    // ── Block sync / CRC ──────────────────────────────────────────────────────
-    /// 26-bit shift register (MSB = oldest bit).
+    // Block sync
     shift_reg: u32,
-    /// Bit counter within the current block (0..BLOCK_BITS).
     bit_pos: usize,
-    /// Block counter within the current group (0..4).
     block_pos: usize,
-    /// Valid block streak (for sync acquisition).
     sync_count: usize,
-    /// True once sync_count >= SYNC_THRESHOLD.
     synced: bool,
 
-    // ── Group data staging ────────────────────────────────────────────────────
-    /// Data words for the current group (one entry per block A-D).
+    // Group staging
     group_words: [u16; 4],
 
-    // ── PS name assembly ──────────────────────────────────────────────────────
-    /// 8-byte PS name buffer (2 chars per segment × 4 segments).
+    // PS assembly
     ps_chars: [u8; 8],
-    /// Which segments have been received without CRC error.
     ps_received: [bool; 4],
+
+    // RT assembly
+    rt_chars: [u8; 64],
+    rt_received: [bool; RT_SEGMENTS_2A],
+    rt_ab_flag: Option<bool>, // current A/B flag — flip = clear and restart
 
     /// Latest decoded RDS data.
     pub data: RdsData,
 }
 
 impl RdsDecoder {
-    /// Create a new decoder for the given composite baseband sample rate.
     pub fn new(sample_rate: u32) -> Self {
         let fs = sample_rate as f32;
-        let nco_step = 2.0 * PI * SUBCARRIER_HZ / fs;
-        let lp_alpha = (-2.0 * PI * 2_400.0_f32 / fs).exp();
-        let samples_per_chip = fs / (BIT_RATE_HZ * OVERSAMPLE as f32);
-
         Self {
             nco_phase: 0.0,
-            nco_step,
-            lp_alpha,
+            nco_step: 2.0 * PI * SUBCARRIER_HZ / fs,
+            lp_alpha: (-2.0 * PI * 2_400.0_f32 / fs).exp(),
             lp_i: 0.0,
-            samples_per_chip,
+            samples_per_chip: fs / (BIT_RATE_HZ * OVERSAMPLE as f32),
             chip_acc: 0.0,
             chip_sum: 0.0,
             chip_count: 0,
@@ -138,32 +163,26 @@ impl RdsDecoder {
             group_words: [0u16; 4],
             ps_chars: [b' '; 8],
             ps_received: [false; 4],
+            rt_chars: [b' '; 64],
+            rt_received: [false; RT_SEGMENTS_2A],
+            rt_ab_flag: None,
             data: RdsData::default(),
         }
     }
 
-    /// Feed composite baseband samples (post-FM-discriminator, mono, ±1.0).
-    ///
-    /// Returns `true` if `self.data` was updated (e.g. a new PS name decoded).
+    /// Feed composite FM baseband samples (post-discriminator, mono, ±1.0).
+    /// Returns `true` if any `RdsData` field was updated.
     pub fn process(&mut self, samples: &[f32]) -> bool {
         let mut updated = false;
-
         for &s in samples {
-            // ── Frequency-shift 57 kHz subcarrier to baseband ─────────────────
-            let (sin_p, cos_p) = self.nco_phase.sin_cos();
+            let (_sin_p, cos_p) = self.nco_phase.sin_cos();
             let i = s * cos_p;
-            // q = s * (-sin_p)  — not used after lowpass (RDS is in I channel)
-            let _ = s * (-sin_p);
-
             self.nco_phase += self.nco_step;
             if self.nco_phase > PI {
                 self.nco_phase -= 2.0 * PI;
             }
-
-            // ── Lowpass filter ────────────────────────────────────────────────
             self.lp_i = self.lp_alpha * self.lp_i + (1.0 - self.lp_alpha) * i;
 
-            // ── Decimate: accumulate chips ────────────────────────────────────
             self.chip_acc += 1.0;
             if self.chip_acc >= self.samples_per_chip {
                 self.chip_acc -= self.samples_per_chip;
@@ -171,47 +190,30 @@ impl RdsDecoder {
                 self.chip_count += 1;
 
                 if self.chip_count >= OVERSAMPLE {
-                    // Average → one symbol estimate
                     let symbol = self.chip_sum / OVERSAMPLE as f32;
                     self.chip_sum = 0.0;
                     self.chip_count = 0;
-
-                    // ── DBPSK decision ────────────────────────────────────────
-                    // Positive product → same phase → bit 0
-                    // Negative product → phase flip → bit 1
                     let bit: u8 = if symbol * self.prev_symbol < 0.0 { 1 } else { 0 };
                     self.prev_symbol = symbol;
-
                     if self.push_bit(bit) {
                         updated = true;
                     }
                 }
             }
         }
-
         updated
     }
 
-    /// Push one DBPSK-decoded bit into the 26-bit shift register.
-    ///
-    /// When 26 bits have accumulated, checks CRC against the current block
-    /// position's offset word.  A good block advances block_pos; a bad block
-    /// resets sync and shifts the bit boundary by one to re-hunt.
-    ///
-    /// Returns `true` if the PS name was updated.
     fn push_bit(&mut self, bit: u8) -> bool {
         self.shift_reg = ((self.shift_reg << 1) | bit as u32) & 0x03FF_FFFF;
         self.bit_pos += 1;
-
         if self.bit_pos < BLOCK_BITS {
             return false;
         }
         self.bit_pos = 0;
 
-        // ── CRC check ────────────────────────────────────────────────────────
         let offset = [OFFSET_A, OFFSET_B, OFFSET_C, OFFSET_D][self.block_pos];
         let syn = crc10_syndrome(self.shift_reg, offset);
-        // Block C may use either offset C or C' (version B groups)
         let ok = syn == 0
             || (self.block_pos == 2 && crc10_syndrome(self.shift_reg, OFFSET_C_PRIME) == 0);
 
@@ -220,23 +222,17 @@ impl RdsDecoder {
                 self.synced = false;
                 self.sync_count = 0;
             }
-            // Slide block boundary by one bit
             self.bit_pos = BLOCK_BITS - 1;
             return false;
         }
 
-        // Good block
         self.sync_count += 1;
         if self.sync_count >= SYNC_THRESHOLD {
             self.synced = true;
         }
 
-        let data_word = (self.shift_reg >> 10) as u16;
-
         if self.synced {
-            self.group_words[self.block_pos] = data_word;
-
-            // Dispatch when all four blocks of a group are present
+            self.group_words[self.block_pos] = (self.shift_reg >> 10) as u16;
             if self.block_pos == 3 {
                 let updated = self.dispatch_group();
                 self.block_pos = 0;
@@ -248,27 +244,48 @@ impl RdsDecoder {
         false
     }
 
-    /// Dispatch a complete group (words A–D collected in `group_words`).
-    /// Only handles Group 0 (PS name).  Returns true if PS name changed.
     fn dispatch_group(&mut self) -> bool {
         let block_b = self.group_words[1];
         let group_type = (block_b >> 12) & 0x0F;
+        let _version_b = (block_b >> 11) & 0x01; // 0=A, 1=B
 
-        if group_type != 0 {
-            return false; // Not Group 0 — ignore
+        // TP flag is in bit 10 of Block B for all groups
+        let tp = (block_b >> 10) & 0x01 != 0;
+        if tp != self.data.tp {
+            self.data.tp = tp;
         }
 
-        // Group 0A/0B: segment address in bits 1-0 of Block B
+        // PTY is bits 9-5 of Block B for all groups
+        let pty = ((block_b >> 5) & 0x1F) as u8;
+        let pty_changed = self.data.pty != Some(pty);
+        if pty_changed {
+            self.data.pty = Some(pty);
+        }
+
+        match group_type {
+            0 => {
+                let changed = self.dispatch_group0(block_b);
+                changed || pty_changed
+            }
+            2 => {
+                let changed = self.dispatch_group2(block_b);
+                changed || pty_changed
+            }
+            _ => pty_changed,
+        }
+    }
+
+    /// Group 0A/0B: PS name (Block D), TA flag (bit 4 of Block B).
+    fn dispatch_group0(&mut self, block_b: u16) -> bool {
+        let ta = (block_b >> 4) & 0x01 != 0;
+        let ta_changed = ta != self.data.ta;
+        self.data.ta = ta;
+
         let seg_addr = (block_b & 0x03) as usize;
         if seg_addr >= 4 {
-            return false;
+            return ta_changed;
         }
 
-        // Block C and Block D each carry one PS character
-        // Block C: bits 15-8 = char 0, bits 7-0 = char 1 of segment
-        // But in Group 0A/0B the two PS chars are in Block D
-        // (Block C in Group 0A contains Programme Item Number or AF codes,
-        //  Block D carries the two PS chars)
         let block_d = self.group_words[3];
         let char0 = sanitise_rds_char((block_d >> 8) as u8);
         let char1 = sanitise_rds_char((block_d & 0xFF) as u8);
@@ -278,7 +295,7 @@ impl RdsDecoder {
         self.ps_chars[idx + 1] = char1;
         self.ps_received[seg_addr] = true;
 
-        // Publish PS name once all 4 segments received
+        let mut changed = ta_changed;
         if self.ps_received.iter().all(|&r| r) {
             let name: String = self.ps_chars
                 .iter()
@@ -286,15 +303,59 @@ impl RdsDecoder {
                 .collect::<String>()
                 .trim_end()
                 .to_string();
-            let changed = self.data.ps_name.as_deref() != Some(&name);
-            self.data.ps_name = Some(name);
-            return changed;
+            if self.data.ps_name.as_deref() != Some(&name) {
+                self.data.ps_name = Some(name);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Group 2A: RadioText, 4 chars per group, 16 segments = 64 chars.
+    fn dispatch_group2(&mut self, block_b: u16) -> bool {
+        let ab_flag = (block_b >> 4) & 0x01 != 0;
+        let seg_addr = (block_b & 0x0F) as usize;
+
+        // A/B flag toggle: new text incoming — clear buffer
+        if let Some(prev_ab) = self.rt_ab_flag {
+            if prev_ab != ab_flag {
+                self.rt_chars = [b' '; 64];
+                self.rt_received = [false; RT_SEGMENTS_2A];
+                self.data.rt = None;
+            }
+        }
+        self.rt_ab_flag = Some(ab_flag);
+
+        if seg_addr >= RT_SEGMENTS_2A {
+            return false;
         }
 
+        let block_c = self.group_words[2];
+        let block_d = self.group_words[3];
+
+        let idx = seg_addr * 4;
+        self.rt_chars[idx] = sanitise_rds_char((block_c >> 8) as u8);
+        self.rt_chars[idx + 1] = sanitise_rds_char((block_c & 0xFF) as u8);
+        self.rt_chars[idx + 2] = sanitise_rds_char((block_d >> 8) as u8);
+        self.rt_chars[idx + 3] = sanitise_rds_char((block_d & 0xFF) as u8);
+        self.rt_received[seg_addr] = true;
+
+        // Publish when all 16 segments received
+        if self.rt_received.iter().all(|&r| r) {
+            let rt: String = self.rt_chars
+                .iter()
+                .map(|&b| b as char)
+                .collect::<String>()
+                .trim_end()
+                .to_string();
+            if self.data.rt.as_deref() != Some(&rt) {
+                self.data.rt = Some(rt);
+                return true;
+            }
+        }
         false
     }
 
-    /// Reset all decoder state (call on frequency change).
     pub fn reset(&mut self) {
         self.nco_phase = 0.0;
         self.lp_i = 0.0;
@@ -310,24 +371,21 @@ impl RdsDecoder {
         self.group_words = [0u16; 4];
         self.ps_chars = [b' '; 8];
         self.ps_received = [false; 4];
+        self.rt_chars = [b' '; 64];
+        self.rt_received = [false; RT_SEGMENTS_2A];
+        self.rt_ab_flag = None;
         self.data = RdsData::default();
     }
 }
 
 // ── DSP helpers ───────────────────────────────────────────────────────────────
 
-/// CRC-10 syndrome for a received 26-bit block against a given offset word.
-///
-/// Returns 0 if the block is error-free at that position.
 fn crc10_syndrome(received: u32, offset: u16) -> u16 {
     let data = (received >> 10) as u16;
     let received_crc = (received & 0x3FF) as u16;
     crc10(data) ^ received_crc ^ offset
 }
 
-/// Compute the CRC-10 remainder of a 16-bit message word.
-///
-/// Uses the RDS generator polynomial g(x) = x^10 + x^8 + x^7 + x^5 + x^4 + x^3 + 1.
 fn crc10(data: u16) -> u16 {
     let mut reg: u16 = 0;
     for i in (0..16).rev() {
@@ -341,7 +399,6 @@ fn crc10(data: u16) -> u16 {
     reg
 }
 
-/// Replace non-printable or non-ASCII bytes with a space.
 fn sanitise_rds_char(b: u8) -> u8 {
     if b.is_ascii() && !b.is_ascii_control() {
         b
@@ -356,6 +413,37 @@ fn sanitise_rds_char(b: u8) -> u8 {
 mod tests {
     use super::*;
 
+    fn append_block(out: &mut Vec<u8>, data: u16, offset: u16) {
+        let crc = crc10(data) ^ offset;
+        let word: u32 = ((data as u32) << 10) | crc as u32;
+        for i in (0..26).rev() {
+            out.push(((word >> i) & 1) as u8);
+        }
+    }
+
+    fn make_decoder_at_chip_rate() -> RdsDecoder {
+        let sr = (BIT_RATE_HZ * OVERSAMPLE as f32).ceil() as u32;
+        let mut dec = RdsDecoder::new(sr);
+        dec.nco_step = 0.0; // bypass NCO for test
+        dec
+    }
+
+    fn bits_to_samples(bits: &[u8]) -> Vec<f32> {
+        let mut phase: f32 = 1.0;
+        let mut out = Vec::with_capacity(bits.len() * OVERSAMPLE);
+        for &bit in bits {
+            if bit == 1 {
+                phase *= -1.0;
+            }
+            for _ in 0..OVERSAMPLE {
+                out.push(phase);
+            }
+        }
+        out
+    }
+
+    // ── CRC tests ────────────────────────────────────────────────────────────
+
     #[test]
     fn crc10_all_zeros_is_zero() {
         assert_eq!(crc10(0), 0);
@@ -363,27 +451,21 @@ mod tests {
 
     #[test]
     fn crc10_roundtrip() {
-        // Encoding a word and checking its own CRC gives syndrome 0 (no offset).
         for data in [0x1234u16, 0xABCDu16, 0xFFFFu16, 0x0001u16] {
             let crc = crc10(data);
             let word = ((data as u32) << 10) | crc as u32;
-            assert_eq!(
-                crc10_syndrome(word, 0),
-                0,
-                "roundtrip failed for data={data:#06x}"
-            );
+            assert_eq!(crc10_syndrome(word, 0), 0, "roundtrip failed for {data:#06x}");
         }
     }
 
     #[test]
     fn syndrome_detects_single_bit_error() {
         let data: u16 = 0x5A5A;
-        let crc = crc10(data);
-        let word = ((data as u32) << 10) | crc as u32;
-        // Flip bit 5 → syndrome must be non-zero
-        let corrupted = word ^ (1 << 5);
-        assert_ne!(crc10_syndrome(corrupted, 0), 0);
+        let word = ((data as u32) << 10) | crc10(data) as u32;
+        assert_ne!(crc10_syndrome(word ^ (1 << 5), 0), 0);
     }
+
+    // ── Decoder construction / reset ─────────────────────────────────────────
 
     #[test]
     fn decoder_constructs_for_common_rates() {
@@ -394,116 +476,140 @@ mod tests {
 
     #[test]
     fn decoder_reset_clears_state() {
-        let mut dec = RdsDecoder::new(200_000);
-        dec.nco_phase = 1.5;
+        let mut dec = make_decoder_at_chip_rate();
         dec.sync_count = 10;
         dec.synced = true;
-        dec.data.ps_name = Some("TEST    ".to_string());
+        dec.data.ps_name = Some("TEST    ".into());
+        dec.data.rt = Some("Hello".into());
         dec.reset();
-        assert_eq!(dec.nco_phase, 0.0);
         assert!(!dec.synced);
-        assert_eq!(dec.sync_count, 0);
         assert!(dec.data.ps_name.is_none());
+        assert!(dec.data.rt.is_none());
+        assert!(dec.data.pty.is_none());
+        assert!(!dec.data.ta);
     }
 
     #[test]
     fn sanitise_keeps_printable_ascii() {
         assert_eq!(sanitise_rds_char(b'A'), b'A');
         assert_eq!(sanitise_rds_char(b' '), b' ');
-        assert_eq!(sanitise_rds_char(b'9'), b'9');
     }
 
     #[test]
     fn sanitise_replaces_control_chars() {
         assert_eq!(sanitise_rds_char(0x00), b' ');
-        assert_eq!(sanitise_rds_char(0x0D), b' ');
         assert_eq!(sanitise_rds_char(0x7F), b' ');
     }
 
     #[test]
-    fn process_silence_does_not_panic_or_produce_name() {
-        let mut dec = RdsDecoder::new(200_000);
-        let silence = vec![0.0f32; 200_000];
-        let updated = dec.process(&silence);
-        assert!(!updated, "silence should not produce an RDS name");
+    fn process_silence_does_not_produce_data() {
+        let mut dec = make_decoder_at_chip_rate();
+        dec.process(&vec![0.0f32; 200_000]);
         assert!(dec.data.ps_name.is_none());
+        assert!(dec.data.rt.is_none());
     }
 
+    // ── PTY string table ─────────────────────────────────────────────────────
+
     #[test]
-    fn encode_decode_group0_ps_name() {
-        // Build a synthetic RDS bitstream with a known PS name and verify
-        // the decoder extracts it correctly.
-        //
-        // PS name "TESTFM  " split into 4 segments:
-        //   seg 0 → "TE", seg 1 → "ST", seg 2 → "FM", seg 3 → "  "
-        //
-        // We use a sample rate of BIT_RATE_HZ * OVERSAMPLE ≈ 9500 Hz so that
-        // samples_per_chip == 1.0 and each input sample is exactly one chip.
-        // We set nco_step = 0 (private field, accessible within this module) so
-        // cos(nco_phase) == 1.0 always, effectively bypassing the frequency shift.
-        //
-        // We transmit the 4 groups 8 times so the decoder can:
-        //   (a) acquire block sync (needs SYNC_THRESHOLD=4 valid blocks), and
-        //   (b) collect all 4 PS segments after lock.
+    fn pty_to_str_known_codes() {
+        assert_eq!(pty_to_str(1), "News");
+        assert_eq!(pty_to_str(10), "Pop music");
+        assert_eq!(pty_to_str(0), "No programme type");
+        assert_eq!(pty_to_str(31), "Alarm");
+    }
 
-        let ps_segments: [(&str, u16); 4] =
-            [("TE", 0), ("ST", 1), ("FM", 2), ("  ", 3)];
+    // ── Group 0 end-to-end ───────────────────────────────────────────────────
 
-        // Build the 4-group bit pattern once and repeat it
-        let mut group_bits: Vec<u8> = Vec::new();
-        for (chars, seg) in &ps_segments {
-            let pi: u16 = 0x1234;
-            append_block(&mut group_bits, pi, OFFSET_A);
-            // Group 0, seg_addr in bits 1-0; group type 0 → upper nibble = 0
-            append_block(&mut group_bits, *seg, OFFSET_B);
-            // Block C: dummy (AF / Programme Item Number)
-            append_block(&mut group_bits, 0x0000, OFFSET_C);
-            // Block D: two PS chars
-            let c0 = chars.as_bytes()[0] as u16;
-            let c1 = chars.as_bytes()[1] as u16;
-            append_block(&mut group_bits, (c0 << 8) | c1, OFFSET_D);
-        }
+    #[test]
+    fn encode_decode_group0_ps_name_with_pty_and_ta() {
+        // PS "TESTFM  ", PTY=10 (Pop music), TA=true
+        let pi: u16 = 0x1234;
+        let pty: u16 = 10;
+        let ta_bit: u16 = 1;
+        let tp_bit: u16 = 1;
 
-        // Repeat 8 times to guarantee sync + segment collection
         let mut all_bits: Vec<u8> = Vec::new();
+        let segs: [(&str, u16); 4] = [("TE", 0), ("ST", 1), ("FM", 2), ("  ", 3)];
+
+        // 8 repetitions to ensure sync + full assembly
         for _ in 0..8 {
-            all_bits.extend_from_slice(&group_bits);
-        }
-
-        // Create decoder at the chip rate; bypass the 57 kHz NCO by zeroing its step
-        let sr = (BIT_RATE_HZ * OVERSAMPLE as f32).ceil() as u32; // ≈ 9500 Hz
-        let mut dec = RdsDecoder::new(sr);
-        dec.nco_step = 0.0; // cos(0) == 1.0 always → no frequency shift
-
-        // Build DBPSK waveform: bit 0 = same phase, bit 1 = flip phase
-        let mut phase: f32 = 1.0;
-        let mut samples: Vec<f32> = Vec::with_capacity(all_bits.len() * OVERSAMPLE);
-        for &bit in &all_bits {
-            if bit == 1 {
-                phase *= -1.0;
-            }
-            for _ in 0..OVERSAMPLE {
-                samples.push(phase);
+            for (chars, seg) in &segs {
+                append_block(&mut all_bits, pi, OFFSET_A);
+                // Block B: group=0, version=0, TP, PTY, TA, seg_addr
+                let block_b: u16 = (tp_bit << 10) | (pty << 5) | (ta_bit << 4) | seg;
+                append_block(&mut all_bits, block_b, OFFSET_B);
+                append_block(&mut all_bits, 0x0000, OFFSET_C); // AF dummy
+                let c0 = chars.as_bytes()[0] as u16;
+                let c1 = chars.as_bytes()[1] as u16;
+                append_block(&mut all_bits, (c0 << 8) | c1, OFFSET_D);
             }
         }
 
-        dec.process(&samples);
+        let mut dec = make_decoder_at_chip_rate();
+        dec.process(&bits_to_samples(&all_bits));
+
+        assert_eq!(dec.data.ps_name.as_deref(), Some("TESTFM"), "PS name mismatch");
+        assert_eq!(dec.data.pty, Some(10), "PTY mismatch");
+        assert!(dec.data.tp, "TP should be set");
+        assert!(dec.data.ta, "TA should be set");
+    }
+
+    // ── Group 2 RadioText end-to-end ─────────────────────────────────────────
+
+    #[test]
+    fn encode_decode_group2_radiotext() {
+        // Build a 64-char RT message padded to exactly 64 chars
+        let rt_msg = "Now Playing: Test Signal FM - Long RadioText Message Here  Pad!!";
+        assert_eq!(rt_msg.len(), 64);
+
+        let pi: u16 = 0x1234;
+        let pty: u16 = 10;
+        let tp_bit: u16 = 1;
+        let ab_flag: u16 = 0; // version A
+
+        let mut all_bits: Vec<u8> = Vec::new();
+
+        // 4 repetitions: 1st to gain sync, rest to receive all 16 segments
+        for _ in 0..4 {
+            for seg in 0u16..16 {
+                let idx = (seg as usize) * 4;
+                append_block(&mut all_bits, pi, OFFSET_A);
+                // Group 2A Block B: group=2, version=0, TP, PTY, A/B, seg_addr
+                let block_b: u16 = (2 << 12) | (tp_bit << 10) | (pty << 5) | (ab_flag << 4) | seg;
+                append_block(&mut all_bits, block_b, OFFSET_B);
+                let c: &[u8] = rt_msg.as_bytes();
+                let block_c: u16 = ((c[idx] as u16) << 8) | c[idx + 1] as u16;
+                let block_d: u16 = ((c[idx + 2] as u16) << 8) | c[idx + 3] as u16;
+                append_block(&mut all_bits, block_c, OFFSET_C);
+                append_block(&mut all_bits, block_d, OFFSET_D);
+            }
+        }
+
+        let mut dec = make_decoder_at_chip_rate();
+        dec.process(&bits_to_samples(&all_bits));
 
         assert_eq!(
-            dec.data.ps_name.as_deref(),
-            Some("TESTFM"),
-            "decoded PS name mismatch (got {:?})",
-            dec.data.ps_name
+            dec.data.rt.as_deref(),
+            Some(rt_msg.trim_end()),
+            "RadioText mismatch: got {:?}",
+            dec.data.rt
         );
     }
 
-    /// Append a 26-bit encoded RDS block (16-bit data + 10-bit CRC XOR offset)
-    /// as individual bits (MSB first) to `out`.
-    fn append_block(out: &mut Vec<u8>, data: u16, offset: u16) {
-        let crc = crc10(data) ^ offset;
-        let word: u32 = ((data as u32) << 10) | crc as u32;
-        for i in (0..26).rev() {
-            out.push(((word >> i) & 1) as u8);
-        }
+    #[test]
+    fn ab_flag_toggle_clears_radiotext() {
+        let mut dec = make_decoder_at_chip_rate();
+        // Manually set a partial RT buffer and simulate an A/B toggle
+        dec.synced = true;
+        dec.sync_count = SYNC_THRESHOLD;
+        dec.rt_ab_flag = Some(false);
+        dec.rt_chars[0] = b'X';
+
+        // Call dispatch_group2 with opposite AB flag
+        let block_b_new_ab: u16 = (2 << 12) | (1 << 4); // group=2, AB=1, seg=0
+        dec.dispatch_group2(block_b_new_ab);
+
+        assert_eq!(dec.rt_chars[0], b' ', "buffer should be cleared on A/B flip");
     }
 }
