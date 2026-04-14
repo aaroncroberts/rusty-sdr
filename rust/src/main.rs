@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 use sdrapp_core::{
     block::Block,
@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("sdrapp=debug".parse()?)
+                .add_directive("sdrapp=debug".parse()?),
         )
         .init();
 
@@ -38,7 +38,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Signal path command channel: UI → signal path
-    let (cmd_tx, _cmd_rx) = crossbeam_channel::bounded::<sdrapp_core::signal_path::SignalPathCommand>(64);
+    let (cmd_tx, _cmd_rx) =
+        crossbeam_channel::bounded::<sdrapp_core::signal_path::SignalPathCommand>(64);
 
     // Tokio runtime — eframe owns the main thread, tokio runs on worker threads
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -56,20 +57,17 @@ fn main() -> anyhow::Result<()> {
     });
     let audio_tx = audio_sink.sender();
     // start() spawns the cpal std::thread internally
-    let _ = audio_sink.start();
+    let _audio_handle = audio_sink.start();
 
     // ── Recorder ─────────────────────────────────────────────────────────────
     let mut recorder = sdrapp_recorder::Recorder::new(sdrapp_recorder::RecorderConfig {
-        output_dir: dirs::audio_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from(".")),
+        output_dir: dirs::audio_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
         sample_rate: 48_000,
     });
     let recorder_audio_tx = recorder.audio_tx.clone();
     let recorder_cmd_tx = recorder.cmd_tx.clone();
     // Recorder::start() needs to run inside the tokio runtime
-    rt.spawn(async move {
-        recorder.start().await
-    });
+    rt.spawn(async move { recorder.start().await });
 
     // ── SDRplay source ────────────────────────────────────────────────────────
     let antenna = match config.source.antenna.as_str() {
@@ -88,14 +86,14 @@ fn main() -> anyhow::Result<()> {
     });
 
     let iq_rx = source.subscribe();
-    let _ = source.start();
+    let _source_handle = source.start();
 
     // ── Signal path ───────────────────────────────────────────────────────────
     let _signal_path = SignalPath::start(
         Arc::clone(&shared),
         iq_rx,
         Some(audio_tx),
-        Some(tokio::sync::mpsc::Sender::from(recorder_audio_tx)),
+        Some(recorder_audio_tx),
         None, // RepaintHandle: egui context not available yet; UI polls SharedState
     );
 
@@ -126,10 +124,9 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "SDR App",
         native_options,
-        Box::new(move |cc| {
-            Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx)))
-        }),
-    ).map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
+        Box::new(move |cc| Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx)))),
+    )
+    .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
     rt.shutdown_timeout(std::time::Duration::from_secs(3));
     tracing::info!("sdrapp exiting cleanly");

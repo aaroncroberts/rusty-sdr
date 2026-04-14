@@ -1,28 +1,59 @@
+# Rust build artifacts
+rust/target/
+
+# C++ CMake build
 build/
+
+# SDR++ dev root (created by create_root.sh / create_root_srv.sh)
+root_dev/
+root_dev_srv/
+
+# macOS bundle output
+SDR++.app/
+
+# Shared libraries
+*.dylib
+*.so
+*.dll
+
+# Windows build artifacts
+*.exe
+*.zip
+
+# macOS noise
+.DS_Store
+
+# Editor noise
+*.swp
+*.swo
+*.old
 .vscode/
 .vs/
 .idea/
-*.old
-*.dll
-*.exe
-*.zip
-*.wav
-.DS_Store
-root_dev/
-root_dev_srv/
 Folder.DotSettings.user
 CMakeSettings.json
+
+# Environment / secrets
+.env
+
+# Build system remnants
 poggers_decoder
 m17_decoder/libcorrect
-SDR++.app
+
+# Android deps (not checked in)
 android/deps
 android/app/assets
+
+# Modules excluded from this fork's tree
 source_modules/badgesdr_source
 decoder_modules/mystery_decoder
 decoder_modules/tetra_decoder
 misc_modules/modulation_monitor
 
-# Beads / Dolt files (added by bd init)
+# Audio capture scratch files
+*.wav
+
+# Beads / Dolt files
 .dolt/
 *.db
 .beads-credential-key

@@ -1,0 +1,58 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> rust/target
+
+      - name: Build (excluding SDRplay crates)
+        run: >
+          cargo build
+          --manifest-path rust/Cargo.toml
+          --workspace
+          --exclude sdrapp-sdrplay
+          --exclude sdrapp-sdrplay-sys
+
+      - name: Test (excluding SDRplay crates)
+        run: >
+          cargo test
+          --manifest-path rust/Cargo.toml
+          --workspace
+          --exclude sdrapp-sdrplay
+          --exclude sdrapp-sdrplay-sys
+
+      - name: Clippy (excluding SDRplay crates)
+        run: >
+          cargo clippy
+          --manifest-path rust/Cargo.toml
+          --workspace
+          --exclude sdrapp-sdrplay
+          --exclude sdrapp-sdrplay-sys
+          -- -D warnings
+
+      - name: Format check
+        run: >
+          cargo fmt
+          --manifest-path rust/Cargo.toml
+          --all
+          -- --check

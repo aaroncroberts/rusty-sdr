@@ -13,11 +13,11 @@
 //!       ▼
 //!   Signal path consumers
 
+use std::ffi::c_void;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
-use std::ffi::c_void;
 
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
@@ -74,13 +74,13 @@ impl RspdxSource {
             return vec![];
         }
         (0..num as usize)
-            .filter_map(|i| {
+            .map(|i| {
                 let name = unsafe {
                     std::ffi::CStr::from_ptr(devices[i].SerNo.as_ptr())
                         .to_string_lossy()
                         .into_owned()
                 };
-                Some(format!("RSP ({name})"))
+                format!("RSP ({name})")
             })
             .collect()
     }
@@ -149,7 +149,9 @@ impl Source for RspdxSource {
     }
 
     fn set_sample_rate(&self, sps: u32) -> Result<(), SourceError> {
-        const SUPPORTED: &[u32] = &[200_000, 500_000, 1_000_000, 2_000_000, 6_000_000, 8_000_000, 10_000_000];
+        const SUPPORTED: &[u32] = &[
+            200_000, 500_000, 1_000_000, 2_000_000, 6_000_000, 8_000_000, 10_000_000,
+        ];
         if !SUPPORTED.contains(&sps) {
             return Err(SourceError::SampleRateNotSupported(sps));
         }
@@ -184,7 +186,9 @@ fn run_sdrplay_thread(
     struct ApiGuard;
     impl Drop for ApiGuard {
         fn drop(&mut self) {
-            unsafe { sys::sdrplay_api_Close(); }
+            unsafe {
+                sys::sdrplay_api_Close();
+            }
         }
     }
     let _api_guard = ApiGuard;
@@ -192,9 +196,7 @@ fn run_sdrplay_thread(
     // ── Enumerate devices ─────────────────────────────────────────────────────
     let mut devices = [sys::sdrplay_api_DeviceT::default(); 16];
     let mut num_devices: u32 = 0;
-    let err = unsafe {
-        sys::sdrplay_api_GetDevices(devices.as_mut_ptr(), &mut num_devices, 16)
-    };
+    let err = unsafe { sys::sdrplay_api_GetDevices(devices.as_mut_ptr(), &mut num_devices, 16) };
     anyhow::ensure!(
         err == sys::sdrplay_api_ErrT_sdrplay_api_Success,
         "GetDevices failed: {err}"
@@ -204,7 +206,7 @@ fn run_sdrplay_thread(
     // Select first RSPdx-R2 (hwVer == 7) or fall back to first device
     let device_idx = (0..num_devices as usize)
         .find(|&i| devices[i].hwVer == sys::SDRPLAY_RSPdxR2_ID as u8)
-        .or_else(|| if num_devices > 0 { Some(0) } else { None })
+        .or(if num_devices > 0 { Some(0) } else { None })
         .context("no compatible SDRplay device")?;
 
     tracing::info!(
@@ -391,10 +393,16 @@ mod tests {
     fn iq_normalisation_is_correct() {
         // int16 max value (32767) should normalize close to 1.0
         let val = 32767_i16 as f32 * NORM;
-        assert!((val - 1.0).abs() < 0.0001, "32767 should normalize to ~1.0: {val}");
+        assert!(
+            (val - 1.0).abs() < 0.0001,
+            "32767 should normalize to ~1.0: {val}"
+        );
 
         // int16 min value (-32768) should normalize to -1.0
         let val = -32768_i16 as f32 * NORM;
-        assert!((val - (-1.0)).abs() < 0.0001, "-32768 should normalize to ~-1.0: {val}");
+        assert!(
+            (val - (-1.0)).abs() < 0.0001,
+            "-32768 should normalize to ~-1.0: {val}"
+        );
     }
 }

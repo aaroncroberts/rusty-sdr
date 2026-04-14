@@ -8,31 +8,21 @@
 use serde::{Deserialize, Serialize};
 
 /// Which SDR source is currently active.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActiveSource {
+    #[default]
     Rspdx,
     // Future: RtlSdr, HackRf, Synthetic, …
 }
 
-impl Default for ActiveSource {
-    fn default() -> Self {
-        Self::Rspdx
-    }
-}
-
 /// Which audio sink is currently active.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActiveSink {
+    #[default]
     Cpal,
     // Future: Network, File, …
-}
-
-impl Default for ActiveSink {
-    fn default() -> Self {
-        Self::Cpal
-    }
 }
 
 /// Static module registry — all sources and sinks available in this build.
@@ -57,20 +47,16 @@ impl ModuleRegistry {
     /// Build the registry from all compiled-in modules.
     pub fn new() -> Self {
         Self {
-            sources: vec![
-                SourceDescriptor {
-                    id: ActiveSource::Rspdx,
-                    display_name: "SDRplay RSPdx-R2",
-                    description: "SDRplay RSPdx-R2 via sdrplay_api",
-                },
-            ],
-            sinks: vec![
-                SinkDescriptor {
-                    id: ActiveSink::Cpal,
-                    display_name: "System Audio (cpal)",
-                    description: "CoreAudio output via cpal",
-                },
-            ],
+            sources: vec![SourceDescriptor {
+                id: ActiveSource::Rspdx,
+                display_name: "SDRplay RSPdx-R2",
+                description: "SDRplay RSPdx-R2 via sdrplay_api",
+            }],
+            sinks: vec![SinkDescriptor {
+                id: ActiveSink::Cpal,
+                display_name: "System Audio (cpal)",
+                description: "CoreAudio output via cpal",
+            }],
         }
     }
 

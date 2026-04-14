@@ -13,8 +13,8 @@
 //!       ▼
 //!   Signal path / Recorder
 
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -30,8 +30,22 @@ fn parse_midi(data: &[u8]) -> Option<(MidiKey, u8)> {
         [status, number, value] => {
             let channel = status & 0x0F;
             match status >> 4 {
-                0x9 => Some((MidiKey { channel, kind: MidiKeyKind::NoteOn, number: *number }, *value)),
-                0xB => Some((MidiKey { channel, kind: MidiKeyKind::ControlChange, number: *number }, *value)),
+                0x9 => Some((
+                    MidiKey {
+                        channel,
+                        kind: MidiKeyKind::NoteOn,
+                        number: *number,
+                    },
+                    *value,
+                )),
+                0xB => Some((
+                    MidiKey {
+                        channel,
+                        kind: MidiKeyKind::ControlChange,
+                        number: *number,
+                    },
+                    *value,
+                )),
                 _ => None,
             }
         }
@@ -47,7 +61,10 @@ pub struct MidiController {
 
 impl MidiController {
     pub fn new(config: MidiConfig, recorder_cmd_tx: mpsc::Sender<RecorderCommand>) -> Self {
-        Self { config, recorder_cmd_tx }
+        Self {
+            config,
+            recorder_cmd_tx,
+        }
     }
 
     /// Start listening on the configured MIDI port.
@@ -172,10 +189,7 @@ impl MidiController {
 /// Open the named midir input port and forward messages to `tx`.
 /// If the exact name isn't found, tries a case-insensitive prefix match,
 /// then falls back to the first available port with a warning.
-fn open_midi_port(
-    port_name: &str,
-    tx: mpsc::UnboundedSender<Vec<u8>>,
-) {
+fn open_midi_port(port_name: &str, tx: mpsc::UnboundedSender<Vec<u8>>) {
     use midir::MidiInput;
 
     let midi_in = match MidiInput::new("sdrapp") {
@@ -198,21 +212,22 @@ fn open_midi_port(
         Some(&ports[0])
     } else {
         // Exact match first
-        ports.iter().find(|p| {
-            midi_in.port_name(p).ok().as_deref() == Some(port_name)
-        })
-        // Then prefix match (nanoKontrol2 enumerates with a suffix like " 0")
-        .or_else(|| {
-            let lower = port_name.to_lowercase();
-            ports.iter().find(|p| {
-                midi_in.port_name(p)
-                    .ok()
-                    .map(|n| n.to_lowercase().contains(&lower))
-                    .unwrap_or(false)
+        ports
+            .iter()
+            .find(|p| midi_in.port_name(p).ok().as_deref() == Some(port_name))
+            // Then prefix match (nanoKontrol2 enumerates with a suffix like " 0")
+            .or_else(|| {
+                let lower = port_name.to_lowercase();
+                ports.iter().find(|p| {
+                    midi_in
+                        .port_name(p)
+                        .ok()
+                        .map(|n| n.to_lowercase().contains(&lower))
+                        .unwrap_or(false)
+                })
             })
-        })
-        // Fall back to first
-        .or(Some(&ports[0]))
+            // Fall back to first
+            .or(Some(&ports[0]))
     };
 
     let port = match port {
@@ -235,16 +250,13 @@ fn open_midi_port(
     );
 
     match _conn {
-        Ok(conn) => {
+        Ok(_conn) => {
             tracing::info!("MIDI connection established");
             // Park the thread — connection stays alive until the process exits
             // or the tx is dropped (channel closed).
             loop {
                 std::thread::park();
             }
-            // Explicit drop to communicate that conn must live as long as callbacks fire.
-            #[allow(unreachable_code)]
-            drop(conn);
         }
         Err(e) => {
             tracing::error!("failed to connect to MIDI port '{name}': {e}");
@@ -253,37 +265,38 @@ fn open_midi_port(
 }
 
 fn resolve_action(config: &MidiConfig, page: usize, key: &MidiKey, _value: u8) -> MidiAction {
-    config.lookup(page, key)
+    config
+        .lookup(page, key)
         .map(tag_to_action)
         .unwrap_or(MidiAction::Unmapped)
 }
 
 fn tag_to_action(tag: &MidiActionTag) -> MidiAction {
     match tag {
-        MidiActionTag::TuneCoarseUp   => MidiAction::TuneCoarseUp,
+        MidiActionTag::TuneCoarseUp => MidiAction::TuneCoarseUp,
         MidiActionTag::TuneCoarseDown => MidiAction::TuneCoarseDown,
-        MidiActionTag::TuneMediumUp   => MidiAction::TuneMediumUp,
+        MidiActionTag::TuneMediumUp => MidiAction::TuneMediumUp,
         MidiActionTag::TuneMediumDown => MidiAction::TuneMediumDown,
-        MidiActionTag::TuneFineUp     => MidiAction::TuneFineUp,
-        MidiActionTag::TuneFineDown   => MidiAction::TuneFineDown,
-        MidiActionTag::PlayToggle     => MidiAction::PlayToggle,
-        MidiActionTag::Stop           => MidiAction::Stop,
-        MidiActionTag::RecordStart    => MidiAction::RecordStart,
-        MidiActionTag::RecordStop     => MidiAction::RecordStop,
-        MidiActionTag::ZoomIn         => MidiAction::ZoomIn,
-        MidiActionTag::ZoomOut        => MidiAction::ZoomOut,
-        MidiActionTag::PageNext       => MidiAction::PageNext,
-        MidiActionTag::VolumeSet      => MidiAction::VolumeSet(0.0),
-        MidiActionTag::Unmapped       => MidiAction::Unmapped,
+        MidiActionTag::TuneFineUp => MidiAction::TuneFineUp,
+        MidiActionTag::TuneFineDown => MidiAction::TuneFineDown,
+        MidiActionTag::PlayToggle => MidiAction::PlayToggle,
+        MidiActionTag::Stop => MidiAction::Stop,
+        MidiActionTag::RecordStart => MidiAction::RecordStart,
+        MidiActionTag::RecordStop => MidiAction::RecordStop,
+        MidiActionTag::ZoomIn => MidiAction::ZoomIn,
+        MidiActionTag::ZoomOut => MidiAction::ZoomOut,
+        MidiActionTag::PageNext => MidiAction::PageNext,
+        MidiActionTag::VolumeSet => MidiAction::VolumeSet(0.0),
+        MidiActionTag::Unmapped => MidiAction::Unmapped,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use parking_lot::RwLock;
     use sdrapp_core::signal_path::SharedState;
+    use std::sync::Arc;
 
     fn make_shared() -> Arc<RwLock<SharedState>> {
         let mut s = SharedState::new();
@@ -335,7 +348,11 @@ mod tests {
     #[test]
     fn unmapped_key_returns_unmapped_action() {
         let config = MidiConfig::with_nanokontrol2_defaults();
-        let key = MidiKey { channel: 0, kind: MidiKeyKind::ControlChange, number: 99 };
+        let key = MidiKey {
+            channel: 0,
+            kind: MidiKeyKind::ControlChange,
+            number: 99,
+        };
         let action = resolve_action(&config, 0, &key, 0);
         assert_eq!(action, MidiAction::Unmapped);
     }
