@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.sdrapp.sdrapp</string>
+
+    <key>CFBundleName</key>
+    <string>SDRApp</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>SDRApp</string>
+
+    <key>CFBundleExecutable</key>
+    <string>sdrapp</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SDRApp uses the audio system for SDR receiver output.</string>
+
+    <!-- Allow non-sandboxed access to MIDI and audio devices -->
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+</dict>
+</plist>

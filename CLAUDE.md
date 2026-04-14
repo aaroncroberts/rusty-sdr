@@ -29,6 +29,8 @@ make run      # build + run (requires SDRplay API)
 make test     # run all tests
 make lint     # clippy -D warnings
 make fmt      # rustfmt
+make bundle   # build release + create rust/dist/SDRApp.app (macOS only)
+make clean    # cargo clean + remove dist/
 ```
 
 ### Crate Map

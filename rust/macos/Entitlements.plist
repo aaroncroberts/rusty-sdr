@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- CoreAudio: play and record audio -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- CoreMIDI: communicate with MIDI devices -->
+    <key>com.apple.security.device.midi</key>
+    <true/>
+
+    <!-- USB access for SDR hardware (RTL-SDR, SDRplay, etc.) -->
+    <key>com.apple.security.device.usb</key>
+    <true/>
+
+    <!-- App is not sandboxed; required for USB hardware access without provisioning -->
+    <!-- Remove this key and add a provisioning profile for App Store distribution -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+</dict>
+</plist>
