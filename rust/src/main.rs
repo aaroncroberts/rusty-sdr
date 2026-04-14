@@ -50,10 +50,11 @@ fn main() -> anyhow::Result<()> {
     let _rt_guard = rt.enter();
 
     // ── Audio sink ────────────────────────────────────────────────────────────
+    // Volume is applied by the signal path's Volume DSP block; sink runs at unity.
     let mut audio_sink = sdrapp_audio::CpalAudioSink::new(sdrapp_audio::AudioConfig {
         device_name: None,
         sample_rate: 48_000,
-        volume: config.ui.volume,
+        volume: 1.0,
     });
     let audio_tx = audio_sink.sender();
     // start() spawns the cpal std::thread internally
