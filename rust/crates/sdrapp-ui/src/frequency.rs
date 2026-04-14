@@ -6,7 +6,7 @@
 //! Scroll up/down to tune in configurable steps.
 //! Returns the new frequency if the user scrolled.
 
-use egui::{Color32, FontId, Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Color32, FontId, Pos2, Response, Sense, Ui, Vec2};
 
 const FREQ_COLOR: Color32 = Color32::from_rgb(180, 230, 255);
 const FREQ_BG: Color32 = Color32::from_rgb(20, 28, 38);
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn scroll_up_increases_frequency() {
-        let mut w = FrequencyWidget::new(100_000_000);
+        let _w = FrequencyWidget::new(100_000_000);
         // Simulate positive scroll delta — we test the math directly
         let delta = TuneStep::default_for_scroll();
         let new_freq = (100_000_000_i64 + delta).max(1) as u64;
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn frequency_does_not_go_below_one() {
-        let mut w = FrequencyWidget::new(500);
+        let w = FrequencyWidget::new(500);
         // Large negative scroll
         let delta: i64 = -1_000_000;
         let new = (w.frequency_hz as i64 + delta).max(1) as u64;

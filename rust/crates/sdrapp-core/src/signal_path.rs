@@ -76,7 +76,8 @@ impl SignalPath {
     pub fn start(
         shared: Arc<RwLock<SharedState>>,
         mut iq_rx: broadcast::Receiver<Arc<[IqSample]>>,
-        audio_tx: Option<mpsc::Sender<Arc<[StereoFrame]>>>,
+        // crossbeam channels used for audio/recorder (sync threads, not async tasks)
+        audio_tx: Option<crossbeam_channel::Sender<Arc<[StereoFrame]>>>,
         recorder_tx: Option<mpsc::Sender<Arc<[StereoFrame]>>>,
         egui_ctx: Option<egui_repaint::RepaintHandle>,
     ) -> Self {
@@ -157,6 +158,7 @@ impl SignalPath {
                     audio_accumulator.drain(..AUDIO_FRAME_SIZE);
 
                     if let Some(ref tx) = audio_tx {
+                        // try_send: drop frame on backpressure rather than blocking
                         let _ = tx.try_send(Arc::clone(&frame));
                     }
                     if shared_clone.read().is_recording {

@@ -3338,7 +3338,11 @@ dependencies = [
 name = "sdrapp-audio"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "approx",
  "cpal",
+ "crossbeam-channel",
+ "parking_lot",
  "sdrapp-core",
  "serde",
  "serde_json",
