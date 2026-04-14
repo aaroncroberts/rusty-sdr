@@ -110,9 +110,19 @@ Modules use `core::configManager` (JSON via nlohmann/json). Config locations:
 - **Dev build** (`-r root_dev`): `root_dev/config.json`
 - **Linux install**: `~/.config/sdrpp/config.json`
 
-Config is auto-generated on first launch from `defConfig` in `core/src/core.cpp`. The `root/` directory contains default resources and band plans (copied into `root_dev/` by `create_root.sh`).
+The `-r <path>` CLI flag overrides the default root directory (which contains `config.json`).
+
+**Config generation:** On first launch, `defConfig` in `core/src/core.cpp` generates a platform-appropriate config programmatically. There is no seed config file — everything is code. The macOS default sets:
+- `modulesDirectory` = `"../Plugins"` (relative to `SDR++.app/Contents/MacOS/` → resolves to `Contents/Plugins/`)
+- `resourcesDirectory` = `"../Resources"` (→ `Contents/Resources/`)
+
+**Why relative paths work:** On macOS bundle launch, the app `chdir()`s to the directory containing the binary (`SDR++.app/Contents/MacOS/`), so `../Plugins` always resolves correctly regardless of where the `.app` is located. This is intentional and correct — **do not change these to absolute paths**.
+
+**`USE_BUNDLE_DEFAULTS=ON` is critical:** Without this cmake flag, `modulesDirectory` defaults to a Linux path (`/usr/lib/sdrpp/plugins`), which breaks the bundle silently. `build_macos.sh` sets it automatically; manual cmake invocations must include it explicitly.
 
 **Module loading** is two-stage: (1) directory scan of `modulesDirectory` for all `.dylib` files, then (2) instance creation from `moduleInstances` in config. A module listed in `moduleInstances` but not present in `modulesDirectory` logs an error and is skipped — it does not crash the app. The `modules[]` array in config is for loading extra `.dylib` files at explicit paths (usually empty).
+
+**Stale config symptoms:** If `modulesDirectory` in config.json contains an absolute path from a previous build location, modules won't load. Fix: delete `~/Library/Application Support/sdrpp/config.json` and relaunch to regenerate from `defConfig`.
 
 ## Formatting
 
