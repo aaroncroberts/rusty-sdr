@@ -1,0 +1,126 @@
+#![forbid(unsafe_code)]
+
+//! FFT processor for spectrum/waterfall display.
+//!
+//! Takes a batch of IQ samples, applies a Hann window,
+//! runs FFT via `rustfft`, and returns log-magnitude bins.
+
+use rustfft::{FftPlanner, num_complex::Complex};
+use crate::sample::IqSample;
+
+/// Computes a windowed FFT from IQ samples and returns magnitude in dBFS.
+///
+/// Output length == fft_size. Bins are ordered DC-first (0..fft_size).
+/// For display, bins are usually reordered to center-DC: swap halves.
+pub struct FftProcessor {
+    fft_size: usize,
+    window: Vec<f32>,
+    planner: FftPlanner<f32>,
+}
+
+impl FftProcessor {
+    pub fn new(fft_size: usize) -> Self {
+        assert!(fft_size.is_power_of_two(), "fft_size must be a power of two");
+        let window = hann_window(fft_size);
+        Self { fft_size, window, planner: FftPlanner::new() }
+    }
+
+    /// Process one block of IQ samples.
+    ///
+    /// Returns `fft_size` magnitude values in dBFS (negative = below full scale).
+    /// Returns `None` if `samples.len() < fft_size`.
+    pub fn process(&mut self, samples: &[IqSample]) -> Option<Vec<f32>> {
+        if samples.len() < self.fft_size {
+            return None;
+        }
+
+        let fft = self.planner.plan_fft_forward(self.fft_size);
+        let mut buf: Vec<Complex<f32>> = samples[..self.fft_size]
+            .iter()
+            .zip(self.window.iter())
+            .map(|(s, w)| Complex::new(s.re * w, s.im * w))
+            .collect();
+
+        fft.process(&mut buf);
+
+        // Convert to dBFS, center-dc ordered
+        let mags = fftshift_dbfs(&buf);
+        Some(mags)
+    }
+
+    pub fn fft_size(&self) -> usize {
+        self.fft_size
+    }
+}
+
+/// Hann window coefficients for a given size.
+fn hann_window(n: usize) -> Vec<f32> {
+    (0..n).map(|i| {
+        0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos())
+    }).collect()
+}
+
+/// Reorder FFT output to center-DC and convert power to dBFS.
+fn fftshift_dbfs(buf: &[Complex<f32>]) -> Vec<f32> {
+    let n = buf.len();
+    let half = n / 2;
+    // Concatenate second half (negative freqs) + first half (positive freqs)
+    buf[half..].iter().chain(buf[..half].iter())
+        .map(|c| {
+            let power = c.re * c.re + c.im * c.im;
+            if power > 0.0 {
+                10.0 * power.log10()
+            } else {
+                -120.0
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_abs_diff_eq;
+
+    #[test]
+    fn dc_tone_peaks_at_center_bin() {
+        let fft_size = 1024;
+        let mut proc = FftProcessor::new(fft_size);
+        // Pure DC: real=1, imag=0
+        let samples: Vec<IqSample> = (0..fft_size).map(|_| IqSample::new(1.0, 0.0)).collect();
+        let mags = proc.process(&samples).unwrap();
+        assert_eq!(mags.len(), fft_size);
+        // DC bin is at index fft_size/2 after fftshift
+        let dc_bin = fft_size / 2;
+        let max_bin = mags.iter().enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+        assert_eq!(max_bin, dc_bin);
+    }
+
+    #[test]
+    fn returns_none_for_insufficient_samples() {
+        let mut proc = FftProcessor::new(1024);
+        let samples: Vec<IqSample> = (0..512).map(|_| IqSample::new(0.0, 0.0)).collect();
+        assert!(proc.process(&samples).is_none());
+    }
+
+    #[test]
+    fn silence_returns_low_dbfs() {
+        let fft_size = 256;
+        let mut proc = FftProcessor::new(fft_size);
+        let samples: Vec<IqSample> = (0..fft_size).map(|_| IqSample::new(0.0, 0.0)).collect();
+        let mags = proc.process(&samples).unwrap();
+        assert!(mags.iter().all(|&m| m <= -100.0));
+    }
+
+    #[test]
+    fn hann_window_has_correct_endpoints() {
+        let w = hann_window(8);
+        assert_abs_diff_eq!(w[0], 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(w[7], 0.0, epsilon = 1e-5);
+        // Peak near center
+        assert!(w[3] > 0.9 || w[4] > 0.9);
+    }
+}
