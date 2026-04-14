@@ -15,12 +15,14 @@
 //! The IQ frontend is intentionally simple right now (no decimation, no VFO shift).
 //! It will grow as we add demodulation.
 
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
-use crate::dsp::{FftProcessor, Volume};
+use rustfft::num_complex::Complex;
+
+use crate::dsp::{FmDemodulator, FftProcessor, Volume};
 use crate::sample::{IqSample, StereoFrame};
 
 const FFT_SIZE: usize = 2048;
@@ -92,9 +94,14 @@ impl SignalPath {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<SignalPathCommand>(64);
         let shared_clone = Arc::clone(&shared);
 
+        // Read initial sample rate before moving shared into the task
+        let sample_rate = shared.read().sample_rate_sps;
+
         let handle = tokio::spawn(async move {
             let mut fft = FftProcessor::new(FFT_SIZE);
             let mut vol = Volume::new(0.8);
+            // FM demodulator: wideband FM broadcast (75 kHz deviation, 75 µs de-emphasis)
+            let mut fm = FmDemodulator::wbfm(sample_rate.max(200_000));
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
 
@@ -106,6 +113,8 @@ impl SignalPath {
                     match cmd {
                         SignalPathCommand::SetFrequency(hz) => {
                             shared_clone.write().center_freq_hz = hz;
+                            // Reset FM demod state on retune to avoid phase transients
+                            fm.reset();
                         }
                         SignalPathCommand::SetVolume(v) => {
                             vol.set(v);
@@ -146,13 +155,18 @@ impl SignalPath {
                     iq_accumulator.drain(..FFT_SIZE);
                 }
 
-                // IQ → stereo: take real part as mono, duplicate to stereo
-                // (Real demodulation happens here in future — VFO + FM/AM/SSB demod)
-                let stereo: Vec<StereoFrame> = batch.iter()
-                    .map(|s| {
-                        let mono = s.re * 0.5; // simplified: take real part
-                        StereoFrame::mono(mono)
-                    })
+                // FM demodulation: IQ → mono audio at 48 kHz
+                // Converts the wideband IQ samples to audio via phase derivative,
+                // rational resampling (sample_rate → 48 kHz), and de-emphasis.
+                let iq_complex: Vec<Complex<f32>> = batch
+                    .iter()
+                    .map(|s| Complex::new(s.re, s.im))
+                    .collect();
+                let demod_audio = fm.process(&iq_complex);
+
+                let stereo: Vec<StereoFrame> = demod_audio
+                    .into_iter()
+                    .map(StereoFrame::mono)
                     .collect();
 
                 let mut stereo_processed = vol.process(&stereo);
@@ -160,9 +174,8 @@ impl SignalPath {
 
                 // Emit audio frames
                 while audio_accumulator.len() >= AUDIO_FRAME_SIZE {
-                    let frame: Arc<[StereoFrame]> = audio_accumulator[..AUDIO_FRAME_SIZE]
-                        .to_vec()
-                        .into();
+                    let frame: Arc<[StereoFrame]> =
+                        audio_accumulator[..AUDIO_FRAME_SIZE].to_vec().into();
                     audio_accumulator.drain(..AUDIO_FRAME_SIZE);
 
                     if let Some(ref tx) = audio_tx {
