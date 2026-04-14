@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
         });
         let rx = src.subscribe();
         let fa = src.frequency_atomic();
-        let _ = src.start();
+        drop(src.start());
         _sdrplay_source = Some(src);
         (rx, fa)
     } else {
@@ -117,7 +117,7 @@ fn main() -> anyhow::Result<()> {
         );
         let rx = src.subscribe();
         let fa = src.frequency_atomic();
-        let _ = src.start();
+        drop(src.start());
         _demo_source = Some(src);
         (rx, fa)
     };

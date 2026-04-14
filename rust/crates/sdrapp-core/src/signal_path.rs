@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use rustfft::num_complex::Complex;
 
-use crate::dsp::{AmDemodulator, FmDemodulator, FftProcessor, Squelch, StereoFmDecoder, Volume};
+use crate::dsp::{AmDemodulator, FmDemodulator, FftProcessor, RdsDecoder, Squelch, StereoFmDecoder, Volume};
 use crate::sample::{IqSample, StereoFrame};
 
 const FFT_SIZE: usize = 2048;
@@ -72,6 +72,8 @@ pub struct SharedState {
     pub squelch_threshold: f32,
     /// Whether a stereo pilot tone is currently detected (WBFM only).
     pub is_stereo: bool,
+    /// RDS Programme Service name, if decoded (WBFM only).
+    pub rds_ps_name: Option<String>,
 }
 
 impl SharedState {
@@ -153,6 +155,7 @@ impl SignalPath {
             let mut vol = Volume::new(0.8);
             let mut demod: Demod = Demod::Wbfm(StereoFmDecoder::new(sr));
             let mut squelch = Squelch::new(48_000, -50.0);
+            let mut rds = RdsDecoder::new(sr);
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
 
@@ -169,6 +172,8 @@ impl SignalPath {
                                 atomic.store(hz, Ordering::Relaxed);
                             }
                             demod.reset();
+                            rds.reset();
+                            shared_clone.write().rds_ps_name = None;
                         }
                         SignalPathCommand::SetVolume(v) => {
                             vol.set(v);
@@ -183,9 +188,11 @@ impl SignalPath {
                                 DemodMode::Am => Demod::Am(AmDemodulator::standard(sr)),
                             };
                             squelch.reset();
+                            rds.reset();
                             let mut s = shared_clone.write();
                             s.demod_mode = mode;
                             s.is_stereo = false;
+                            s.rds_ps_name = None;
                             tracing::info!(?mode, "demod mode changed");
                         }
                         SignalPathCommand::SetSquelchThreshold(t) => {
@@ -235,8 +242,13 @@ impl SignalPath {
 
                 let stereo: Vec<StereoFrame> = match &mut demod {
                     Demod::Wbfm(d) => {
-                        let (frames, is_stereo) = d.process(&iq_complex);
+                        let (frames, is_stereo, composite) =
+                            d.process_with_composite(&iq_complex);
                         shared_clone.write().is_stereo = is_stereo;
+                        if rds.process(&composite) {
+                            let ps = rds.data.ps_name.clone();
+                            shared_clone.write().rds_ps_name = ps;
+                        }
                         frames
                     }
                     Demod::Nfm(d) => {

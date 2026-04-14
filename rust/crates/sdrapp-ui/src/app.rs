@@ -377,9 +377,9 @@ impl SdrApp {
         }
 
         // Signal path status
-        let (center_freq, is_recording) = {
+        let (center_freq, is_recording, rds_ps_name) = {
             let s = self.shared.read();
-            (s.center_freq_hz, s.is_recording)
+            (s.center_freq_hz, s.is_recording, s.rds_ps_name.clone())
         };
 
         ui.add_space(6.0);
@@ -404,6 +404,14 @@ impl SdrApp {
                         .color(theme::TEXT_MUTED)
                         .small(),
                 );
+            });
+        }
+
+        if let Some(ref ps) = rds_ps_name {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("RDS").color(theme::ACCENT).small().strong());
+                ui.label(RichText::new(ps).color(theme::TEXT_PRIMARY).strong());
             });
         }
 

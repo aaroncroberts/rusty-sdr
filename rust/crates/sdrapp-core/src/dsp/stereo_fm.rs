@@ -227,6 +227,87 @@ impl StereoFmDecoder {
         (out, is_stereo)
     }
 
+    /// Process a batch of IQ samples, returning stereo frames **and** the
+    /// raw FM composite baseband samples (one per IQ input sample).
+    ///
+    /// The composite signal is the FM-discriminated output before any filtering
+    /// or stereo decoding — it is what the RDS decoder needs as input.
+    pub fn process_with_composite(
+        &mut self,
+        samples: &[Complex<f32>],
+    ) -> (Vec<StereoFrame>, bool, Vec<f32>) {
+        let mut composite_out = Vec::with_capacity(samples.len());
+        let mut stereo_out =
+            Vec::with_capacity((samples.len() as f64 * self.phase_step).ceil() as usize + 2);
+
+        for &s in samples {
+            // ── FM discriminator ──────────────────────────────────────────────
+            let mult = self.prev.conj() * s;
+            let composite =
+                mult.im.atan2(mult.re) / std::f32::consts::PI * self.dev_scale;
+            self.prev = if s.norm_sqr() > 1e-10 {
+                s / s.norm()
+            } else {
+                Complex::new(1.0, 0.0)
+            };
+
+            composite_out.push(composite);
+
+            // ── Pilot PLL ─────────────────────────────────────────────────────
+            let (sin_p, cos_p) = self.pilot_phase.sin_cos();
+            let phase_err = composite * sin_p;
+            self.pilot_phase += self.pilot_step + self.pll_kp * phase_err;
+            if self.pilot_phase >= std::f32::consts::TAU {
+                self.pilot_phase -= std::f32::consts::TAU;
+            } else if self.pilot_phase < 0.0 {
+                self.pilot_phase += std::f32::consts::TAU;
+            }
+
+            // ── Pilot amplitude tracking ──────────────────────────────────────
+            let pilot_in_phase = composite * cos_p;
+            self.pilot_i = self.pilot_fast_alpha * self.pilot_i
+                + (1.0 - self.pilot_fast_alpha) * pilot_in_phase;
+            let instantaneous_amplitude = self.pilot_i.abs();
+            self.pilot_level = self.pilot_slow_alpha * self.pilot_level
+                + (1.0 - self.pilot_slow_alpha) * instantaneous_amplitude;
+
+            // ── L+R ───────────────────────────────────────────────────────────
+            self.lpr_s1 = self.lp_alpha * self.lpr_s1 + (1.0 - self.lp_alpha) * composite;
+            self.lpr_s2 =
+                self.lp_alpha * self.lpr_s2 + (1.0 - self.lp_alpha) * self.lpr_s1;
+            let lpr = self.lpr_s2;
+
+            // ── L-R ───────────────────────────────────────────────────────────
+            let cos2 = 2.0 * cos_p * cos_p - 1.0;
+            let mixed = composite * 2.0 * cos2;
+            self.lmr_s1 = self.lp_alpha * self.lmr_s1 + (1.0 - self.lp_alpha) * mixed;
+            self.lmr_s2 =
+                self.lp_alpha * self.lmr_s2 + (1.0 - self.lp_alpha) * self.lmr_s1;
+            let lmr = self.lmr_s2;
+
+            self.phase_acc += self.phase_step;
+            while self.phase_acc >= 1.0 {
+                self.phase_acc -= 1.0;
+                let (l_raw, r_raw) = if self.is_stereo() {
+                    ((lpr + lmr) * 0.5, (lpr - lmr) * 0.5)
+                } else {
+                    (lpr, lpr)
+                };
+                self.deemph_l =
+                    self.deemph_alpha * self.deemph_l + (1.0 - self.deemph_alpha) * l_raw;
+                self.deemph_r =
+                    self.deemph_alpha * self.deemph_r + (1.0 - self.deemph_alpha) * r_raw;
+                stereo_out.push(StereoFrame::new(
+                    self.deemph_l.clamp(-1.0, 1.0),
+                    self.deemph_r.clamp(-1.0, 1.0),
+                ));
+            }
+        }
+
+        let is_stereo = self.is_stereo();
+        (stereo_out, is_stereo, composite_out)
+    }
+
     /// Reset all stateful DSP elements (e.g. after a frequency change).
     pub fn reset(&mut self) {
         self.prev = Complex::new(1.0, 0.0);
