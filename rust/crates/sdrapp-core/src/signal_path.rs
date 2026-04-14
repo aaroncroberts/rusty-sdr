@@ -25,11 +25,23 @@ use tokio::task::JoinHandle;
 
 use rustfft::num_complex::Complex;
 
-use crate::dsp::{FmDemodulator, FftProcessor, Volume};
+use crate::dsp::{AmDemodulator, FmDemodulator, FftProcessor, Volume};
 use crate::sample::{IqSample, StereoFrame};
 
 const FFT_SIZE: usize = 2048;
 const AUDIO_FRAME_SIZE: usize = 1024;
+
+/// Demodulation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DemodMode {
+    /// Wideband FM broadcast (75 kHz deviation, 75 µs de-emphasis)
+    #[default]
+    Wbfm,
+    /// Narrow FM (12.5 kHz deviation, no de-emphasis)
+    Nfm,
+    /// AM envelope detection
+    Am,
+}
 
 /// Shared display state written by the signal path, read by the UI.
 #[derive(Default)]
@@ -52,6 +64,8 @@ pub struct SharedState {
     pub midi_page: usize,
     /// Audio buffer fill fraction [0.0, 1.0] — written by audio sink.
     pub audio_buffer_fill: f32,
+    /// Current demodulation mode.
+    pub demod_mode: DemodMode,
 }
 
 impl SharedState {
@@ -69,6 +83,7 @@ impl SharedState {
 pub enum SignalPathCommand {
     SetFrequency(u64),
     SetVolume(f32),
+    SetDemodMode(DemodMode),
     StartRecording,
     StopRecording,
     Stop,
@@ -104,11 +119,34 @@ impl SignalPath {
         // Read initial sample rate before moving shared into the task
         let sample_rate = shared.read().sample_rate_sps;
 
+        // Demodulator state — switched at runtime by SetDemodMode
+        enum Demod {
+            Wbfm(FmDemodulator),
+            Nfm(FmDemodulator),
+            Am(AmDemodulator),
+        }
+
+        impl Demod {
+            fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
+                match self {
+                    Demod::Wbfm(d) | Demod::Nfm(d) => d.process(samples),
+                    Demod::Am(d) => d.process(samples),
+                }
+            }
+
+            fn reset(&mut self) {
+                match self {
+                    Demod::Wbfm(d) | Demod::Nfm(d) => d.reset(),
+                    Demod::Am(d) => d.reset(),
+                }
+            }
+        }
+
         let handle = tokio::spawn(async move {
+            let sr = sample_rate.max(200_000);
             let mut fft = FftProcessor::new(FFT_SIZE);
             let mut vol = Volume::new(0.8);
-            // FM demodulator: wideband FM broadcast (75 kHz deviation, 75 µs de-emphasis)
-            let mut fm = FmDemodulator::wbfm(sample_rate.max(200_000));
+            let mut demod: Demod = Demod::Wbfm(FmDemodulator::wbfm(sr));
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
 
@@ -124,12 +162,22 @@ impl SignalPath {
                             if let Some(ref atomic) = freq_atomic_clone {
                                 atomic.store(hz, Ordering::Relaxed);
                             }
-                            // Reset FM demod state on retune to avoid phase transients
-                            fm.reset();
+                            demod.reset();
                         }
                         SignalPathCommand::SetVolume(v) => {
                             vol.set(v);
                             shared_clone.write().volume = v;
+                        }
+                        SignalPathCommand::SetDemodMode(mode) => {
+                            demod = match mode {
+                                DemodMode::Wbfm => Demod::Wbfm(FmDemodulator::wbfm(sr)),
+                                DemodMode::Nfm => {
+                                    Demod::Nfm(FmDemodulator::new(sr, 48_000, 12_500.0, 0.0))
+                                }
+                                DemodMode::Am => Demod::Am(AmDemodulator::standard(sr)),
+                            };
+                            shared_clone.write().demod_mode = mode;
+                            tracing::info!(?mode, "demod mode changed");
                         }
                         SignalPathCommand::StartRecording => {
                             shared_clone.write().is_recording = true;
@@ -166,14 +214,12 @@ impl SignalPath {
                     iq_accumulator.drain(..FFT_SIZE);
                 }
 
-                // FM demodulation: IQ → mono audio at 48 kHz
-                // Converts the wideband IQ samples to audio via phase derivative,
-                // rational resampling (sample_rate → 48 kHz), and de-emphasis.
+                // Demodulate IQ → mono audio at 48 kHz
                 let iq_complex: Vec<Complex<f32>> = batch
                     .iter()
                     .map(|s| Complex::new(s.re, s.im))
                     .collect();
-                let demod_audio = fm.process(&iq_complex);
+                let demod_audio = demod.process(&iq_complex);
 
                 let stereo: Vec<StereoFrame> = demod_audio
                     .into_iter()

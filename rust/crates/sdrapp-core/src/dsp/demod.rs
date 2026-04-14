@@ -111,6 +111,81 @@ impl FmDemodulator {
     }
 }
 
+// ── AM demodulator ────────────────────────────────────────────────────────────
+
+/// AM envelope detector with rational resampler.
+///
+/// Algorithm:
+///   1. Envelope: `|z[n]| = sqrt(I²+Q²)` — no phase computation needed.
+///   2. DC removal: `y[n] = x[n] - x[n-1] + 0.999 * y[n-1]` (single-pole HP).
+///   3. Rational resampling: same phase accumulator approach as FmDemodulator.
+pub struct AmDemodulator {
+    /// Previous raw envelope sample (for DC removal)
+    prev_env: f32,
+    /// Previous HP filter output (for DC removal)
+    dc_y: f32,
+    /// HP filter coefficient (≈ 0.999 for ~20 Hz cutoff at 48 kHz)
+    dc_coeff: f32,
+    phase_acc: f64,
+    phase_step: f64,
+}
+
+impl AmDemodulator {
+    /// Create AM demodulator.
+    ///
+    /// * `sample_rate` — IQ input sample rate in Hz
+    /// * `audio_rate`  — desired audio output rate in Hz
+    pub fn new(sample_rate: u32, audio_rate: u32) -> Self {
+        let phase_step = audio_rate as f64 / sample_rate as f64;
+        // HP coefficient: α ≈ exp(-2π * f_cutoff / fs_audio), f_cutoff = 20 Hz
+        let dc_coeff = (-2.0 * std::f32::consts::PI * 20.0 / audio_rate as f32).exp();
+        Self {
+            prev_env: 0.0,
+            dc_y: 0.0,
+            dc_coeff,
+            phase_acc: 0.0,
+            phase_step,
+        }
+    }
+
+    /// Convenience constructor for standard SDR audio output (48 kHz).
+    pub fn standard(sample_rate: u32) -> Self {
+        Self::new(sample_rate, 48_000)
+    }
+
+    /// Process a batch of IQ samples and return resampled audio.
+    pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(
+            (samples.len() as f64 * self.phase_step).ceil() as usize + 2,
+        );
+
+        for &s in samples {
+            let env = s.norm(); // envelope = |IQ|
+
+            // DC-blocking high-pass filter
+            let dc_filtered =
+                env - self.prev_env + self.dc_coeff * self.dc_y;
+            self.prev_env = env;
+            self.dc_y = dc_filtered;
+
+            // Rational resampler
+            self.phase_acc += self.phase_step;
+            while self.phase_acc >= 1.0 {
+                out.push(dc_filtered.clamp(-1.0, 1.0));
+                self.phase_acc -= 1.0;
+            }
+        }
+
+        out
+    }
+
+    pub fn reset(&mut self) {
+        self.prev_env = 0.0;
+        self.dc_y = 0.0;
+        self.phase_acc = 0.0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

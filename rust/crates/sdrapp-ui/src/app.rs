@@ -21,7 +21,7 @@ use egui::{Color32, RichText, Stroke, Ui, Vec2};
 use sdrapp_core::{
     config::AppConfig,
     registry::ModuleRegistry,
-    signal_path::{SharedState, SignalPathCommand},
+    signal_path::{DemodMode, SharedState, SignalPathCommand},
 };
 
 use crate::{
@@ -196,6 +196,34 @@ impl SdrApp {
             self.config.ui.frequency_hz = freq;
             self.config_dirty = true;
         }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // ── Demod mode ────────────────────────────────────────────────────────
+        ui.label(RichText::new("DEMOD MODE").color(theme::TEXT_MUTED).small());
+        ui.add_space(4.0);
+
+        let current_mode = self.shared.read().demod_mode;
+        ui.horizontal(|ui| {
+            for (mode, label) in [
+                (DemodMode::Wbfm, "WBFM"),
+                (DemodMode::Nfm, "NFM"),
+                (DemodMode::Am, "AM"),
+            ] {
+                let selected = current_mode == mode;
+                let text = RichText::new(label).small();
+                let text = if selected {
+                    text.color(theme::ACCENT).strong()
+                } else {
+                    text.color(theme::TEXT_MUTED)
+                };
+                if ui.selectable_label(selected, text).clicked() && !selected {
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
+                }
+            }
+        });
 
         ui.add_space(8.0);
         ui.separator();
