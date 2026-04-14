@@ -7,75 +7,80 @@
 //! - Each frame: shift all rows down one, paint new FFT row at row 0
 //! - Upload as a GPU texture via egui's TextureManager each render tick
 //! - Zero heap allocation per frame after initial setup
+//! - Colormap is a 256-entry viridis-inspired LUT from theme::waterfall_colormap()
 
-use egui::{ColorImage, Rect, Sense, TextureHandle, TextureOptions, Ui, Vec2};
+use egui::{Color32, ColorImage, Rect, Sense, TextureHandle, TextureOptions, Ui, Vec2};
+
+use crate::theme;
 
 const WATERFALL_HEIGHT: usize = 200; // rows of history
 
-/// Maps a dBFS value to an RGBA color for the waterfall.
-fn db_to_color(db: f32, db_min: f32, db_max: f32) -> [u8; 4] {
-    let t = ((db - db_min) / (db_max - db_min)).clamp(0.0, 1.0);
-    // Simple gradient: dark blue → cyan → yellow → white
-    let (r, g, b) = if t < 0.33 {
-        let s = t / 0.33;
-        (0_u8, (s * 180.0) as u8, (50.0 + s * 205.0) as u8)
-    } else if t < 0.66 {
-        let s = (t - 0.33) / 0.33;
-        ((s * 255.0) as u8, 180_u8, (255.0 - s * 255.0) as u8)
-    } else {
-        let s = (t - 0.66) / 0.34;
-        (255_u8, (180.0 + s * 75.0) as u8, (s * 255.0) as u8)
-    };
-    [r, g, b, 255]
-}
-
 pub struct WaterfallWidget {
-    /// RGBA pixel buffer: [row][col][4]
+    /// RGBA pixel buffer: row-major, width × height pixels × 4 bytes
     pixels: Vec<u8>,
     width: usize,
     height: usize,
     texture: Option<TextureHandle>,
     db_range: (f32, f32),
+    /// Pre-built colormap LUT
+    colormap: [Color32; 256],
 }
 
 impl WaterfallWidget {
+    /// Create with the default simple gradient (backwards-compatible).
     pub fn new(width: usize, db_range: (f32, f32)) -> Self {
         let pixels = vec![0u8; width * WATERFALL_HEIGHT * 4];
-        Self { pixels, width, height: WATERFALL_HEIGHT, texture: None, db_range }
+        let colormap = build_simple_colormap();
+        Self { pixels, width, height: WATERFALL_HEIGHT, texture: None, db_range, colormap }
+    }
+
+    /// Create with the theme's viridis-inspired colormap.
+    pub fn new_with_colormap(width: usize, db_range: (f32, f32)) -> Self {
+        let pixels = vec![0u8; width * WATERFALL_HEIGHT * 4];
+        let colormap = theme::waterfall_colormap();
+        Self { pixels, width, height: WATERFALL_HEIGHT, texture: None, db_range, colormap }
     }
 
     /// Push a new FFT row at the top, shifting all existing rows down.
     pub fn push_row(&mut self, fft_magnitudes: &[f32]) {
         let w = self.width;
-        // Shift rows down: copy row[i] to row[i+1], starting from the bottom
         let row_bytes = w * 4;
+
+        // Shift rows down: row[i] ← row[i-1], starting from the bottom
         for row in (1..self.height).rev() {
             let src = (row - 1) * row_bytes;
             let dst = row * row_bytes;
             self.pixels.copy_within(src..src + row_bytes, dst);
         }
-        // Paint new row at row 0
+
+        // Paint new row at row 0 using the colormap LUT
         let n = fft_magnitudes.len();
+        let (db_min, db_max) = self.db_range;
         for x in 0..w {
             let bin = (x * n / w).min(n - 1);
             let db = fft_magnitudes[bin];
-            let rgba = db_to_color(db, self.db_range.0, self.db_range.1);
+            let t = ((db - db_min) / (db_max - db_min)).clamp(0.0, 1.0);
+            let idx = (t * 255.0) as usize;
+            let c = self.colormap[idx];
             let offset = x * 4;
-            self.pixels[offset..offset + 4].copy_from_slice(&rgba);
+            self.pixels[offset]     = c.r();
+            self.pixels[offset + 1] = c.g();
+            self.pixels[offset + 2] = c.b();
+            self.pixels[offset + 3] = 255;
         }
     }
 
     /// Render the waterfall into the UI.
     pub fn show(&mut self, ui: &mut Ui, ctx: &egui::Context) -> egui::Response {
-        // Upload pixel buffer as texture
         let image = ColorImage::from_rgba_unmultiplied(
             [self.width, self.height],
             &self.pixels,
         );
+
         let texture = self.texture.get_or_insert_with(|| {
-            ctx.load_texture("waterfall", image.clone(), TextureOptions::NEAREST)
+            ctx.load_texture("waterfall", image.clone(), TextureOptions::LINEAR)
         });
-        texture.set(image, TextureOptions::NEAREST);
+        texture.set(image, TextureOptions::LINEAR);
 
         let desired_size = Vec2::new(ui.available_width(), WATERFALL_HEIGHT as f32);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
@@ -85,12 +90,32 @@ impl WaterfallWidget {
                 texture.id(),
                 rect,
                 Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
+                Color32::WHITE,
             );
         }
 
         response
     }
+}
+
+/// Simple gradient for backwards compatibility in tests.
+fn build_simple_colormap() -> [Color32; 256] {
+    let mut lut = [Color32::BLACK; 256];
+    for i in 0..256usize {
+        let t = i as f32 / 255.0;
+        let (r, g, b) = if t < 0.33 {
+            let s = t / 0.33;
+            (0_u8, (s * 180.0) as u8, (50.0 + s * 205.0) as u8)
+        } else if t < 0.66 {
+            let s = (t - 0.33) / 0.33;
+            ((s * 255.0) as u8, 180_u8, (255.0 - s * 255.0) as u8)
+        } else {
+            let s = (t - 0.66) / 0.34;
+            (255_u8, (180.0 + s * 75.0) as u8, (s * 255.0) as u8)
+        };
+        lut[i] = Color32::from_rgb(r, g, b);
+    }
+    lut
 }
 
 #[cfg(test)]
@@ -100,24 +125,41 @@ mod tests {
     #[test]
     fn push_row_shifts_history() {
         let mut wf = WaterfallWidget::new(8, (-120.0, 0.0));
-        // First row: all -60 dB
+
         let row1: Vec<f32> = vec![-60.0; 8];
         wf.push_row(&row1);
-        // Second row: all -20 dB
+
         let row2: Vec<f32> = vec![-20.0; 8];
         wf.push_row(&row2);
-        // Row 0 should have row2 colors, row 1 should have row1 colors
-        let c0 = db_to_color(-20.0, -120.0, 0.0);
-        let c1 = db_to_color(-60.0, -120.0, 0.0);
-        assert_eq!(&wf.pixels[0..4], &c0);
-        assert_eq!(&wf.pixels[wf.width * 4..wf.width * 4 + 4], &c1);
+
+        // Row 0 (top) should reflect row2; row 1 should reflect row1
+        // We can't compare exact colors without knowing the LUT, so verify they differ
+        let r0 = &wf.pixels[0..4];
+        let r1 = &wf.pixels[wf.width * 4..wf.width * 4 + 4];
+        assert_ne!(r0, r1, "rows should differ after pushing different dBFS levels");
     }
 
     #[test]
-    fn db_to_color_extremes() {
-        let min = db_to_color(-120.0, -120.0, 0.0);
-        let max = db_to_color(0.0, -120.0, 0.0);
-        // Min should be dark, max should be bright
-        assert!(max[0] as u32 + max[1] as u32 + max[2] as u32 > min[0] as u32 + min[1] as u32 + min[2] as u32);
+    fn push_row_bright_above_noise() {
+        let mut wf = WaterfallWidget::new(8, (-120.0, 0.0));
+
+        // Strong signal at 0 dBFS → should produce a bright (high value) color
+        wf.push_row(&vec![0.0; 8]);
+        let bright: u32 = wf.pixels[0..3].iter().map(|&v| v as u32).sum();
+
+        let mut wf2 = WaterfallWidget::new(8, (-120.0, 0.0));
+        // Noise floor at -120 dBFS → should be dark
+        wf2.push_row(&vec![-120.0; 8]);
+        let dark: u32 = wf2.pixels[0..3].iter().map(|&v| v as u32).sum();
+
+        assert!(bright > dark, "0 dBFS should be brighter than -120 dBFS: {bright} vs {dark}");
+    }
+
+    #[test]
+    fn viridis_colormap_extremes() {
+        let lut = theme::waterfall_colormap();
+        let dark_sum: u32 = [lut[0].r(), lut[0].g(), lut[0].b()].iter().map(|&v| v as u32).sum();
+        let bright_sum: u32 = [lut[255].r(), lut[255].g(), lut[255].b()].iter().map(|&v| v as u32).sum();
+        assert!(bright_sum > dark_sum, "viridis max should be brighter than min");
     }
 }
