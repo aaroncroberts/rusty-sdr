@@ -26,12 +26,12 @@ SDRPP_MOD_INFO{
     /* Name:            */ "midi_controller",
     /* Description:     */ "MIDI controller integration (CoreMIDI) for SDR++ — tune, zoom, and transport via hardware knobs/sliders",
     /* Author:          */ "Aaron C. Roberts",
-    /* Version:         */ 0, 2, 0,
+    /* Version:         */ 0, 3, 0,
     /* Max instances    */ 1
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Config persistence (one JSON file shared across all instances, keyed by name)
+// Config persistence
 // ─────────────────────────────────────────────────────────────────────────────
 ConfigManager config;
 
@@ -52,57 +52,51 @@ struct MidiEvent {
 //
 //   Sliders (left→right): CC 0–7
 //   Knobs   (left→right): CC 16–23
-//   Transport (CC, value 127=press / 0=release):
-//     STOP=42  PLAY=41  REW=43  FF=44  REC=45  CYCLE=46
+//   Transport (CC, 127=press / 0=release): STOP=42 PLAY=41 REW=43 FF=44 REC=45 CYCLE=46
 //   Track Prev/Next: CC 58, CC 59
 //   S/M/R buttons (NoteOn): S=32–39, M=48–55, R=64–71
 // ─────────────────────────────────────────────────────────────────────────────
 namespace NK2Defaults {
-    // Continuous controls
     constexpr int CC_TUNE_COARSE = 0;
     constexpr int CC_TUNE_FINE   = 1;
-    constexpr int CC_GAIN        = 16;  // unsupported
     constexpr int CC_ZOOM        = 17;
-    // Transport (CC buttons)
     constexpr int CC_PLAY        = 41;
     constexpr int CC_STOP        = 42;
     constexpr int CC_REW         = 43;
     constexpr int CC_FF          = 44;
-    // Track buttons
+    constexpr int CC_CYCLE       = 46;
     constexpr int CC_TRACK_PREV  = 58;
     constexpr int CC_TRACK_NEXT  = 59;
-    // S/M/R buttons (Note numbers)
     constexpr int NOTE_S1        = 32;
     constexpr int NOTE_M1        = 48;
     constexpr int NOTE_R1        = 64;
-    // Step sizes
-    constexpr double STEP_COARSE_HZ = 1e6;    // 1 MHz
-    constexpr double STEP_FINE_HZ   = 10e3;   // 10 kHz
-    constexpr double STEP_MEDIUM_HZ = 100e3;  // 100 kHz (REW/FF buttons)
+    constexpr double STEP_COARSE_HZ = 1e6;
+    constexpr double STEP_FINE_HZ   = 10e3;
+    constexpr double STEP_MEDIUM_HZ = 100e3;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Actions
+// Pages
+// ─────────────────────────────────────────────────────────────────────────────
+static constexpr int PAGE_COUNT = 3;
+static const char* PAGE_NAMES[PAGE_COUNT] = { "Tune", "Monitor", "Recorder" };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Actions (per-page bindable)
 // ─────────────────────────────────────────────────────────────────────────────
 enum class Action {
-    // Continuous (slider/knob)
     TuneCoarse,
     TuneFine,
     Zoom,
-    // Transport toggles
     Play,
     Stop,
-    // Discrete step-tune (button press)
     StepTuneUp,
     StepTuneDown,
-    // Band plan navigation (button press)
     BandPlanNext,
     BandPlanPrev,
-    // Feature toggles (button press)
     VFOCycle,
     AudioMute,
     RecorderArm,
-
     Count
 };
 
@@ -121,7 +115,6 @@ static const char* ACTION_NAMES[] = {
     "Rec Arm",
 };
 
-// Config keys matching the Action enum order
 static const char* ACTION_CONFIG_KEYS[] = {
     "tuneCoarse",
     "tuneFine",
@@ -141,10 +134,10 @@ static const char* ACTION_CONFIG_KEYS[] = {
 // Per-action MIDI mapping
 // ─────────────────────────────────────────────────────────────────────────────
 struct ActionMap {
-    int  cc      = -1;    // CC number, -1 = unassigned
-    int  note    = -1;    // Note number, -1 = unassigned
-    int  channel = -1;    // MIDI channel filter, -1 = any
-    double stepHz = 0;    // for step-tune actions (Hz per step)
+    int    cc      = -1;   // CC number, -1 = unassigned
+    int    note    = -1;   // Note number, -1 = unassigned
+    int    channel = -1;   // MIDI channel filter, -1 = any
+    double stepHz  = 0;    // for step-tune actions
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,8 +179,12 @@ private:
     std::string name;
     bool        enabled = true;
 
-    // ── MIDI mappings ─────────────────────────────────────────────────────────
-    ActionMap mappings[(int)Action::Count];
+    // ── Multi-page mappings ───────────────────────────────────────────────────
+    ActionMap mappings[PAGE_COUNT][(int)Action::Count];
+    int       currentPage = 0;
+
+    // ── Global bindings (work on all pages) ───────────────────────────────────
+    int cycleCC = NK2Defaults::CC_CYCLE;   // CC number for page advance
 
     // ── CoreMIDI state ────────────────────────────────────────────────────────
     MIDIClientRef   midiClient = 0;
@@ -203,8 +200,9 @@ private:
     bool    prevCCKnown[128] = {};
 
     // ── MIDI learn state ─────────────────────────────────────────────────────
-    // learnTarget = Action::Count → not learning
-    Action learnTarget = Action::Count;
+    // learnTarget action = Action::Count → not learning
+    Action learnTarget     = Action::Count;
+    bool   learningCycleCC = false;
 
     // ── Action state ──────────────────────────────────────────────────────────
     bool muteActive = false;
@@ -213,53 +211,107 @@ private:
     std::string recorderInstanceName = "Recorder";
 
     // ── UI display state ──────────────────────────────────────────────────────
-    std::string statusText    = "Not initialised";
-    std::string lastEventText = "—";
+    std::string statusText     = "Not initialised";
+    std::string lastEventText  = "—";
     int         connectedCount = 0;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Config load / save
     // ─────────────────────────────────────────────────────────────────────────
     void setDefaultMappings() {
-        mappings[(int)Action::TuneCoarse]   = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
-        mappings[(int)Action::TuneFine]     = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
-        mappings[(int)Action::Zoom]         = { NK2Defaults::CC_ZOOM,        -1, -1, 0 };
-        mappings[(int)Action::Play]         = { NK2Defaults::CC_PLAY,        -1, -1, 0 };
-        mappings[(int)Action::Stop]         = { NK2Defaults::CC_STOP,        -1, -1, 0 };
-        mappings[(int)Action::StepTuneUp]   = { NK2Defaults::CC_FF,          -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
-        mappings[(int)Action::StepTuneDown] = { NK2Defaults::CC_REW,         -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
-        mappings[(int)Action::BandPlanNext] = { NK2Defaults::CC_TRACK_NEXT,  -1, -1, 0 };
-        mappings[(int)Action::BandPlanPrev] = { NK2Defaults::CC_TRACK_PREV,  -1, -1, 0 };
-        mappings[(int)Action::VFOCycle]     = { -1, NK2Defaults::NOTE_S1,    -1, 0 };
-        mappings[(int)Action::AudioMute]    = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
-        mappings[(int)Action::RecorderArm]  = { -1, NK2Defaults::NOTE_R1,    -1, 0 };
+        // All pages start empty
+        for (int p = 0; p < PAGE_COUNT; p++) {
+            for (int i = 0; i < (int)Action::Count; i++) {
+                mappings[p][i] = {};
+            }
+        }
+
+        // Page 0 (Tune) — full nanoKontrol2 defaults
+        auto& t = mappings[0];
+        t[(int)Action::TuneCoarse]   = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
+        t[(int)Action::TuneFine]     = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
+        t[(int)Action::Zoom]         = { NK2Defaults::CC_ZOOM,        -1, -1, 0 };
+        t[(int)Action::Play]         = { NK2Defaults::CC_PLAY,        -1, -1, 0 };
+        t[(int)Action::Stop]         = { NK2Defaults::CC_STOP,        -1, -1, 0 };
+        t[(int)Action::StepTuneUp]   = { NK2Defaults::CC_FF,          -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
+        t[(int)Action::StepTuneDown] = { NK2Defaults::CC_REW,         -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
+        t[(int)Action::BandPlanNext] = { NK2Defaults::CC_TRACK_NEXT,  -1, -1, 0 };
+        t[(int)Action::BandPlanPrev] = { NK2Defaults::CC_TRACK_PREV,  -1, -1, 0 };
+        t[(int)Action::VFOCycle]     = { -1, NK2Defaults::NOTE_S1,    -1, 0 };
+        t[(int)Action::AudioMute]    = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
+        t[(int)Action::RecorderArm]  = { -1, NK2Defaults::NOTE_R1,    -1, 0 };
+
+        // Page 1 (Monitor) — keep tune + zoom + mute
+        auto& m = mappings[1];
+        m[(int)Action::TuneCoarse] = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
+        m[(int)Action::TuneFine]   = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
+        m[(int)Action::Zoom]       = { NK2Defaults::CC_ZOOM,        -1, -1, 0 };
+        m[(int)Action::AudioMute]  = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
+
+        // Page 2 (Recorder) — tune, play, recorder arm
+        auto& r = mappings[2];
+        r[(int)Action::TuneCoarse]  = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
+        r[(int)Action::TuneFine]    = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
+        r[(int)Action::Play]        = { NK2Defaults::CC_PLAY,        -1, -1, 0 };
+        r[(int)Action::Stop]        = { NK2Defaults::CC_STOP,        -1, -1, 0 };
+        r[(int)Action::AudioMute]   = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
+        r[(int)Action::RecorderArm] = { -1, NK2Defaults::NOTE_R1,    -1, 0 };
     }
 
     void loadConfig() {
         auto& cfg = config.conf[name];
-        for (int i = 0; i < (int)Action::Count; i++) {
-            const char* key = ACTION_CONFIG_KEYS[i];
-            if (!cfg.contains(key)) continue;
-            auto& m = cfg[key];
-            mappings[i].cc      = m.value("cc",      -1);
-            mappings[i].note    = m.value("note",    -1);
-            mappings[i].channel = m.value("channel", -1);
-            mappings[i].stepHz  = m.value("stepHz",  0.0);
+
+        // Load global bindings
+        cycleCC              = cfg.value("cycleCC",           NK2Defaults::CC_CYCLE);
+        recorderInstanceName = cfg.value("recorderInstance",  std::string("Recorder"));
+
+        // Per-page mappings — stored under "pages" array
+        if (cfg.contains("pages") && cfg["pages"].is_array()) {
+            auto& pages = cfg["pages"];
+            for (int p = 0; p < PAGE_COUNT && p < (int)pages.size(); p++) {
+                auto& pg = pages[p];
+                for (int i = 0; i < (int)Action::Count; i++) {
+                    const char* key = ACTION_CONFIG_KEYS[i];
+                    if (!pg.contains(key)) continue;
+                    auto& m = pg[key];
+                    mappings[p][i].cc      = m.value("cc",      -1);
+                    mappings[p][i].note    = m.value("note",    -1);
+                    mappings[p][i].channel = m.value("channel", -1);
+                    mappings[p][i].stepHz  = m.value("stepHz",  0.0);
+                }
+            }
+        } else {
+            // Migrate legacy flat config (pre-v0.3) into page 0
+            setDefaultMappings();
+            for (int i = 0; i < (int)Action::Count; i++) {
+                const char* key = ACTION_CONFIG_KEYS[i];
+                if (!cfg.contains(key)) continue;
+                auto& m = cfg[key];
+                mappings[0][i].cc      = m.value("cc",      -1);
+                mappings[0][i].note    = m.value("note",    -1);
+                mappings[0][i].channel = m.value("channel", -1);
+                mappings[0][i].stepHz  = m.value("stepHz",  0.0);
+            }
         }
-        if (cfg.contains("recorderInstance"))
-            recorderInstanceName = cfg["recorderInstance"].get<std::string>();
     }
 
     void saveConfig() {
         auto& cfg = config.conf[name];
-        for (int i = 0; i < (int)Action::Count; i++) {
-            const char* key = ACTION_CONFIG_KEYS[i];
-            cfg[key]["cc"]      = mappings[i].cc;
-            cfg[key]["note"]    = mappings[i].note;
-            cfg[key]["channel"] = mappings[i].channel;
-            cfg[key]["stepHz"]  = mappings[i].stepHz;
-        }
+        cfg["cycleCC"]          = cycleCC;
         cfg["recorderInstance"] = recorderInstanceName;
+
+        cfg["pages"] = json::array();
+        for (int p = 0; p < PAGE_COUNT; p++) {
+            json pg = json::object();
+            for (int i = 0; i < (int)Action::Count; i++) {
+                const char* key = ACTION_CONFIG_KEYS[i];
+                pg[key]["cc"]      = mappings[p][i].cc;
+                pg[key]["note"]    = mappings[p][i].note;
+                pg[key]["channel"] = mappings[p][i].channel;
+                pg[key]["stepHz"]  = mappings[p][i].stepHz;
+            }
+            cfg["pages"].push_back(pg);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -351,7 +403,7 @@ private:
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // CoreMIDI read callback (runs on a private CoreMIDI thread)
+    // CoreMIDI read callback (CoreMIDI thread)
     // ─────────────────────────────────────────────────────────────────────────
     static void midiReadProc(const MIDIPacketList* pktList,
                              void* readProcRefCon, void*) {
@@ -385,19 +437,27 @@ private:
         }
 
         for (auto& ev : local) {
-            // MIDI learn: capture the first non-zero event and assign it
-            if (learnTarget != Action::Count) {
+            // MIDI learn capture
+            if (learningCycleCC) {
                 if (ev.type == MidiMsgType::CC && ev.value > 0) {
-                    mappings[(int)learnTarget].cc   = ev.number;
-                    mappings[(int)learnTarget].note = -1;
+                    cycleCC = ev.number;
+                    saveConfig();
+                    learningCycleCC = false;
+                    lastEventText = "CYCLE learned: CC " + std::to_string(ev.number);
+                    continue;
+                }
+            } else if (learnTarget != Action::Count) {
+                if (ev.type == MidiMsgType::CC && ev.value > 0) {
+                    mappings[currentPage][(int)learnTarget].cc   = ev.number;
+                    mappings[currentPage][(int)learnTarget].note = -1;
                     saveConfig();
                     learnTarget = Action::Count;
                     lastEventText = "Learned: CC " + std::to_string(ev.number);
                     continue;
                 }
                 if (ev.type == MidiMsgType::NoteOn && ev.value > 0) {
-                    mappings[(int)learnTarget].note = ev.number;
-                    mappings[(int)learnTarget].cc   = -1;
+                    mappings[currentPage][(int)learnTarget].note = ev.number;
+                    mappings[currentPage][(int)learnTarget].cc   = -1;
                     saveConfig();
                     learnTarget = Action::Count;
                     lastEventText = "Learned: Note " + std::to_string(ev.number);
@@ -414,46 +474,48 @@ private:
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // CC dispatch — looks up action by configured CC number
+    // CC dispatch
     // ─────────────────────────────────────────────────────────────────────────
     void handleCC(uint8_t cc, uint8_t value) {
         lastEventText = "CC " + std::to_string(cc) + " = " + std::to_string(value);
 
-        // Continuous actions (use value directly, fire on any value)
-        if (cc == (uint8_t)mappings[(int)Action::Zoom].cc) {
+        // Global: CYCLE advances the page
+        if (cc == (uint8_t)cycleCC && value > 0) {
+            currentPage = (currentPage + 1) % PAGE_COUNT;
+            flog::info("MidiController: page → {} ({})", currentPage, PAGE_NAMES[currentPage]);
+            return;
+        }
+
+        auto* pg = mappings[currentPage];
+
+        // Continuous actions
+        if (cc == (uint8_t)pg[(int)Action::Zoom].cc) {
             double totalBW = sigpath::iqFrontEnd.getSampleRate();
             double t = value / 127.0;
             gui::waterfall.setViewBandwidth(1000.0 + (t * t * (totalBW - 1000.0)));
             return;
         }
-        if (cc == (uint8_t)mappings[(int)Action::TuneCoarse].cc) {
-            applyRelativeTune(cc, value, mappings[(int)Action::TuneCoarse].stepHz);
+        if (cc == (uint8_t)pg[(int)Action::TuneCoarse].cc) {
+            applyRelativeTune(cc, value, pg[(int)Action::TuneCoarse].stepHz);
             return;
         }
-        if (cc == (uint8_t)mappings[(int)Action::TuneFine].cc) {
-            applyRelativeTune(cc, value, mappings[(int)Action::TuneFine].stepHz);
+        if (cc == (uint8_t)pg[(int)Action::TuneFine].cc) {
+            applyRelativeTune(cc, value, pg[(int)Action::TuneFine].stepHz);
             return;
         }
 
-        // Button actions — trigger on value > 0 (press), ignore 0 (release)
+        // Button actions
         if (value == 0) return;
-
         for (int i = 0; i < (int)Action::Count; i++) {
-            if (mappings[i].cc == (int)cc) {
-                fireAction((Action)i);
-                return;
-            }
+            if (pg[i].cc == (int)cc) { fireAction((Action)i); return; }
         }
     }
 
-    // Note-mapped button dispatch
     void handleNoteOn(uint8_t note) {
         lastEventText = "Note " + std::to_string(note);
+        auto* pg = mappings[currentPage];
         for (int i = 0; i < (int)Action::Count; i++) {
-            if (mappings[i].note == (int)note) {
-                fireAction((Action)i);
-                return;
-            }
+            if (pg[i].note == (int)note) { fireAction((Action)i); return; }
         }
     }
 
@@ -469,10 +531,10 @@ private:
             if (gui::mainWindow.sdrIsRunning()) gui::mainWindow.setPlayState(false);
             break;
         case Action::StepTuneUp:
-            doStepTune(+1, mappings[(int)Action::StepTuneUp].stepHz);
+            doStepTune(+1, mappings[currentPage][(int)Action::StepTuneUp].stepHz);
             break;
         case Action::StepTuneDown:
-            doStepTune(-1, mappings[(int)Action::StepTuneDown].stepHz);
+            doStepTune(-1, mappings[currentPage][(int)Action::StepTuneDown].stepHz);
             break;
         case Action::BandPlanNext:
             doBandPlanStep(+1);
@@ -494,8 +556,6 @@ private:
         }
     }
 
-    // Relative-delta tune from an absolute-position slider/knob.
-    // Skips the first event (no previous value) and large jumps (wrap-around).
     void applyRelativeTune(uint8_t cc, uint8_t value, double stepHz) {
         uint8_t prev  = prevCC[cc];
         bool    known = prevCCKnown[cc];
@@ -511,11 +571,9 @@ private:
             ? gui::waterfall.selectedVFO
             : gui::waterfall.vfos.begin()->first;
         double current = gui::waterfall.getCenterFrequency() + sigpath::vfoManager.getOffset(vfoName);
-        double newFreq = std::max(0.0, current + delta * stepHz);
-        tuner::tune(tuner::TUNER_MODE_NORMAL, vfoName, newFreq);
+        tuner::tune(tuner::TUNER_MODE_NORMAL, vfoName, std::max(0.0, current + delta * stepHz));
     }
 
-    // Discrete step tune: called on button press.
     void doStepTune(int direction, double stepHz) {
         if (stepHz <= 0) stepHz = 100e3;
         if (gui::waterfall.vfos.empty()) return;
@@ -523,19 +581,15 @@ private:
             ? gui::waterfall.selectedVFO
             : gui::waterfall.vfos.begin()->first;
         double current = gui::waterfall.getCenterFrequency() + sigpath::vfoManager.getOffset(vfoName);
-        double newFreq = std::max(0.0, current + direction * stepHz);
-        tuner::tune(tuner::TUNER_MODE_NORMAL, vfoName, newFreq);
+        tuner::tune(tuner::TUNER_MODE_NORMAL, vfoName, std::max(0.0, current + direction * stepHz));
     }
 
-    // Step to the next or previous band plan entry.
     void doBandPlanStep(int direction) {
         if (!gui::waterfall.bandplan) return;
         auto& bands = gui::waterfall.bandplan->bands;
         if (bands.empty()) return;
 
         double centerFreq = gui::waterfall.getCenterFrequency();
-
-        // Find band that contains current center frequency
         int idx = -1;
         for (int i = 0; i < (int)bands.size(); i++) {
             if (centerFreq >= bands[i].start && centerFreq <= bands[i].end) {
@@ -560,11 +614,9 @@ private:
         tuner::tune(tuner::TUNER_MODE_NORMAL, vfoName, targetFreq);
     }
 
-    // Cycle through the available VFOs in the waterfall.
     void doVFOCycle() {
         auto& vfos = gui::waterfall.vfos;
         if (vfos.size() <= 1) return;
-
         auto it = vfos.find(gui::waterfall.selectedVFO);
         if (it == vfos.end())
             it = vfos.begin();
@@ -576,11 +628,9 @@ private:
         gui::waterfall.selectedVFOChanged = true;
     }
 
-    // Toggle mute on all audio streams.
     void doAudioMute() {
         auto names = sigpath::sinkManager.getStreamNames();
         if (names.empty()) return;
-
         if (!muteActive) {
             muteSavedVolumes.clear();
             for (auto& n : names) {
@@ -597,7 +647,6 @@ private:
         }
     }
 
-    // Toggle recording start/stop in the Recorder module.
     void doRecorderArm() {
         if (recorderArmed) {
             core::modComManager.callInterface(recorderInstanceName, RECORDER_IFACE_CMD_STOP, NULL, NULL);
@@ -615,11 +664,10 @@ private:
         auto* _this = reinterpret_cast<MidiControllerModule*>(ctx);
         _this->dispatchEvents();
 
+        // ── Status row ───────────────────────────────────────────────────────
         ImGui::Text("Status: %s", _this->statusText.c_str());
         ImGui::Text("Sources: %d connected", _this->connectedCount);
         ImGui::Text("Last: %s", _this->lastEventText.c_str());
-
-        // State indicators
         if (_this->muteActive) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "[MUTED]");
@@ -629,10 +677,41 @@ private:
             ImGui::TextColored(ImVec4(1, 0.1f, 0.1f, 1), "[REC]");
         }
 
+        // ── Page indicator ───────────────────────────────────────────────────
         ImGui::Separator();
-        ImGui::TextUnformatted("MIDI Mapping");
+        ImGui::Text("Page: ");
+        for (int p = 0; p < PAGE_COUNT; p++) {
+            ImGui::SameLine();
+            bool isActive = (p == _this->currentPage);
+            if (isActive)
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1), "[%s]", PAGE_NAMES[p]);
+            else
+                ImGui::TextDisabled("%s", PAGE_NAMES[p]);
+        }
+        {
+            char cycleBuf[24];
+            if (_this->cycleCC >= 0) snprintf(cycleBuf, sizeof(cycleBuf), "CC %d", _this->cycleCC);
+            else                      snprintf(cycleBuf, sizeof(cycleBuf), "—");
+            ImGui::Text("CYCLE: %s", cycleBuf);
+            ImGui::SameLine();
+            if (_this->learningCycleCC) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+                if (ImGui::SmallButton("Cancel##cyc")) _this->learningCycleCC = false;
+                ImGui::PopStyleColor();
+            } else {
+                if (ImGui::SmallButton("Learn##cyc")) {
+                    _this->learningCycleCC = true;
+                    _this->learnTarget = Action::Count;
+                }
+            }
+        }
+        if (_this->learningCycleCC)
+            ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "Move a CC to assign CYCLE...");
 
-        // Table: Action | Binding | Step | Learn
+        // ── Mapping table for current page ───────────────────────────────────
+        ImGui::Separator();
+        ImGui::Text("Mappings — %s page", PAGE_NAMES[_this->currentPage]);
+
         if (ImGui::BeginTable("##midi_map", 4,
                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
             ImGui::TableSetupColumn("Action",  ImGuiTableColumnFlags_WidthStretch);
@@ -642,7 +721,7 @@ private:
             ImGui::TableHeadersRow();
 
             for (int i = 0; i < (int)Action::Count; i++) {
-                auto& m = _this->mappings[i];
+                auto& m = _this->mappings[_this->currentPage][i];
                 ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
@@ -667,7 +746,7 @@ private:
                 }
 
                 ImGui::TableSetColumnIndex(3);
-                bool isLearning = (_this->learnTarget == (Action)i);
+                bool isLearning = (_this->learnTarget == (Action)i && !_this->learningCycleCC);
                 char btnLabel[32];
                 if (isLearning) {
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
@@ -676,20 +755,24 @@ private:
                     ImGui::PopStyleColor();
                 } else {
                     snprintf(btnLabel, sizeof(btnLabel), "Learn##lrn%d", i);
-                    if (ImGui::SmallButton(btnLabel)) _this->learnTarget = (Action)i;
+                    if (ImGui::SmallButton(btnLabel)) {
+                        _this->learnTarget = (Action)i;
+                        _this->learningCycleCC = false;
+                    }
                 }
             }
             ImGui::EndTable();
         }
 
-        if (_this->learnTarget != Action::Count) {
+        if (_this->learnTarget != Action::Count && !_this->learningCycleCC) {
             ImGui::TextColored(ImVec4(1, 0.5f, 0, 1),
-                "Move a CC or press a key to assign to '%s'",
-                ACTION_NAMES[(int)_this->learnTarget]);
+                "Move a CC or press a key to assign to '%s' (%s page)",
+                ACTION_NAMES[(int)_this->learnTarget], PAGE_NAMES[_this->currentPage]);
         }
 
+        // ── Controls ─────────────────────────────────────────────────────────
         ImGui::Separator();
-        if (ImGui::Button("Reset to nanoKontrol2 defaults")) {
+        if (ImGui::Button("Reset page to NK2 defaults")) {
             _this->setDefaultMappings();
             _this->saveConfig();
         }
@@ -699,9 +782,9 @@ private:
             _this->initMidi();
         }
 
-        // Recorder instance name (configurable for multi-recorder setups)
+        // Recorder instance name
         ImGui::Separator();
-        ImGui::TextUnformatted("Recorder instance name:");
+        ImGui::TextUnformatted("Recorder module name:");
         char recBuf[64];
         snprintf(recBuf, sizeof(recBuf), "%s", _this->recorderInstanceName.c_str());
         ImGui::SetNextItemWidth(120.0f);
