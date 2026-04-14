@@ -789,7 +789,7 @@ impl SdrApp {
     // ── Status Bar ────────────────────────────────────────────────────────────
 
     fn status_bar(&self, ui: &mut Ui) {
-        let (is_running, is_recording, center_freq, sample_rate, midi_device, midi_page, buf_fill, source_name) = {
+        let (is_running, is_recording, center_freq, sample_rate, midi_device, midi_page, buf_fill, source_name, is_stereo) = {
             let s = self.shared.read();
             (
                 s.is_running,
@@ -800,6 +800,7 @@ impl SdrApp {
                 s.midi_page,
                 s.audio_buffer_fill,
                 s.source_name.clone(),
+                s.is_stereo,
             )
         };
 
@@ -824,9 +825,10 @@ impl SdrApp {
             };
 
             let freq_label = format_frequency(center_freq);
+            let stereo_badge = if is_stereo { "  ST" } else { "" };
             ui.label(
                 RichText::new(format!(
-                    "◈  {device_label}  ·  {rate_label}  ·  {freq_label}"
+                    "◈  {device_label}  ·  {rate_label}  ·  {freq_label}{stereo_badge}"
                 ))
                 .color(theme::TEXT_MUTED)
                 .small(),

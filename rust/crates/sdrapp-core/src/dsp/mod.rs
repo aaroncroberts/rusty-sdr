@@ -10,10 +10,12 @@ pub mod demod;
 pub mod fft;
 pub mod packer;
 pub mod squelch;
+pub mod stereo_fm;
 pub mod volume;
 
 pub use demod::{AmDemodulator, FmDemodulator};
 pub use fft::FftProcessor;
 pub use packer::Packer;
 pub use squelch::Squelch;
+pub use stereo_fm::StereoFmDecoder;
 pub use volume::Volume;

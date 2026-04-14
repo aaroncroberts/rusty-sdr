@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use rustfft::num_complex::Complex;
 
-use crate::dsp::{AmDemodulator, FmDemodulator, FftProcessor, Squelch, Volume};
+use crate::dsp::{AmDemodulator, FmDemodulator, FftProcessor, Squelch, StereoFmDecoder, Volume};
 use crate::sample::{IqSample, StereoFrame};
 
 const FFT_SIZE: usize = 2048;
@@ -70,6 +70,8 @@ pub struct SharedState {
     pub demod_mode: DemodMode,
     /// NFM squelch threshold in dBFS (e.g. -50.0). Applied only in NFM mode.
     pub squelch_threshold: f32,
+    /// Whether a stereo pilot tone is currently detected (WBFM only).
+    pub is_stereo: bool,
 }
 
 impl SharedState {
@@ -126,24 +128,20 @@ impl SignalPath {
         // Read initial sample rate before moving shared into the task
         let sample_rate = shared.read().sample_rate_sps;
 
-        // Demodulator state — switched at runtime by SetDemodMode
+        // Demodulator state — switched at runtime by SetDemodMode.
+        // WBFM uses StereoFmDecoder (outputs Vec<StereoFrame> + is_stereo flag).
+        // NFM and AM use the mono FmDemodulator / AmDemodulator and convert to stereo.
         enum Demod {
-            Wbfm(FmDemodulator),
+            Wbfm(StereoFmDecoder),
             Nfm(FmDemodulator),
             Am(AmDemodulator),
         }
 
         impl Demod {
-            fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
-                match self {
-                    Demod::Wbfm(d) | Demod::Nfm(d) => d.process(samples),
-                    Demod::Am(d) => d.process(samples),
-                }
-            }
-
             fn reset(&mut self) {
                 match self {
-                    Demod::Wbfm(d) | Demod::Nfm(d) => d.reset(),
+                    Demod::Wbfm(d) => d.reset(),
+                    Demod::Nfm(d) => d.reset(),
                     Demod::Am(d) => d.reset(),
                 }
             }
@@ -153,7 +151,7 @@ impl SignalPath {
             let sr = sample_rate.max(200_000);
             let mut fft = FftProcessor::new(FFT_SIZE);
             let mut vol = Volume::new(0.8);
-            let mut demod: Demod = Demod::Wbfm(FmDemodulator::wbfm(sr));
+            let mut demod: Demod = Demod::Wbfm(StereoFmDecoder::new(sr));
             let mut squelch = Squelch::new(48_000, -50.0);
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
@@ -178,14 +176,16 @@ impl SignalPath {
                         }
                         SignalPathCommand::SetDemodMode(mode) => {
                             demod = match mode {
-                                DemodMode::Wbfm => Demod::Wbfm(FmDemodulator::wbfm(sr)),
+                                DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(sr)),
                                 DemodMode::Nfm => {
                                     Demod::Nfm(FmDemodulator::new(sr, 48_000, 12_500.0, 0.0))
                                 }
                                 DemodMode::Am => Demod::Am(AmDemodulator::standard(sr)),
                             };
                             squelch.reset();
-                            shared_clone.write().demod_mode = mode;
+                            let mut s = shared_clone.write();
+                            s.demod_mode = mode;
+                            s.is_stereo = false;
                             tracing::info!(?mode, "demod mode changed");
                         }
                         SignalPathCommand::SetSquelchThreshold(t) => {
@@ -227,25 +227,28 @@ impl SignalPath {
                     iq_accumulator.drain(..FFT_SIZE);
                 }
 
-                // Demodulate IQ → mono audio at 48 kHz
+                // Demodulate IQ → StereoFrame batches at 48 kHz.
                 let iq_complex: Vec<Complex<f32>> = batch
                     .iter()
                     .map(|s| Complex::new(s.re, s.im))
                     .collect();
-                let demod_audio = demod.process(&iq_complex);
 
-                // Apply NFM squelch gate (silence audio below threshold).
-                // WBFM and AM are unaffected.
-                let gated_audio = if matches!(demod, Demod::Nfm(_)) {
-                    squelch.process(&demod_audio)
-                } else {
-                    demod_audio
+                let stereo: Vec<StereoFrame> = match &mut demod {
+                    Demod::Wbfm(d) => {
+                        let (frames, is_stereo) = d.process(&iq_complex);
+                        shared_clone.write().is_stereo = is_stereo;
+                        frames
+                    }
+                    Demod::Nfm(d) => {
+                        let mono = d.process(&iq_complex);
+                        let gated = squelch.process(&mono);
+                        gated.into_iter().map(StereoFrame::mono).collect()
+                    }
+                    Demod::Am(d) => {
+                        let mono = d.process(&iq_complex);
+                        mono.into_iter().map(StereoFrame::mono).collect()
+                    }
                 };
-
-                let stereo: Vec<StereoFrame> = gated_audio
-                    .into_iter()
-                    .map(StereoFrame::mono)
-                    .collect();
 
                 let mut stereo_processed = vol.process(&stereo);
                 audio_accumulator.append(&mut stereo_processed);
