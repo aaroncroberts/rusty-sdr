@@ -36,19 +36,40 @@ struct MidiEvent {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Nanocontrol2 CC / note layout
-//   Knobs:    CC 16–23  (8 knobs, top row)
-//   Sliders:  CC  0–7   (8 sliders)
-//   Transport buttons: Note 41 (Rwd), 42 (Fwd), 43 (Stop), 44 (Play), 45 (Rec)
-//   S buttons: Note 32–39  Mute buttons: Note 48–55  Solo: Note 64–71
+// Korg nanoKontrol2 default CC layout (Scene 1 / factory mapping)
+//
+//   Sliders (8, left-to-right):  CC 0–7
+//   Knobs   (8, left-to-right):  CC 16–23
+//   Transport buttons (CC, value 127=press / 0=release):
+//     REW=CC43  FF=CC44  STOP=CC42  PLAY=CC41  REC=CC45  CYCLE=CC46
+//   S buttons (solo):   Note 32–39
+//   M buttons (mute):   Note 48–55
+//   R buttons (record): Note 64–71
+//
+// Default SDR++ mapping:
+//   Slider 1 (CC0)  → VFO coarse tune (relative delta, ±1 MHz per unit)
+//   Slider 2 (CC1)  → VFO fine tune   (relative delta, ±10 kHz per unit)
+//   Knob 1   (CC16) → RF gain — NOT SUPPORTED (no generic gain API in SDR++)
+//   Knob 2   (CC17) → Waterfall zoom  (absolute 0–127 maps to full bandwidth)
+//   PLAY     (CC41, val>0) → toggle SDR source on/off
+//   STOP     (CC42, val>0) → stop SDR source
 // ─────────────────────────────────────────────────────────────────────────────
 namespace NK2 {
-    constexpr uint8_t SLIDER_BASE = 0;
-    constexpr uint8_t KNOB_BASE   = 16;
-    constexpr uint8_t NOTE_PLAY   = 41;
-    constexpr uint8_t NOTE_STOP   = 43;
-    constexpr uint8_t NOTE_FWD    = 42;
-    constexpr uint8_t NOTE_RWD    = 41;
+    // Sliders
+    constexpr uint8_t CC_SLIDER_COARSE_TUNE = 0;   // Slider 1
+    constexpr uint8_t CC_SLIDER_FINE_TUNE   = 1;   // Slider 2
+    // Knobs
+    constexpr uint8_t CC_KNOB_GAIN          = 16;  // Knob 1  (unsupported — no generic gain API)
+    constexpr uint8_t CC_KNOB_ZOOM          = 17;  // Knob 2
+    // Transport (buttons send CC; value 127 = press, 0 = release)
+    constexpr uint8_t CC_PLAY              = 41;
+    constexpr uint8_t CC_STOP              = 42;
+    constexpr uint8_t CC_REW               = 43;
+    constexpr uint8_t CC_FF                = 44;
+    constexpr uint8_t CC_REC               = 45;
+    // Fallback note numbers (for users who remap transport to notes)
+    constexpr uint8_t NOTE_PLAY            = 41;
+    constexpr uint8_t NOTE_STOP            = 42;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -57,6 +78,7 @@ namespace NK2 {
 class MidiControllerModule : public ModuleManager::Instance {
 public:
     MidiControllerModule(std::string name) : name(name) {
+        std::fill(std::begin(prevCC), std::end(prevCC), 0);
         gui::menu.registerEntry(name, menuHandler, this, NULL);
     }
 
@@ -107,8 +129,11 @@ private:
     static constexpr double COARSE_STEP_HZ = 1e6;
     static constexpr double FINE_STEP_HZ   = 10e3;
 
-    // ── Previous CC values for relative delta detection ────────────────────
-    uint8_t prevCC[128] = {};
+    // ── Previous CC values for relative delta detection ──────────────────
+    // Initialised to 255 (sentinel: "not yet received") so the very first
+    // event from a slider/knob doesn't produce a spurious large delta.
+    uint8_t prevCC[128];
+    bool prevCCKnown[128] = {};
 
     // ─────────────────────────────────────────────────────────────────────────
     // CoreMIDI initialisation
@@ -278,42 +303,71 @@ private:
     // ─────────────────────────────────────────────────────────────────────────
     void handleCC(uint8_t cc, uint8_t value) {
         uint8_t prev = prevCC[cc];
+        bool known = prevCCKnown[cc];
         prevCC[cc] = value;
+        prevCCKnown[cc] = true;
 
         lastEventText = "CC " + std::to_string(cc) + " = " + std::to_string(value);
 
-        // ── Waterfall zoom: Slider 0 (CC 0) ─────────────────────────────────
-        // Map 0–127 linearly to t in [0,1], then quadratic → bandwidth
-        if (cc == NK2::SLIDER_BASE) {
-            double totalBW = sigpath::iqFrontEnd.getSampleRate();
-            double t = value / 127.0;
-            double bw = 1000.0 + (t * t * (totalBW - 1000.0));
-            gui::waterfall.setViewBandwidth(bw);
+        // ── Transport: PLAY (CC41) ────────────────────────────────────────────
+        // nanoKontrol2 sends value 127 on press, 0 on release — act on press only
+        if (cc == NK2::CC_PLAY) {
+            if (value > 0) {
+                bool running = gui::mainWindow.sdrIsRunning();
+                gui::mainWindow.setPlayState(!running);
+            }
             return;
         }
 
-        // ── Coarse tune: Knob 0 (CC 16) — relative, centre-detent ───────────
-        // nanoKontrol2 knobs send 0–127 as absolute position.
-        // We treat them as relative: delta = (value - prev), skipping large jumps
-        // (which indicate the knob wrapped or the controller was just connected).
-        if (cc == NK2::KNOB_BASE) {
-            int delta = (int)value - (int)prev;
-            if (std::abs(delta) < 64) { // ignore wrap-around artefacts
-                if (delta != 0) {
+        // ── Transport: STOP (CC42) ────────────────────────────────────────────
+        if (cc == NK2::CC_STOP) {
+            if (value > 0 && gui::mainWindow.sdrIsRunning()) {
+                gui::mainWindow.setPlayState(false);
+            }
+            return;
+        }
+
+        // ── Coarse tune: Slider 1 (CC0) — relative delta ─────────────────────
+        // Sliders send absolute 0–127. We compare to the previous value and treat
+        // the difference as a step count. Large jumps (≥64) are filtered as
+        // "slider was at an unknown position on connect" artefacts.
+        if (cc == NK2::CC_SLIDER_COARSE_TUNE) {
+            if (known) {
+                int delta = (int)value - (int)prev;
+                if (std::abs(delta) < 64 && delta != 0) {
                     adjustFrequency(delta * COARSE_STEP_HZ);
                 }
             }
             return;
         }
 
-        // ── Fine tune: Knob 1 (CC 17) ────────────────────────────────────────
-        if (cc == NK2::KNOB_BASE + 1) {
-            int delta = (int)value - (int)prev;
-            if (std::abs(delta) < 64) {
-                if (delta != 0) {
+        // ── Fine tune: Slider 2 (CC1) — relative delta ───────────────────────
+        if (cc == NK2::CC_SLIDER_FINE_TUNE) {
+            if (known) {
+                int delta = (int)value - (int)prev;
+                if (std::abs(delta) < 64 && delta != 0) {
                     adjustFrequency(delta * FINE_STEP_HZ);
                 }
             }
+            return;
+        }
+
+        // ── Knob 1 (CC16): RF gain — not supported in SDR++ v1 ───────────────
+        // SDR++ has no generic gain API; gain is per-source hardware only.
+        // Log the event so users can verify the knob is being received.
+        if (cc == NK2::CC_KNOB_GAIN) {
+            // RF gain control not available — no generic SourceManager gain API
+            return;
+        }
+
+        // ── Waterfall zoom: Knob 2 (CC17) ────────────────────────────────────
+        // Map 0–127 linearly to t in [0,1], then quadratic → bandwidth for
+        // a perceptually linear zoom feel (wide range at bottom, fine at top).
+        if (cc == NK2::CC_KNOB_ZOOM) {
+            double totalBW = sigpath::iqFrontEnd.getSampleRate();
+            double t = value / 127.0;
+            double bw = 1000.0 + (t * t * (totalBW - 1000.0));
+            gui::waterfall.setViewBandwidth(bw);
             return;
         }
     }
@@ -321,10 +375,10 @@ private:
     // ─────────────────────────────────────────────────────────────────────────
     // Note handler: transport buttons
     // ─────────────────────────────────────────────────────────────────────────
+    // Note handler: fallback for users who remap nanoKontrol2 transport to notes
     void handleNote(uint8_t note) {
         lastEventText = "Note " + std::to_string(note);
 
-        // Play/Stop toggle
         if (note == NK2::NOTE_PLAY) {
             bool running = gui::mainWindow.sdrIsRunning();
             gui::mainWindow.setPlayState(!running);
@@ -367,12 +421,13 @@ private:
         ImGui::Separator();
         ImGui::Text("Last event: %s", _this->lastEventText.c_str());
         ImGui::Separator();
-        ImGui::TextDisabled("nanoKontrol2 default mapping:");
-        ImGui::TextDisabled("  CC0  Slider 0 → Zoom");
-        ImGui::TextDisabled("  CC16 Knob 0  → Coarse tune (1 MHz/step)");
-        ImGui::TextDisabled("  CC17 Knob 1  → Fine tune (10 kHz/step)");
-        ImGui::TextDisabled("  Play button  → Start/stop SDR");
-        ImGui::TextDisabled("  Stop button  → Stop SDR");
+        ImGui::TextDisabled("nanoKONTROL2 default mapping:");
+        ImGui::TextDisabled("  CC0  Slider 1 → Coarse tune (1 MHz/step)");
+        ImGui::TextDisabled("  CC1  Slider 2 → Fine tune (10 kHz/step)");
+        ImGui::TextDisabled("  CC16 Knob 1   → RF gain (not supported)");
+        ImGui::TextDisabled("  CC17 Knob 2   → Waterfall zoom");
+        ImGui::TextDisabled("  CC41 PLAY     → Start/stop SDR toggle");
+        ImGui::TextDisabled("  CC42 STOP     → Stop SDR");
 
         if (ImGui::Button("Reconnect MIDI")) {
             _this->shutdownMidi();
