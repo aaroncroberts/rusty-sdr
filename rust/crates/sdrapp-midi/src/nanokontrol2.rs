@@ -8,11 +8,19 @@
 use crate::config::{MidiActionTag, MidiKey, MidiKeyKind};
 
 fn cc(channel: u8, number: u8) -> MidiKey {
-    MidiKey { channel, kind: MidiKeyKind::ControlChange, number }
+    MidiKey {
+        channel,
+        kind: MidiKeyKind::ControlChange,
+        number,
+    }
 }
 
 fn note(channel: u8, number: u8) -> MidiKey {
-    MidiKey { channel, kind: MidiKeyKind::NoteOn, number }
+    MidiKey {
+        channel,
+        kind: MidiKeyKind::NoteOn,
+        number,
+    }
 }
 
 /// Returns the default nanoKONTROL2 bindings as a list of ((page, key), action).
@@ -30,25 +38,25 @@ pub fn default_bindings() -> Vec<((usize, MidiKey), MidiActionTag)> {
     bind!(0, note(0, 41), MidiActionTag::PlayToggle);
     bind!(0, note(0, 42), MidiActionTag::Stop);
     bind!(0, note(0, 46), MidiActionTag::PageNext);
-    bind!(0, cc(0, 0),    MidiActionTag::TuneCoarseUp);
-    bind!(0, cc(0, 1),    MidiActionTag::TuneCoarseDown);
-    bind!(0, cc(0, 2),    MidiActionTag::TuneMediumUp);
-    bind!(0, cc(0, 3),    MidiActionTag::TuneMediumDown);
-    bind!(0, cc(0, 4),    MidiActionTag::TuneFineUp);
-    bind!(0, cc(0, 5),    MidiActionTag::TuneFineDown);
+    bind!(0, cc(0, 0), MidiActionTag::TuneCoarseUp);
+    bind!(0, cc(0, 1), MidiActionTag::TuneCoarseDown);
+    bind!(0, cc(0, 2), MidiActionTag::TuneMediumUp);
+    bind!(0, cc(0, 3), MidiActionTag::TuneMediumDown);
+    bind!(0, cc(0, 4), MidiActionTag::TuneFineUp);
+    bind!(0, cc(0, 5), MidiActionTag::TuneFineDown);
 
     // ── Page 1: Monitor ───────────────────────────────────
     bind!(1, note(0, 41), MidiActionTag::PlayToggle);
     bind!(1, note(0, 42), MidiActionTag::Stop);
     bind!(1, note(0, 46), MidiActionTag::PageNext);
-    bind!(1, cc(0, 0),    MidiActionTag::VolumeSet);
-    bind!(1, cc(0, 1),    MidiActionTag::ZoomIn);
-    bind!(1, cc(0, 2),    MidiActionTag::ZoomOut);
+    bind!(1, cc(0, 0), MidiActionTag::VolumeSet);
+    bind!(1, cc(0, 1), MidiActionTag::ZoomIn);
+    bind!(1, cc(0, 2), MidiActionTag::ZoomOut);
 
     // ── Page 2: Recorder ──────────────────────────────────
     bind!(2, note(0, 41), MidiActionTag::PlayToggle);
     bind!(2, note(0, 42), MidiActionTag::Stop);
-    bind!(2, note(0, 45), MidiActionTag::RecordStart);  // REC button
+    bind!(2, note(0, 45), MidiActionTag::RecordStart); // REC button
     bind!(2, note(0, 46), MidiActionTag::PageNext);
 
     m
@@ -58,14 +66,24 @@ pub fn default_bindings() -> Vec<((usize, MidiKey), MidiActionTag)> {
 mod tests {
     use super::*;
 
-    fn find_action(bindings: &[((usize, MidiKey), MidiActionTag)], page: usize, key: MidiKey) -> Option<&MidiActionTag> {
-        bindings.iter().find(|((p, k), _)| *p == page && k == &key).map(|(_, a)| a)
+    fn find_action(
+        bindings: &[((usize, MidiKey), MidiActionTag)],
+        page: usize,
+        key: MidiKey,
+    ) -> Option<&MidiActionTag> {
+        bindings
+            .iter()
+            .find(|((p, k), _)| *p == page && k == &key)
+            .map(|(_, a)| a)
     }
 
     #[test]
     fn default_profile_has_record_start() {
         let bindings = default_bindings();
-        assert_eq!(find_action(&bindings, 2, note(0, 45)), Some(&MidiActionTag::RecordStart));
+        assert_eq!(
+            find_action(&bindings, 2, note(0, 45)),
+            Some(&MidiActionTag::RecordStart)
+        );
     }
 
     #[test]

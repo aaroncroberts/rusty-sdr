@@ -20,12 +20,18 @@ pub enum MidiKeyKind {
 /// Mirrors MidiAction but is serde-friendly as a string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MidiActionTag {
-    TuneCoarseUp, TuneCoarseDown,
-    TuneMediumUp, TuneMediumDown,
-    TuneFineUp, TuneFineDown,
-    PlayToggle, Stop,
-    RecordStart, RecordStop,
-    ZoomIn, ZoomOut,
+    TuneCoarseUp,
+    TuneCoarseDown,
+    TuneMediumUp,
+    TuneMediumDown,
+    TuneFineUp,
+    TuneFineDown,
+    PlayToggle,
+    Stop,
+    RecordStart,
+    RecordStop,
+    ZoomIn,
+    ZoomOut,
     PageNext,
     VolumeSet,
     Unmapped,
@@ -68,7 +74,8 @@ impl MidiConfig {
 
     /// Look up the action for a given (page, key) pair.
     pub fn lookup(&self, page: usize, key: &MidiKey) -> Option<&MidiActionTag> {
-        self.bindings.iter()
+        self.bindings
+            .iter()
             .find(|e| e.page == page && &e.key == key)
             .map(|e| &e.action)
     }

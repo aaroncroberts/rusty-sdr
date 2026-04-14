@@ -66,6 +66,12 @@ impl RspdxSource {
     }
 
     /// Returns a list of available SDRplay device hardware names.
+    /// Returns a clone of the shared frequency atomic so callers can write new
+    /// frequencies that the device thread will pick up within one poll interval.
+    pub fn frequency_atomic(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.frequency_hz)
+    }
+
     pub fn available_devices() -> Vec<String> {
         let mut devices = [sys::sdrplay_api_DeviceT::default(); 16];
         let mut num: u32 = 0;
@@ -101,10 +107,11 @@ impl Block for RspdxSource {
 
         // Spawn the blocking SDRplay driver thread
         let iq_tx_clone = iq_tx.clone();
+        let freq_atomic_clone = Arc::clone(&self.frequency_hz);
         std::thread::Builder::new()
             .name("sdrapp-sdrplay".into())
             .spawn(move || {
-                if let Err(e) = run_sdrplay_thread(config, iq_tx_clone, running) {
+                if let Err(e) = run_sdrplay_thread(config, iq_tx_clone, running, freq_atomic_clone) {
                     tracing::error!("SDRplay thread error: {e}");
                 }
             })
@@ -173,6 +180,7 @@ fn run_sdrplay_thread(
     config: RspdxConfig,
     iq_tx: crossbeam_channel::Sender<Arc<[IqSample]>>,
     running: Arc<AtomicBool>,
+    freq_atomic: Arc<AtomicU64>,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
 
@@ -308,7 +316,32 @@ fn run_sdrplay_thread(
     );
 
     // ── Run until stop signal ─────────────────────────────────────────────────
+    let mut last_freq = config.frequency_hz;
     while running.load(Ordering::Relaxed) {
+        // Poll for frequency changes written by the signal path
+        let new_freq = freq_atomic.load(Ordering::Relaxed);
+        if new_freq != last_freq {
+            unsafe {
+                (*(*params_ptr).rxChannelA).tunerParams.rfFreq.rfHz = new_freq as f64;
+                let err = sys::sdrplay_api_Update(
+                    dev_handle,
+                    sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+                    sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Frf,
+                    sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None,
+                );
+                if err == sys::sdrplay_api_ErrT_sdrplay_api_Success {
+                    tracing::info!(
+                        freq_hz = new_freq,
+                        freq_mhz = new_freq / 1_000_000,
+                        "SDRplay frequency updated"
+                    );
+                } else {
+                    tracing::warn!(err, "sdrplay_api_Update (Frf) failed");
+                }
+            }
+            last_freq = new_freq;
+        }
+
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 

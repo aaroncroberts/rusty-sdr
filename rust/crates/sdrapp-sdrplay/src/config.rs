@@ -40,7 +40,7 @@ pub struct RspdxConfig {
 impl Default for RspdxConfig {
     fn default() -> Self {
         Self {
-            frequency_hz: 100_000_000, // 100 MHz
+            frequency_hz: 100_000_000,  // 100 MHz
             sample_rate_sps: 2_000_000, // 2 Msps
             antenna: Antenna::A,
             if_mode: IfMode::ZeroIf,

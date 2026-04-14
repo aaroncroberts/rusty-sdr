@@ -14,20 +14,22 @@ const FREQ_BG: Color32 = Color32::from_rgb(20, 28, 38);
 /// Step sizes per scroll tick for each digit group.
 #[derive(Debug, Clone, Copy)]
 pub enum TuneStep {
-    GHz   = 1_000_000_000,
+    GHz = 1_000_000_000,
     MHz100 = 100_000_000,
-    MHz10  = 10_000_000,
-    MHz1   = 1_000_000,
+    MHz10 = 10_000_000,
+    MHz1 = 1_000_000,
     KHz100 = 100_000,
-    KHz10  = 10_000,
-    KHz1   = 1_000,
-    Hz100  = 100,
-    Hz10   = 10,
-    Hz1    = 1,
+    KHz10 = 10_000,
+    KHz1 = 1_000,
+    Hz100 = 100,
+    Hz10 = 10,
+    Hz1 = 1,
 }
 
 impl TuneStep {
-    pub fn default_for_scroll() -> i64 { TuneStep::KHz10 as i64 }
+    pub fn default_for_scroll() -> i64 {
+        TuneStep::KHz10 as i64
+    }
 }
 
 pub struct FrequencyWidget {
@@ -39,7 +41,10 @@ pub struct FrequencyWidget {
 
 impl FrequencyWidget {
     pub fn new(frequency_hz: u64) -> Self {
-        Self { frequency_hz, step_hz: TuneStep::default_for_scroll() }
+        Self {
+            frequency_hz,
+            step_hz: TuneStep::default_for_scroll(),
+        }
     }
 
     /// Render the frequency display.

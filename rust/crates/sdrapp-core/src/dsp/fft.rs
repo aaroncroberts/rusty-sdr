@@ -5,8 +5,8 @@
 //! Takes a batch of IQ samples, applies a Hann window,
 //! runs FFT via `rustfft`, and returns log-magnitude bins.
 
-use rustfft::{FftPlanner, num_complex::Complex};
 use crate::sample::IqSample;
+use rustfft::{num_complex::Complex, FftPlanner};
 
 /// Computes a windowed FFT from IQ samples and returns magnitude in dBFS.
 ///
@@ -20,9 +20,16 @@ pub struct FftProcessor {
 
 impl FftProcessor {
     pub fn new(fft_size: usize) -> Self {
-        assert!(fft_size.is_power_of_two(), "fft_size must be a power of two");
+        assert!(
+            fft_size.is_power_of_two(),
+            "fft_size must be a power of two"
+        );
         let window = hann_window(fft_size);
-        Self { fft_size, window, planner: FftPlanner::new() }
+        Self {
+            fft_size,
+            window,
+            planner: FftPlanner::new(),
+        }
     }
 
     /// Process one block of IQ samples.
@@ -55,9 +62,9 @@ impl FftProcessor {
 
 /// Hann window coefficients for a given size.
 fn hann_window(n: usize) -> Vec<f32> {
-    (0..n).map(|i| {
-        0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos())
-    }).collect()
+    (0..n)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos()))
+        .collect()
 }
 
 /// Reorder FFT output to center-DC and convert power to dBFS.
@@ -65,7 +72,9 @@ fn fftshift_dbfs(buf: &[Complex<f32>]) -> Vec<f32> {
     let n = buf.len();
     let half = n / 2;
     // Concatenate second half (negative freqs) + first half (positive freqs)
-    buf[half..].iter().chain(buf[..half].iter())
+    buf[half..]
+        .iter()
+        .chain(buf[..half].iter())
         .map(|c| {
             let power = c.re * c.re + c.im * c.im;
             if power > 0.0 {
@@ -92,7 +101,9 @@ mod tests {
         assert_eq!(mags.len(), fft_size);
         // DC bin is at index fft_size/2 after fftshift
         let dc_bin = fft_size / 2;
-        let max_bin = mags.iter().enumerate()
+        let max_bin = mags
+            .iter()
+            .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .map(|(i, _)| i)
             .unwrap();

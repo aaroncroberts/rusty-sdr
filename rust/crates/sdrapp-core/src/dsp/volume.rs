@@ -13,7 +13,9 @@ pub struct Volume {
 
 impl Volume {
     pub fn new(factor: f32) -> Self {
-        Self { factor: factor.clamp(0.0, 2.0) }
+        Self {
+            factor: factor.clamp(0.0, 2.0),
+        }
     }
 
     pub fn set(&mut self, factor: f32) {
@@ -34,10 +36,13 @@ impl Volume {
 
     /// Return a new vec of scaled frames (non-mutating version).
     pub fn process(&self, frames: &[StereoFrame]) -> Vec<StereoFrame> {
-        frames.iter().map(|f| StereoFrame {
-            left: f.left * self.factor,
-            right: f.right * self.factor,
-        }).collect()
+        frames
+            .iter()
+            .map(|f| StereoFrame {
+                left: f.left * self.factor,
+                right: f.right * self.factor,
+            })
+            .collect()
     }
 }
 

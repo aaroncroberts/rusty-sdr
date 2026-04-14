@@ -15,12 +15,12 @@
 //!       ▼
 //!   Speakers
 
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::{
-    Arc,
     atomic::{AtomicU32, Ordering},
+    Arc,
 };
-use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -58,16 +58,17 @@ impl CpalAudioSink {
     pub fn available_devices() -> Vec<String> {
         let host = cpal::default_host();
         host.output_devices()
-            .map(|devs| {
-                devs.filter_map(|d| d.name().ok()).collect()
-            })
+            .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
             .unwrap_or_default()
     }
 }
 
 impl Block for CpalAudioSink {
     fn start(&mut self) -> JoinHandle<()> {
-        let frame_rx = self.frame_rx.take().expect("CpalAudioSink::start called twice");
+        let frame_rx = self
+            .frame_rx
+            .take()
+            .expect("CpalAudioSink::start called twice");
         let config = self.config.clone();
         let volume_bits = Arc::clone(&self.volume_bits);
 
@@ -110,9 +111,9 @@ impl AudioSink for CpalAudioSink {
 
     fn set_volume(&self, linear: f32) -> Result<(), SinkError> {
         if !(0.0..=1.0).contains(&linear) {
-            return Err(SinkError::Hardware(
-                format!("volume {linear} out of 0.0–1.0 range"),
-            ));
+            return Err(SinkError::Hardware(format!(
+                "volume {linear} out of 0.0–1.0 range"
+            )));
         }
         self.volume_bits.store(linear.to_bits(), Ordering::Relaxed);
         Ok(())
@@ -146,7 +147,11 @@ fn run_audio_thread(
     // Build stream config: prefer requested sample rate, fall back to device default
     let stream_config = match find_supported_config(&device, config.sample_rate) {
         Some(c) => {
-            tracing::info!(sample_rate = c.sample_rate().0, channels = c.channels(), "using config");
+            tracing::info!(
+                sample_rate = c.sample_rate().0,
+                channels = c.channels(),
+                "using config"
+            );
             StreamConfig {
                 channels: 2,
                 sample_rate: c.sample_rate(),
@@ -171,8 +176,7 @@ fn run_audio_thread(
     // Ring buffer shared between our fill loop and the cpal callback
     // Capacity: 2 seconds of stereo f32 samples
     let capacity = stream_config.sample_rate.0 as usize * 2 * 2; // 2s × 2 channels
-    let ring: Arc<Mutex<VecDeque<f32>>> =
-        Arc::new(Mutex::new(VecDeque::with_capacity(capacity)));
+    let ring: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::with_capacity(capacity)));
     let ring_for_cb: Arc<Mutex<VecDeque<f32>>> = Arc::clone(&ring);
     let volume_for_cb = Arc::clone(&volume_bits);
 
@@ -202,7 +206,11 @@ fn run_audio_thread(
         let max_samples = stream_config.sample_rate.0 as usize / 2 * 2; // 500ms stereo
         let buf_len = buf.len();
         if buf_len > max_samples {
-            tracing::debug!(len = buf_len, max = max_samples, "ring buffer overflow — dropping");
+            tracing::debug!(
+                len = buf_len,
+                max = max_samples,
+                "ring buffer overflow — dropping"
+            );
             buf.drain(..buf_len - max_samples);
         }
         for frame in frames.iter() {

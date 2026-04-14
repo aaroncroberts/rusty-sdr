@@ -16,7 +16,10 @@
 //! It will grow as we add demodulation.
 
 use parking_lot::RwLock;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
@@ -90,9 +93,13 @@ impl SignalPath {
         audio_tx: Option<crossbeam_channel::Sender<Arc<[StereoFrame]>>>,
         recorder_tx: Option<mpsc::Sender<Arc<[StereoFrame]>>>,
         egui_ctx: Option<egui_repaint::RepaintHandle>,
+        // Optional hardware frequency atomic — if Some, SetFrequency writes here
+        // so the device thread (polling every 50ms) picks up the new value.
+        freq_atomic: Option<Arc<AtomicU64>>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<SignalPathCommand>(64);
         let shared_clone = Arc::clone(&shared);
+        let freq_atomic_clone = freq_atomic;
 
         // Read initial sample rate before moving shared into the task
         let sample_rate = shared.read().sample_rate_sps;
@@ -113,6 +120,10 @@ impl SignalPath {
                     match cmd {
                         SignalPathCommand::SetFrequency(hz) => {
                             shared_clone.write().center_freq_hz = hz;
+                            // Push new frequency to hardware (device thread polls every 50ms)
+                            if let Some(ref atomic) = freq_atomic_clone {
+                                atomic.store(hz, Ordering::Relaxed);
+                            }
                             // Reset FM demod state on retune to avoid phase transients
                             fm.reset();
                         }

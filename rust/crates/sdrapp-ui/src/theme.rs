@@ -119,10 +119,16 @@ pub const GROUP_SPACING: f32 = 8.0;
 pub const ROUNDING: Rounding = Rounding::same(4.0);
 
 /// Thin stroke for lines and separators
-pub const STROKE_THIN: Stroke = Stroke { width: 1.0, color: SEPARATOR };
+pub const STROKE_THIN: Stroke = Stroke {
+    width: 1.0,
+    color: SEPARATOR,
+};
 
 /// Accent stroke (VFO line, active selection)
-pub const STROKE_ACCENT: Stroke = Stroke { width: 1.5, color: ACCENT };
+pub const STROKE_ACCENT: Stroke = Stroke {
+    width: 1.5,
+    color: ACCENT,
+};
 
 // ── Waterfall Colormap ───────────────────────────────────────────────────────
 
@@ -138,19 +144,19 @@ pub const STROKE_ACCENT: Stroke = Stroke { width: 1.5, color: ACCENT };
 pub fn waterfall_colormap() -> [Color32; 256] {
     // Control points: (t, r, g, b) where t ∈ [0.0, 1.0]
     const STOPS: &[(f32, u8, u8, u8)] = &[
-        (0.00,   2,  2,  8),   // near-black (way below noise)
-        (0.28,   5, 10, 55),   // dark navy (deep noise)
-        (0.46,  12, 40, 145),  // dark blue (approaching noise floor)
-        (0.56,   5, 120, 195), // bright blue (noise floor)
-        (0.66,   0, 210, 180), // cyan-teal (signals emerging)
-        (0.77,  40, 215,  55), // green (strong signal)
-        (0.86, 250, 215,   0), // yellow (very strong)
-        (0.94, 255, 100,   0), // orange (near peak)
+        (0.00, 2, 2, 8),       // near-black (way below noise)
+        (0.28, 5, 10, 55),     // dark navy (deep noise)
+        (0.46, 12, 40, 145),   // dark blue (approaching noise floor)
+        (0.56, 5, 120, 195),   // bright blue (noise floor)
+        (0.66, 0, 210, 180),   // cyan-teal (signals emerging)
+        (0.77, 40, 215, 55),   // green (strong signal)
+        (0.86, 250, 215, 0),   // yellow (very strong)
+        (0.94, 255, 100, 0),   // orange (near peak)
         (1.00, 255, 255, 255), // white (full scale)
     ];
 
     let mut lut = [Color32::BLACK; 256];
-    for i in 0..256usize {
+    for (i, entry) in lut.iter_mut().enumerate() {
         let t = i as f32 / 255.0;
         // Find the two surrounding stops
         let mut lower = STOPS[0];
@@ -167,7 +173,7 @@ pub fn waterfall_colormap() -> [Color32; 256] {
         let r = lerp_u8(lower.1, upper.1, alpha);
         let g = lerp_u8(lower.2, upper.2, alpha);
         let b = lerp_u8(lower.3, upper.3, alpha);
-        lut[i] = Color32::from_rgb(r, g, b);
+        *entry = Color32::from_rgb(r, g, b);
     }
     lut
 }
@@ -265,7 +271,10 @@ mod tests {
         let g = lut[0].g();
         let b = lut[0].b();
         // First entry (noise floor) should be very dark
-        assert!(r < 30 && g < 30 && b < 50, "noise floor should be dark, got ({r},{g},{b})");
+        assert!(
+            r < 30 && g < 30 && b < 50,
+            "noise floor should be dark, got ({r},{g},{b})"
+        );
     }
 
     #[test]
@@ -273,7 +282,10 @@ mod tests {
         let lut = waterfall_colormap();
         let c = lut[255];
         // Last entry (max signal) should be bright
-        assert!(c.r() > 200 || c.g() > 200 || c.b() > 200, "peak should be bright");
+        assert!(
+            c.r() > 200 || c.g() > 200 || c.b() > 200,
+            "peak should be bright"
+        );
     }
 
     #[test]

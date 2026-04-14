@@ -13,8 +13,8 @@
 //!   │  Status bar: device info · MIDI page · buffer health · recording   │
 //!   └────────────────────────────────────────────────────────────────────┘
 
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 use egui::{Color32, RichText, Stroke, Ui, Vec2};
 
@@ -25,10 +25,7 @@ use sdrapp_core::{
 };
 
 use crate::{
-    frequency::FrequencyWidget,
-    spectrum::SpectrumWidget,
-    theme,
-    waterfall::WaterfallWidget,
+    frequency::FrequencyWidget, spectrum::SpectrumWidget, theme, waterfall::WaterfallWidget,
 };
 
 /// Band preset: name, center frequency in Hz, span in Hz.
@@ -39,13 +36,41 @@ struct BandPreset {
 }
 
 const BAND_PRESETS: &[BandPreset] = &[
-    BandPreset { name: "FM Broadcast",  center_hz: 97_500_000,  span_hz: 10_500_000 },
-    BandPreset { name: "Aviation VOR",  center_hz: 113_000_000, span_hz:  5_000_000 },
-    BandPreset { name: "Air Traffic",   center_hz: 127_500_000, span_hz:  9_500_000 },
-    BandPreset { name: "NOAA Weather",  center_hz: 162_400_000, span_hz:    500_000 },
-    BandPreset { name: "AIS Marine",    center_hz: 161_975_000, span_hz:    500_000 },
-    BandPreset { name: "Ham 2m",        center_hz: 146_000_000, span_hz:  4_000_000 },
-    BandPreset { name: "ISM 433 MHz",   center_hz: 433_920_000, span_hz:  2_000_000 },
+    BandPreset {
+        name: "FM Broadcast",
+        center_hz: 97_500_000,
+        span_hz: 10_500_000,
+    },
+    BandPreset {
+        name: "Aviation VOR",
+        center_hz: 113_000_000,
+        span_hz: 5_000_000,
+    },
+    BandPreset {
+        name: "Air Traffic",
+        center_hz: 127_500_000,
+        span_hz: 9_500_000,
+    },
+    BandPreset {
+        name: "NOAA Weather",
+        center_hz: 162_400_000,
+        span_hz: 500_000,
+    },
+    BandPreset {
+        name: "AIS Marine",
+        center_hz: 161_975_000,
+        span_hz: 500_000,
+    },
+    BandPreset {
+        name: "Ham 2m",
+        center_hz: 146_000_000,
+        span_hz: 4_000_000,
+    },
+    BandPreset {
+        name: "ISM 433 MHz",
+        center_hz: 433_920_000,
+        span_hz: 2_000_000,
+    },
 ];
 
 pub struct SdrApp {
@@ -132,10 +157,12 @@ impl SdrApp {
             .fill(theme::WIDGET_BG)
             .stroke(Stroke::new(1.0, btn_color));
 
-        if ui.add_sized(Vec2::new(ui.available_width(), 28.0), btn).clicked() {
-            if is_running {
-                let _ = self.cmd_tx.try_send(SignalPathCommand::Stop);
-            }
+        if ui
+            .add_sized(Vec2::new(ui.available_width(), 28.0), btn)
+            .clicked()
+            && is_running
+        {
+            let _ = self.cmd_tx.try_send(SignalPathCommand::Stop);
             // Start is handled by main.rs wiring the signal path; button is a placeholder
         }
 
@@ -159,7 +186,11 @@ impl SdrApp {
         ui.add_space(6.0);
 
         // ── Device settings ────────────────────────────────────────────────────
-        ui.label(RichText::new("DEVICE SETTINGS").color(theme::TEXT_MUTED).small());
+        ui.label(
+            RichText::new("DEVICE SETTINGS")
+                .color(theme::TEXT_MUTED)
+                .small(),
+        );
         ui.add_space(4.0);
 
         // Antenna selector
@@ -169,7 +200,11 @@ impl SdrApp {
                 for port in ["A", "B", "C"] {
                     let selected = self.config.source.antenna == port;
                     let label = RichText::new(port).small();
-                    let label = if selected { label.color(theme::ACCENT).strong() } else { label.color(theme::TEXT_MUTED) };
+                    let label = if selected {
+                        label.color(theme::ACCENT).strong()
+                    } else {
+                        label.color(theme::TEXT_MUTED)
+                    };
                     if ui.selectable_label(selected, label).clicked() && !selected {
                         self.config.source.antenna = port.into();
                         self.config_dirty = true;
@@ -191,7 +226,8 @@ impl SdrApp {
                     (8_000_000, "8M"),
                     (10_000_000, "10M"),
                 ];
-                let current = rates.iter()
+                let current = rates
+                    .iter()
                     .find(|&&(r, _)| r == self.config.source.sample_rate_sps)
                     .map(|&(_, label)| label)
                     .unwrap_or("?");
@@ -233,7 +269,10 @@ impl SdrApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("LNA").color(theme::TEXT_MUTED).small());
                 let mut lna = self.config.source.lna_state as i32;
-                if ui.add(egui::Slider::new(&mut lna, 0..=9).show_value(true)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut lna, 0..=9).show_value(true))
+                    .changed()
+                {
                     self.config.source.lna_state = lna as u8;
                     self.config_dirty = true;
                 }
@@ -248,11 +287,16 @@ impl SdrApp {
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let status_dot_color = if is_running { theme::STATUS_OK } else { theme::TEXT_DISABLED };
+            let status_dot_color = if is_running {
+                theme::STATUS_OK
+            } else {
+                theme::TEXT_DISABLED
+            };
             ui.label(RichText::new("●").color(status_dot_color));
-            ui.label(RichText::new(
-                if is_running { "Running" } else { "Stopped" }
-            ).color(theme::TEXT_PRIMARY));
+            ui.label(
+                RichText::new(if is_running { "Running" } else { "Stopped" })
+                    .color(theme::TEXT_PRIMARY),
+            );
         });
 
         if center_freq > 0 {
@@ -318,12 +362,14 @@ impl SdrApp {
         // Click-to-tune: map click X to frequency
         if let Some(click_pos) = spectrum_resp.interact_pointer_pos() {
             if spectrum_resp.clicked() {
-                let t = ((click_pos.x - spectrum_rect.left()) / spectrum_rect.width())
-                    .clamp(0.0, 1.0);
+                let t =
+                    ((click_pos.x - spectrum_rect.left()) / spectrum_rect.width()).clamp(0.0, 1.0);
                 let low = freq.saturating_sub(span) as f64;
                 let high = freq as f64 + span as f64;
                 let new_freq = (low + t as f64 * (high - low)).round() as u64;
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                let _ = self
+                    .cmd_tx
+                    .try_send(SignalPathCommand::SetFrequency(new_freq));
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
@@ -333,16 +379,18 @@ impl SdrApp {
         // Scroll-to-zoom span on spectrum
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
         if spectrum_resp.hovered() && scroll_delta.abs() > 0.5 {
-            let factor = if scroll_delta > 0.0 { 0.8_f64 } else { 1.25_f64 };
+            let factor = if scroll_delta > 0.0 {
+                0.8_f64
+            } else {
+                1.25_f64
+            };
             let new_span = ((span as f64 * factor) as u64).clamp(50_000, 20_000_000);
             self.config.ui.span_hz = new_span;
             self.config_dirty = true;
         }
 
         let ctx = ui.ctx().clone();
-        let mut spectrum_ui = ui.new_child(
-            egui::UiBuilder::new().max_rect(spectrum_rect)
-        );
+        let mut spectrum_ui = ui.new_child(egui::UiBuilder::new().max_rect(spectrum_rect));
         let peak_ref: Option<&[f32]> = if self.peak_hold.len() == fft_data.len() {
             Some(&self.peak_hold)
         } else {
@@ -354,15 +402,23 @@ impl SdrApp {
             freq_range: (freq.saturating_sub(span), freq + span),
             vfo_hz: freq,
             peak_hold: peak_ref,
-        }.show(&mut spectrum_ui);
+        }
+        .show(&mut spectrum_ui);
 
         // ── dBFS range control ────────────────────────────────────────────────
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("dBFS range:").color(theme::TEXT_MUTED).small());
+            ui.label(
+                RichText::new("dBFS range:")
+                    .color(theme::TEXT_MUTED)
+                    .small(),
+            );
             ui.label(RichText::new("-120  →  0").color(theme::TEXT_MUTED).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button(RichText::new("↕ Auto").color(theme::TEXT_MUTED)).clicked() {
+                if ui
+                    .small_button(RichText::new("↕ Auto").color(theme::TEXT_MUTED))
+                    .clicked()
+                {
                     // Future: auto-range
                 }
             });
@@ -401,18 +457,27 @@ impl SdrApp {
         ui.add_space(6.0);
 
         // ── Band Presets ──────────────────────────────────────────────────────
-        ui.label(RichText::new("BAND PRESETS").color(theme::TEXT_MUTED).small());
+        ui.label(
+            RichText::new("BAND PRESETS")
+                .color(theme::TEXT_MUTED)
+                .small(),
+        );
         ui.add_space(4.0);
 
         let mut tuned: Option<(u64, u64)> = None;
         for preset in BAND_PRESETS {
             let btn = egui::Button::new(
-                RichText::new(preset.name).color(theme::TEXT_PRIMARY).small(),
+                RichText::new(preset.name)
+                    .color(theme::TEXT_PRIMARY)
+                    .small(),
             )
             .fill(theme::WIDGET_BG)
             .stroke(Stroke::new(1.0, theme::BORDER));
 
-            if ui.add_sized(Vec2::new(ui.available_width(), 20.0), btn).clicked() {
+            if ui
+                .add_sized(Vec2::new(ui.available_width(), 20.0), btn)
+                .clicked()
+            {
                 tuned = Some((preset.center_hz, preset.span_hz));
             }
         }
@@ -438,12 +503,17 @@ impl SdrApp {
         if is_recording {
             // Stop button
             let stop_btn = egui::Button::new(
-                RichText::new("■  Stop Recording").color(theme::DANGER).strong(),
+                RichText::new("■  Stop Recording")
+                    .color(theme::DANGER)
+                    .strong(),
             )
             .fill(Color32::from_rgba_premultiplied(80, 10, 10, 200))
             .stroke(Stroke::new(1.5, theme::DANGER));
 
-            if ui.add_sized(Vec2::new(ui.available_width(), 28.0), stop_btn).clicked() {
+            if ui
+                .add_sized(Vec2::new(ui.available_width(), 28.0), stop_btn)
+                .clicked()
+            {
                 let _ = self.cmd_tx.try_send(SignalPathCommand::StopRecording);
             }
 
@@ -454,13 +524,15 @@ impl SdrApp {
                 ui.label(RichText::new("REC").color(theme::AMBER).strong());
             });
         } else {
-            let rec_btn = egui::Button::new(
-                RichText::new("●  Start Recording").color(theme::STATUS_OK),
-            )
-            .fill(theme::WIDGET_BG)
-            .stroke(Stroke::new(1.0, theme::STATUS_OK));
+            let rec_btn =
+                egui::Button::new(RichText::new("●  Start Recording").color(theme::STATUS_OK))
+                    .fill(theme::WIDGET_BG)
+                    .stroke(Stroke::new(1.0, theme::STATUS_OK));
 
-            if ui.add_sized(Vec2::new(ui.available_width(), 28.0), rec_btn).clicked() {
+            if ui
+                .add_sized(Vec2::new(ui.available_width(), 28.0), rec_btn)
+                .clicked()
+            {
                 let _ = self.cmd_tx.try_send(SignalPathCommand::StartRecording);
             }
         }
@@ -482,7 +554,11 @@ impl SdrApp {
             // Connected
             ui.horizontal(|ui| {
                 ui.label(RichText::new("●").color(theme::STATUS_OK));
-                ui.label(RichText::new(device_name).color(theme::TEXT_PRIMARY).small());
+                ui.label(
+                    RichText::new(device_name)
+                        .color(theme::TEXT_PRIMARY)
+                        .small(),
+                );
             });
 
             // Page display with navigation buttons
@@ -503,7 +579,11 @@ impl SdrApp {
         } else {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("●").color(theme::TEXT_DISABLED));
-                ui.label(RichText::new("Not connected").color(theme::TEXT_MUTED).small());
+                ui.label(
+                    RichText::new("Not connected")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
             });
             ui.label(
                 RichText::new("Connect nanoKontrol2 via USB")
@@ -521,10 +601,8 @@ impl SdrApp {
 
         ui.horizontal(|ui| {
             for &level in &[left, right] {
-                let (rect, _) = ui.allocate_exact_size(
-                    Vec2::new(bar_w, bar_h),
-                    egui::Sense::hover(),
-                );
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(bar_w, bar_h), egui::Sense::hover());
 
                 let painter = ui.painter();
                 // Background track
@@ -555,14 +633,24 @@ impl SdrApp {
     fn status_bar(&self, ui: &mut Ui) {
         let (is_running, is_recording, center_freq, sample_rate, midi_device, midi_page, buf_fill) = {
             let s = self.shared.read();
-            (s.is_running, s.is_recording, s.center_freq_hz,
-             s.sample_rate_sps, s.midi_device.clone(), s.midi_page, s.audio_buffer_fill)
+            (
+                s.is_running,
+                s.is_recording,
+                s.center_freq_hz,
+                s.sample_rate_sps,
+                s.midi_device.clone(),
+                s.midi_page,
+                s.audio_buffer_fill,
+            )
         };
 
         ui.horizontal(|ui| {
             // Left: device + sample rate + frequency
-            let device_label = self.registry.sources.first()
-                .map(|s| s.display_name.as_ref())
+            let device_label = self
+                .registry
+                .sources
+                .first()
+                .map(|s| s.display_name)
                 .unwrap_or("No device");
 
             let rate_label = if sample_rate >= 1_000_000 {
@@ -575,9 +663,11 @@ impl SdrApp {
 
             let freq_label = format_frequency(center_freq);
             ui.label(
-                RichText::new(format!("◈  {device_label}  ·  {rate_label}  ·  {freq_label}"))
-                    .color(theme::TEXT_MUTED)
-                    .small(),
+                RichText::new(format!(
+                    "◈  {device_label}  ·  {rate_label}  ·  {freq_label}"
+                ))
+                .color(theme::TEXT_MUTED)
+                .small(),
             );
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -593,7 +683,11 @@ impl SdrApp {
                 } else {
                     theme::STATUS_OK
                 };
-                ui.label(RichText::new(format!("BUF {:.0}%", buf_fill * 100.0)).color(buf_color).small());
+                ui.label(
+                    RichText::new(format!("BUF {:.0}%", buf_fill * 100.0))
+                        .color(buf_color)
+                        .small(),
+                );
                 ui.add_space(8.0);
 
                 // MIDI status
@@ -613,7 +707,11 @@ impl SdrApp {
 
                 // Running indicator
                 let dot = if is_running { "●" } else { "○" };
-                let color = if is_running { theme::STATUS_OK } else { theme::TEXT_DISABLED };
+                let color = if is_running {
+                    theme::STATUS_OK
+                } else {
+                    theme::TEXT_DISABLED
+                };
                 ui.label(RichText::new(dot).color(color).small());
             });
         });
@@ -632,7 +730,11 @@ impl eframe::App for SdrApp {
         // Status bar at the bottom
         egui::TopBottomPanel::bottom("status_bar")
             .exact_height(20.0)
-            .frame(egui::Frame::none().fill(theme::BG).inner_margin(egui::Margin::symmetric(8.0, 0.0)))
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin::symmetric(8.0, 0.0)),
+            )
             .show(ctx, |ui| self.status_bar(ui));
 
         // Left panel

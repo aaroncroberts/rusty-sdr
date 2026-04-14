@@ -31,14 +31,28 @@ impl WaterfallWidget {
     pub fn new(width: usize, db_range: (f32, f32)) -> Self {
         let pixels = vec![0u8; width * WATERFALL_HEIGHT * 4];
         let colormap = build_simple_colormap();
-        Self { pixels, width, height: WATERFALL_HEIGHT, texture: None, db_range, colormap }
+        Self {
+            pixels,
+            width,
+            height: WATERFALL_HEIGHT,
+            texture: None,
+            db_range,
+            colormap,
+        }
     }
 
     /// Create with the theme's viridis-inspired colormap.
     pub fn new_with_colormap(width: usize, db_range: (f32, f32)) -> Self {
         let pixels = vec![0u8; width * WATERFALL_HEIGHT * 4];
         let colormap = theme::waterfall_colormap();
-        Self { pixels, width, height: WATERFALL_HEIGHT, texture: None, db_range, colormap }
+        Self {
+            pixels,
+            width,
+            height: WATERFALL_HEIGHT,
+            texture: None,
+            db_range,
+            colormap,
+        }
     }
 
     /// Push a new FFT row at the top, shifting all existing rows down.
@@ -63,7 +77,7 @@ impl WaterfallWidget {
             let idx = (t * 255.0) as usize;
             let c = self.colormap[idx];
             let offset = x * 4;
-            self.pixels[offset]     = c.r();
+            self.pixels[offset] = c.r();
             self.pixels[offset + 1] = c.g();
             self.pixels[offset + 2] = c.b();
             self.pixels[offset + 3] = 255;
@@ -75,10 +89,7 @@ impl WaterfallWidget {
     /// The texture contains `WATERFALL_HEIGHT` rows of history; the display rect
     /// is stretched to fill all remaining vertical space so there is no dead zone.
     pub fn show(&mut self, ui: &mut Ui, ctx: &egui::Context) -> egui::Response {
-        let image = ColorImage::from_rgba_unmultiplied(
-            [self.width, self.height],
-            &self.pixels,
-        );
+        let image = ColorImage::from_rgba_unmultiplied([self.width, self.height], &self.pixels);
 
         let texture = self.texture.get_or_insert_with(|| {
             ctx.load_texture("waterfall", image.clone(), TextureOptions::LINEAR)
@@ -107,7 +118,7 @@ impl WaterfallWidget {
 /// Simple gradient for backwards compatibility in tests.
 fn build_simple_colormap() -> [Color32; 256] {
     let mut lut = [Color32::BLACK; 256];
-    for i in 0..256usize {
+    for (i, entry) in lut.iter_mut().enumerate() {
         let t = i as f32 / 255.0;
         let (r, g, b) = if t < 0.33 {
             let s = t / 0.33;
@@ -119,7 +130,7 @@ fn build_simple_colormap() -> [Color32; 256] {
             let s = (t - 0.66) / 0.34;
             (255_u8, (180.0 + s * 75.0) as u8, (s * 255.0) as u8)
         };
-        lut[i] = Color32::from_rgb(r, g, b);
+        *entry = Color32::from_rgb(r, g, b);
     }
     lut
 }
@@ -142,7 +153,10 @@ mod tests {
         // We can't compare exact colors without knowing the LUT, so verify they differ
         let r0 = &wf.pixels[0..4];
         let r1 = &wf.pixels[wf.width * 4..wf.width * 4 + 4];
-        assert_ne!(r0, r1, "rows should differ after pushing different dBFS levels");
+        assert_ne!(
+            r0, r1,
+            "rows should differ after pushing different dBFS levels"
+        );
     }
 
     #[test]
@@ -158,14 +172,26 @@ mod tests {
         wf2.push_row(&vec![-120.0; 8]);
         let dark: u32 = wf2.pixels[0..3].iter().map(|&v| v as u32).sum();
 
-        assert!(bright > dark, "0 dBFS should be brighter than -120 dBFS: {bright} vs {dark}");
+        assert!(
+            bright > dark,
+            "0 dBFS should be brighter than -120 dBFS: {bright} vs {dark}"
+        );
     }
 
     #[test]
     fn viridis_colormap_extremes() {
         let lut = theme::waterfall_colormap();
-        let dark_sum: u32 = [lut[0].r(), lut[0].g(), lut[0].b()].iter().map(|&v| v as u32).sum();
-        let bright_sum: u32 = [lut[255].r(), lut[255].g(), lut[255].b()].iter().map(|&v| v as u32).sum();
-        assert!(bright_sum > dark_sum, "viridis max should be brighter than min");
+        let dark_sum: u32 = [lut[0].r(), lut[0].g(), lut[0].b()]
+            .iter()
+            .map(|&v| v as u32)
+            .sum();
+        let bright_sum: u32 = [lut[255].r(), lut[255].g(), lut[255].b()]
+            .iter()
+            .map(|&v| v as u32)
+            .sum();
+        assert!(
+            bright_sum > dark_sum,
+            "viridis max should be brighter than min"
+        );
     }
 }

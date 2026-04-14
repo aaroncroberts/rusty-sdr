@@ -17,7 +17,10 @@ pub struct Packer<T: Clone> {
 impl<T: Clone> Packer<T> {
     pub fn new(frame_size: usize) -> Self {
         assert!(frame_size > 0, "frame_size must be > 0");
-        Self { buffer: Vec::with_capacity(frame_size * 2), frame_size }
+        Self {
+            buffer: Vec::with_capacity(frame_size * 2),
+            frame_size,
+        }
     }
 
     /// Push samples in. Returns any complete frames that have accumulated.

@@ -34,7 +34,13 @@ impl Recorder {
     pub fn new(config: RecorderConfig) -> Self {
         let (audio_tx, audio_rx) = mpsc::channel(64);
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
-        Self { config, audio_rx: Some(audio_rx), audio_tx, cmd_rx: Some(cmd_rx), cmd_tx }
+        Self {
+            config,
+            audio_rx: Some(audio_rx),
+            audio_tx,
+            cmd_rx: Some(cmd_rx),
+            cmd_tx,
+        }
     }
 
     pub fn start(&mut self) -> JoinHandle<()> {

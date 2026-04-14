@@ -16,7 +16,10 @@ impl StereoFrame {
     }
 
     pub fn mono(sample: f32) -> Self {
-        Self { left: sample, right: sample }
+        Self {
+            left: sample,
+            right: sample,
+        }
     }
 
     /// Mix to mono: (L + R) / 2

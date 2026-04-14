@@ -10,8 +10,8 @@
 //! - VFO marker line with frequency label
 //! - Peak-hold overlay: bright white line showing recent maximum per bin
 
-use egui::{Color32, Painter, Pos2, Rect, Response, Sense, Stroke, Ui};
 use egui::epaint::{Mesh, Vertex};
+use egui::{Color32, Painter, Pos2, Rect, Response, Sense, Stroke, Ui};
 
 use crate::theme;
 
@@ -70,7 +70,10 @@ impl<'a> SpectrumWidget<'a> {
 
             // Grid line
             painter.line_segment(
-                [Pos2::new(plot_rect.left(), y), Pos2::new(plot_rect.right(), y)],
+                [
+                    Pos2::new(plot_rect.left(), y),
+                    Pos2::new(plot_rect.right(), y),
+                ],
                 Stroke::new(1.0, theme::SPECTRUM_GRID),
             );
 
@@ -109,7 +112,11 @@ impl<'a> SpectrumWidget<'a> {
 
                 let mut mesh = Mesh::default();
                 for (i, &pt) in trace_pts.iter().enumerate() {
-                    mesh.vertices.push(Vertex { pos: pt, uv: WHITE_UV, color: fill_top });
+                    mesh.vertices.push(Vertex {
+                        pos: pt,
+                        uv: WHITE_UV,
+                        color: fill_top,
+                    });
                     mesh.vertices.push(Vertex {
                         pos: Pos2::new(pt.x, bottom_y),
                         uv: WHITE_UV,
@@ -119,7 +126,8 @@ impl<'a> SpectrumWidget<'a> {
                         let b = (i as u32) * 2;
                         // Triangle 1: prev_top, prev_bot, cur_top
                         // Triangle 2: prev_bot, cur_bot, cur_top
-                        mesh.indices.extend_from_slice(&[b-2, b-1, b, b-1, b+1, b]);
+                        mesh.indices
+                            .extend_from_slice(&[b - 2, b - 1, b, b - 1, b + 1, b]);
                     }
                 }
                 painter.add(egui::Shape::Mesh(mesh));
@@ -128,10 +136,10 @@ impl<'a> SpectrumWidget<'a> {
             // ── Neon glow trace ───────────────────────────────────────────────
             // Widest/dimmest layer first so narrow/bright layers paint on top.
             let glow_layers: &[(f32, u8)] = &[
-                (6.0, 5),    // wide halo
-                (3.0, 18),   // inner glow
-                (1.8, 65),   // bright edge
-                (1.0, 210),  // sharp trace
+                (6.0, 5),   // wide halo
+                (3.0, 18),  // inner glow
+                (1.8, 65),  // bright edge
+                (1.0, 210), // sharp trace
             ];
             for &(width, alpha) in glow_layers {
                 painter.add(egui::Shape::line(
@@ -143,10 +151,15 @@ impl<'a> SpectrumWidget<'a> {
             // ── Peak-hold line ────────────────────────────────────────────────
             if let Some(peak) = self.peak_hold {
                 if peak.len() == n {
-                    let peak_pts: Vec<Pos2> = peak.iter().enumerate().map(|(i, &db)| {
-                        let x = plot_rect.left() + (i as f32 / (n - 1) as f32) * plot_rect.width();
-                        Pos2::new(x, db_to_y(db, db_min, db_max, plot_rect))
-                    }).collect();
+                    let peak_pts: Vec<Pos2> = peak
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &db)| {
+                            let x =
+                                plot_rect.left() + (i as f32 / (n - 1) as f32) * plot_rect.width();
+                            Pos2::new(x, db_to_y(db, db_min, db_max, plot_rect))
+                        })
+                        .collect();
                     painter.add(egui::Shape::line(
                         peak_pts,
                         Stroke::new(1.0, Color32::from_rgba_premultiplied(200, 255, 230, 80)),
@@ -171,7 +184,10 @@ impl<'a> SpectrumWidget<'a> {
             );
 
             painter.line_segment(
-                [Pos2::new(vfo_x, plot_rect.top()), Pos2::new(vfo_x, plot_rect.bottom())],
+                [
+                    Pos2::new(vfo_x, plot_rect.top()),
+                    Pos2::new(vfo_x, plot_rect.bottom()),
+                ],
                 Stroke::new(1.0, theme::VFO_LINE),
             );
 
@@ -246,19 +262,32 @@ mod tests {
     fn db_to_y_clamps_correctly() {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0));
         let y_top = db_to_y(0.0, -120.0, 0.0, rect);
-        assert!((y_top - 0.0).abs() < 1.0, "0 dBFS should map to top: {y_top}");
+        assert!(
+            (y_top - 0.0).abs() < 1.0,
+            "0 dBFS should map to top: {y_top}"
+        );
 
         let y_bot = db_to_y(-120.0, -120.0, 0.0, rect);
-        assert!((y_bot - 100.0).abs() < 1.0, "-120 dBFS should map to bottom: {y_bot}");
+        assert!(
+            (y_bot - 100.0).abs() < 1.0,
+            "-120 dBFS should map to bottom: {y_bot}"
+        );
 
         let y_over = db_to_y(10.0, -120.0, 0.0, rect);
-        assert!((y_over - 0.0).abs() < 1.0, "above 0 dBFS clamped to top: {y_over}");
+        assert!(
+            (y_over - 0.0).abs() < 1.0,
+            "above 0 dBFS clamped to top: {y_over}"
+        );
     }
 
     #[test]
     fn spectrum_widget_renders_without_panic() {
-        let data: Vec<f32> = (0..2048).map(|i| -60.0 + (i as f32 * 0.01).sin() * 20.0).collect();
-        let peak: Vec<f32> = (0..2048).map(|i| -50.0 + (i as f32 * 0.01).sin() * 15.0).collect();
+        let data: Vec<f32> = (0..2048)
+            .map(|i| -60.0 + (i as f32 * 0.01).sin() * 20.0)
+            .collect();
+        let peak: Vec<f32> = (0..2048)
+            .map(|i| -50.0 + (i as f32 * 0.01).sin() * 15.0)
+            .collect();
         let ctx = egui::Context::default();
         ctx.run(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {

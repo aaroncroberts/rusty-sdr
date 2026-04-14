@@ -5,8 +5,8 @@
 //! Location: `~/Library/Application Support/sdrapp/config.json` (macOS)
 //!           `~/.config/sdrapp/config.json` (Linux/other)
 
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::registry::{ActiveSink, ActiveSource};
 

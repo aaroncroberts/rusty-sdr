@@ -95,6 +95,7 @@ fn main() -> anyhow::Result<()> {
         Some(audio_tx),
         Some(recorder_audio_tx),
         None, // RepaintHandle: egui context not available yet; UI polls SharedState
+        Some(source.frequency_atomic()),
     );
 
     // ── MIDI controller ───────────────────────────────────────────────────────
