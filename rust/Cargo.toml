@@ -85,6 +85,7 @@ eframe = { workspace = true }
 egui = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-channel = { workspace = true }
+dirs = { workspace = true }
 sdrapp-core = { path = "crates/sdrapp-core" }
 sdrapp-sdrplay = { path = "crates/sdrapp-sdrplay" }
 sdrapp-audio = { path = "crates/sdrapp-audio" }

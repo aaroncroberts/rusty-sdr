@@ -10,5 +10,5 @@
 mod config;
 mod device;
 
-pub use config::RspdxConfig;
+pub use config::{Antenna, IfMode, RspdxConfig};
 pub use device::RspdxSource;
