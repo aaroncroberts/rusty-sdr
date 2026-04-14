@@ -1,0 +1,1 @@
+{"rustc":18415816196306954164,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[9420140625618159398,"build_script_build",false,7157276437845873275]],"local":[{"RerunIfChanged":{"output":"debug/build/sdrapp-sdrplay-sys-f7948b19d757be0b/output","paths":["/usr/local/include/sdrplay_api.h"]}}],"rustflags":[],"config":0,"compile_kind":0}

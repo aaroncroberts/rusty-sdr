@@ -1,0 +1,16 @@
+[package]
+name = "sdrapp-audio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sdrapp-core = { path = "../sdrapp-core" }
+cpal = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

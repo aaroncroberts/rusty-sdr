@@ -1,0 +1,15 @@
+[package]
+name = "sdrapp-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sdrapp-core = { path = "../sdrapp-core" }
+egui = { workspace = true }
+eframe = { workspace = true }
+egui_plot = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
