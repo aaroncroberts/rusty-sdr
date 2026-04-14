@@ -126,20 +126,27 @@ pub const STROKE_ACCENT: Stroke = Stroke { width: 1.5, color: ACCENT };
 
 // ── Waterfall Colormap ───────────────────────────────────────────────────────
 
-/// Generate the 256-entry viridis-inspired colormap.
+/// Generate the 256-entry SDR thermal colormap.
 ///
-/// Maps dBFS [0.0=noise floor, 1.0=full scale] → RGB.
-/// Color stops: deep navy → purple → teal → green → yellow → white.
+/// Maps normalised power [0.0=noise floor, 1.0=full scale] → RGB.
+/// Designed for real-world SDR signals where noise floor sits around t≈0.4–0.5
+/// on a -120..0 dBFS scale (i.e. -60 to -48 dBFS).  The rapid colour
+/// transitions at t=0.55–0.85 highlight signals just above the noise.
+///
+/// Color sequence: near-black → dark navy → dark blue → bright blue →
+///   cyan-teal → green → yellow → orange → white.
 pub fn waterfall_colormap() -> [Color32; 256] {
-    // Control points: (t, r, g, b) where t in [0.0, 1.0]
+    // Control points: (t, r, g, b) where t ∈ [0.0, 1.0]
     const STOPS: &[(f32, u8, u8, u8)] = &[
-        (0.00,  8,  8, 30),  // deep navy
-        (0.15, 50, 20, 90),  // purple-indigo
-        (0.35, 20, 120, 140), // teal
-        (0.55, 30, 180, 100), // green
-        (0.75, 200, 200, 30), // yellow-green
-        (0.90, 240, 160, 20), // amber
-        (1.00, 255, 255, 220), // near-white
+        (0.00,   2,  2,  8),   // near-black (way below noise)
+        (0.28,   5, 10, 55),   // dark navy (deep noise)
+        (0.46,  12, 40, 145),  // dark blue (approaching noise floor)
+        (0.56,   5, 120, 195), // bright blue (noise floor)
+        (0.66,   0, 210, 180), // cyan-teal (signals emerging)
+        (0.77,  40, 215,  55), // green (strong signal)
+        (0.86, 250, 215,   0), // yellow (very strong)
+        (0.94, 255, 100,   0), // orange (near peak)
+        (1.00, 255, 255, 255), // white (full scale)
     ];
 
     let mut lut = [Color32::BLACK; 256];

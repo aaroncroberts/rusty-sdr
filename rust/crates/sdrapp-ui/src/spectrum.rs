@@ -3,15 +3,21 @@
 //! Spectrum display widget.
 //!
 //! Features:
-//! - Filled trace in accent color with anti-aliased polygon
+//! - Gradient-fill trace: bright at signal level, fading to dark at bottom (epaint::Mesh)
+//! - Neon glow trace: 4 stacked line passes with decreasing width and increasing opacity
 //! - Frequency axis (X) with labeled tick marks in MHz/kHz
 //! - dBFS axis (Y) with horizontal gridlines at -20, -40, -60, -80, -100 dBFS
 //! - VFO marker line with frequency label
-//! - Click-to-tune is handled by the caller (we expose the rect via Response)
+//! - Peak-hold overlay: bright white line showing recent maximum per bin
 
-use egui::{Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
+use egui::{Color32, Painter, Pos2, Rect, Response, Sense, Stroke, Ui};
+use egui::epaint::{Mesh, Vertex};
 
 use crate::theme;
+
+/// UV coordinate that samples the white texel from egui's font atlas.
+/// Used for plain colored geometry rendered via Mesh.
+const WHITE_UV: egui::Pos2 = egui::pos2(1.0, 1.0);
 
 /// Spectrum display widget. Call `.show()` to render.
 pub struct SpectrumWidget<'a> {
@@ -23,6 +29,8 @@ pub struct SpectrumWidget<'a> {
     pub freq_range: (u64, u64),
     /// VFO center frequency in Hz (for the center marker line).
     pub vfo_hz: u64,
+    /// Optional peak-hold buffer (same length as fft_data).
+    pub peak_hold: Option<&'a [f32]>,
 }
 
 impl<'a> SpectrumWidget<'a> {
@@ -82,30 +90,69 @@ impl<'a> SpectrumWidget<'a> {
         // ── Spectrum trace ────────────────────────────────────────────────────
         let n = self.fft_data.len();
         if n > 1 {
-            let mut points: Vec<Pos2> = Vec::with_capacity(n + 2);
-
+            // Build the trace points (pixel coordinates)
+            let mut trace_pts: Vec<Pos2> = Vec::with_capacity(n);
             for (i, &db) in self.fft_data.iter().enumerate() {
                 let x = plot_rect.left() + (i as f32 / (n - 1) as f32) * plot_rect.width();
                 let y = db_to_y(db, db_min, db_max, plot_rect);
-                points.push(Pos2::new(x, y));
+                trace_pts.push(Pos2::new(x, y));
             }
 
-            // Close the polygon at the bottom to fill underneath
-            let mut fill_polygon = points.clone();
-            fill_polygon.push(Pos2::new(plot_rect.right(), plot_rect.bottom()));
-            fill_polygon.push(Pos2::new(plot_rect.left(), plot_rect.bottom()));
+            // ── Gradient fill mesh ────────────────────────────────────────────
+            // Top vertex at the signal level: bright teal, semi-transparent.
+            // Bottom vertex: near-black, fully transparent.
+            // Quads rendered as 2 triangles each.
+            {
+                let bottom_y = plot_rect.bottom();
+                let fill_top = Color32::from_rgba_premultiplied(15, 160, 120, 100);
+                let fill_bot = Color32::from_rgba_premultiplied(0, 0, 0, 0);
 
-            painter.add(egui::Shape::convex_polygon(
-                fill_polygon,
-                theme::SPECTRUM_FILL,
-                Stroke::NONE,
-            ));
+                let mut mesh = Mesh::default();
+                for (i, &pt) in trace_pts.iter().enumerate() {
+                    mesh.vertices.push(Vertex { pos: pt, uv: WHITE_UV, color: fill_top });
+                    mesh.vertices.push(Vertex {
+                        pos: Pos2::new(pt.x, bottom_y),
+                        uv: WHITE_UV,
+                        color: fill_bot,
+                    });
+                    if i > 0 {
+                        let b = (i as u32) * 2;
+                        // Triangle 1: prev_top, prev_bot, cur_top
+                        // Triangle 2: prev_bot, cur_bot, cur_top
+                        mesh.indices.extend_from_slice(&[b-2, b-1, b, b-1, b+1, b]);
+                    }
+                }
+                painter.add(egui::Shape::Mesh(mesh));
+            }
 
-            // Trace line on top
-            painter.add(egui::Shape::line(
-                points,
-                Stroke::new(1.5, theme::SPECTRUM_TRACE),
-            ));
+            // ── Neon glow trace ───────────────────────────────────────────────
+            // Widest/dimmest layer first so narrow/bright layers paint on top.
+            let glow_layers: &[(f32, u8)] = &[
+                (6.0, 5),    // wide halo
+                (3.0, 18),   // inner glow
+                (1.8, 65),   // bright edge
+                (1.0, 210),  // sharp trace
+            ];
+            for &(width, alpha) in glow_layers {
+                painter.add(egui::Shape::line(
+                    trace_pts.clone(),
+                    Stroke::new(width, Color32::from_rgba_premultiplied(30, 215, 170, alpha)),
+                ));
+            }
+
+            // ── Peak-hold line ────────────────────────────────────────────────
+            if let Some(peak) = self.peak_hold {
+                if peak.len() == n {
+                    let peak_pts: Vec<Pos2> = peak.iter().enumerate().map(|(i, &db)| {
+                        let x = plot_rect.left() + (i as f32 / (n - 1) as f32) * plot_rect.width();
+                        Pos2::new(x, db_to_y(db, db_min, db_max, plot_rect))
+                    }).collect();
+                    painter.add(egui::Shape::line(
+                        peak_pts,
+                        Stroke::new(1.0, Color32::from_rgba_premultiplied(200, 255, 230, 80)),
+                    ));
+                }
+            }
         }
 
         // ── VFO line ─────────────────────────────────────────────────────────
@@ -113,15 +160,25 @@ impl<'a> SpectrumWidget<'a> {
             let vfo_t = ((self.vfo_hz as f64 - freq_lo) / (freq_hi - freq_lo)) as f32;
             let vfo_x = plot_rect.left() + vfo_t.clamp(0.0, 1.0) * plot_rect.width();
 
-            painter.line_segment(
-                [Pos2::new(vfo_x, plot_rect.top()), Pos2::new(vfo_x, plot_rect.bottom())],
-                Stroke::new(1.5, theme::VFO_LINE),
+            // Faint highlight column
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(vfo_x - 0.5, plot_rect.top()),
+                    Pos2::new(vfo_x + 0.5, plot_rect.bottom()),
+                ),
+                0.0,
+                Color32::from_rgba_premultiplied(0, 210, 255, 40),
             );
 
-            // VFO frequency label above the line
+            painter.line_segment(
+                [Pos2::new(vfo_x, plot_rect.top()), Pos2::new(vfo_x, plot_rect.bottom())],
+                Stroke::new(1.0, theme::VFO_LINE),
+            );
+
+            // VFO frequency label
             let vfo_label = format_freq_short(self.vfo_hz);
             painter.text(
-                Pos2::new(vfo_x + 3.0, plot_rect.top() + 3.0),
+                Pos2::new(vfo_x + 4.0, plot_rect.top() + 3.0),
                 egui::Align2::LEFT_TOP,
                 vfo_label,
                 egui::FontId::proportional(9.0),
@@ -183,19 +240,17 @@ fn format_freq_short(hz: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Vec2;
 
     #[test]
     fn db_to_y_clamps_correctly() {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0));
-        // Max dBFS → top of rect (y = 0)
         let y_top = db_to_y(0.0, -120.0, 0.0, rect);
         assert!((y_top - 0.0).abs() < 1.0, "0 dBFS should map to top: {y_top}");
 
-        // Min dBFS → bottom (y = 100)
         let y_bot = db_to_y(-120.0, -120.0, 0.0, rect);
         assert!((y_bot - 100.0).abs() < 1.0, "-120 dBFS should map to bottom: {y_bot}");
 
-        // Out of range clamped
         let y_over = db_to_y(10.0, -120.0, 0.0, rect);
         assert!((y_over - 0.0).abs() < 1.0, "above 0 dBFS clamped to top: {y_over}");
     }
@@ -203,6 +258,7 @@ mod tests {
     #[test]
     fn spectrum_widget_renders_without_panic() {
         let data: Vec<f32> = (0..2048).map(|i| -60.0 + (i as f32 * 0.01).sin() * 20.0).collect();
+        let peak: Vec<f32> = (0..2048).map(|i| -50.0 + (i as f32 * 0.01).sin() * 15.0).collect();
         let ctx = egui::Context::default();
         ctx.run(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -211,6 +267,7 @@ mod tests {
                     db_range: (-120.0, 0.0),
                     freq_range: (95_000_000, 105_000_000),
                     vfo_hz: 100_000_000,
+                    peak_hold: Some(&peak),
                 }
                 .show(ui);
             });

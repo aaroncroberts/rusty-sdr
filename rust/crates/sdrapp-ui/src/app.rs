@@ -59,6 +59,8 @@ pub struct SdrApp {
     config_dirty: bool,
     /// Simulated audio peak level [0.0, 1.0] for VU meter (updated each frame)
     vu_peak: f32,
+    /// Peak-hold buffer: tracks per-bin maximum with slow decay
+    peak_hold: Vec<f32>,
 }
 
 impl SdrApp {
@@ -81,6 +83,7 @@ impl SdrApp {
             cmd_tx,
             config_dirty: false,
             vu_peak: 0.0,
+            peak_hold: Vec::new(),
         }
     }
 
@@ -284,13 +287,27 @@ impl SdrApp {
         let span = self.config.ui.span_hz;
         let db_range = (-120.0_f32, 0.0_f32);
 
-        // Push waterfall row when signal is active
-        if !fft_data.iter().all(|&v| v <= -119.0) {
+        // Update peak-hold: expand/shrink buffer with FFT size, then take max
+        // per bin with a slow decay (≈ -0.5 dB/frame at 30fps = ~15 dB/s)
+        let n = fft_data.len();
+        if self.peak_hold.len() != n {
+            self.peak_hold = vec![-120.0_f32; n];
+        }
+        let signal_active = fft_data.iter().any(|&v| v > -119.0);
+        if signal_active {
+            for (ph, &v) in self.peak_hold.iter_mut().zip(fft_data.iter()) {
+                if v > *ph {
+                    *ph = v;
+                } else {
+                    *ph -= 0.5; // decay per frame
+                }
+            }
             self.waterfall.push_row(&fft_data);
         }
 
         let available_h = ui.available_height();
-        let spectrum_height = (available_h * 0.38).max(100.0);
+        // Spectrum gets a fixed portion; waterfall fills the rest
+        let spectrum_height = (available_h * 0.36).clamp(120.0, 380.0);
 
         // ── Spectrum ──────────────────────────────────────────────────────────
         let (spectrum_rect, spectrum_resp) = ui.allocate_exact_size(
@@ -326,11 +343,17 @@ impl SdrApp {
         let mut spectrum_ui = ui.new_child(
             egui::UiBuilder::new().max_rect(spectrum_rect)
         );
+        let peak_ref: Option<&[f32]> = if self.peak_hold.len() == fft_data.len() {
+            Some(&self.peak_hold)
+        } else {
+            None
+        };
         SpectrumWidget {
             fft_data: &fft_data,
             db_range,
             freq_range: (freq.saturating_sub(span), freq + span),
             vfo_hz: freq,
+            peak_hold: peak_ref,
         }.show(&mut spectrum_ui);
 
         // ── dBFS range control ────────────────────────────────────────────────

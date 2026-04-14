@@ -71,6 +71,9 @@ impl WaterfallWidget {
     }
 
     /// Render the waterfall into the UI.
+    ///
+    /// The texture contains `WATERFALL_HEIGHT` rows of history; the display rect
+    /// is stretched to fill all remaining vertical space so there is no dead zone.
     pub fn show(&mut self, ui: &mut Ui, ctx: &egui::Context) -> egui::Response {
         let image = ColorImage::from_rgba_unmultiplied(
             [self.width, self.height],
@@ -82,7 +85,10 @@ impl WaterfallWidget {
         });
         texture.set(image, TextureOptions::LINEAR);
 
-        let desired_size = Vec2::new(ui.available_width(), WATERFALL_HEIGHT as f32);
+        // Fill ALL remaining height — stretch the texture, which gives the
+        // appearance of slower scrolling and eliminates the dead zone below.
+        let display_h = ui.available_height().max(60.0);
+        let desired_size = Vec2::new(ui.available_width(), display_h);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
         if ui.is_rect_visible(rect) {
