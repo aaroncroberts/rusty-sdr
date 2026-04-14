@@ -111,6 +111,9 @@ public:
 
     std::vector<std::string> getStreamNames();
 
+    void setStreamVolume(std::string name, float volume);
+    float getStreamVolume(std::string name);
+
     Event<std::string> onSinkProviderRegistered;
     Event<std::string> onSinkProviderUnregister;
     Event<std::string> onSinkProviderUnregistered;

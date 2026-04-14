@@ -20,6 +20,7 @@ bundle_is_not_to_be_installed() {
     if [ "$1" = "CoreServices" ]; then echo 1; fi
     if [ "$1" = "Foundation" ]; then echo 1; fi
     if [ "$1" = "CoreAudio" ]; then echo 1; fi
+    if [ "$1" = "CoreMIDI" ]; then echo 1; fi
     if [ "$1" = "AudioToolbox" ]; then echo 1; fi
     if [ "$1" = "AudioUnit" ]; then echo 1; fi
     if [ "$1" = "libobjc.A.dylib" ]; then echo 1; fi
@@ -27,6 +28,7 @@ bundle_is_not_to_be_installed() {
     if [ "$1" = "SystemConfiguration" ]; then echo 1; fi
     if [ "$1" = "Security" ]; then echo 1; fi
     if [ "$1" = "AppleFSCompression" ]; then echo 1; fi
+    if [ "$1" = "libsdrplay_api.so.3" ]; then echo 1; fi
     if [ "$1" = "libsdrplay_api.so.3.14" ]; then echo 1; fi
     if [ "$1" = "libsdrplay_api.so.3.15" ]; then echo 1; fi
     if [ "$1" = "libxml2.2.dylib" ]; then echo 1; fi

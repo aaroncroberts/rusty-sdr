@@ -49,6 +49,11 @@ bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/source_modules
 bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/source_modules/rtl_sdr_source/rtl_sdr_source.dylib
 bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/source_modules/rtl_tcp_source/rtl_tcp_source.dylib
 bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/source_modules/sdrplay_source/sdrplay_source.dylib
+# libsdrplay_api.so.3 is system-installed to /usr/local/lib — add it back as rpath
+# since bundle_install_binary strips all original rpaths
+if [ -f $BUNDLE/Contents/Plugins/sdrplay_source.dylib ]; then
+    install_name_tool -add_rpath /usr/local/lib $BUNDLE/Contents/Plugins/sdrplay_source.dylib
+fi
 bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/source_modules/sdrpp_server_source/sdrpp_server_source.dylib
 bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/source_modules/spectran_http_source/spectran_http_source.dylib
 bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/source_modules/spyserver_source/spyserver_source.dylib

@@ -163,6 +163,43 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["min"] = -120.0;
 
     // Module instances
+#ifdef IS_MACOS_BUNDLE
+    // macOS bundle default: only include modules that are always built.
+    // Avoids noisy "module doesn't exist" errors on first launch.
+    // Sources: only those whose libraries ship via Homebrew or SDRplay installer
+    defConfig["moduleInstances"]["SDRplay Source"]["module"] = "sdrplay_source";
+    defConfig["moduleInstances"]["SDRplay Source"]["enabled"] = true;
+    defConfig["moduleInstances"]["Airspy Source"]["module"] = "airspy_source";
+    defConfig["moduleInstances"]["Airspy Source"]["enabled"] = true;
+    defConfig["moduleInstances"]["AirspyHF+ Source"]["module"] = "airspyhf_source";
+    defConfig["moduleInstances"]["AirspyHF+ Source"]["enabled"] = true;
+    defConfig["moduleInstances"]["File Source"]["module"] = "file_source";
+    defConfig["moduleInstances"]["File Source"]["enabled"] = true;
+    defConfig["moduleInstances"]["HackRF Source"]["module"] = "hackrf_source";
+    defConfig["moduleInstances"]["HackRF Source"]["enabled"] = true;
+    defConfig["moduleInstances"]["Network Source"]["module"] = "network_source";
+    defConfig["moduleInstances"]["Network Source"]["enabled"] = true;
+    defConfig["moduleInstances"]["RTL-SDR Source"]["module"] = "rtl_sdr_source";
+    defConfig["moduleInstances"]["RTL-SDR Source"]["enabled"] = true;
+    defConfig["moduleInstances"]["RTL-TCP Source"]["module"] = "rtl_tcp_source";
+    defConfig["moduleInstances"]["RTL-TCP Source"]["enabled"] = true;
+
+    defConfig["moduleInstances"]["Audio Sink"]["module"] = "audio_sink";
+    defConfig["moduleInstances"]["Audio Sink"]["enabled"] = true;
+    defConfig["moduleInstances"]["Network Sink"]["module"] = "network_sink";
+    defConfig["moduleInstances"]["Network Sink"]["enabled"] = true;
+
+    defConfig["moduleInstances"]["Radio"]["module"] = "radio";
+    defConfig["moduleInstances"]["Radio"]["enabled"] = true;
+    defConfig["moduleInstances"]["Recorder"]["module"] = "recorder";
+    defConfig["moduleInstances"]["Recorder"]["enabled"] = true;
+    defConfig["moduleInstances"]["Frequency Manager"]["module"] = "frequency_manager";
+    defConfig["moduleInstances"]["Frequency Manager"]["enabled"] = true;
+    defConfig["moduleInstances"]["Rigctl Server"]["module"] = "rigctl_server";
+    defConfig["moduleInstances"]["Rigctl Server"]["enabled"] = true;
+    defConfig["moduleInstances"]["MIDI Controller"]["module"] = "midi_controller";
+    defConfig["moduleInstances"]["MIDI Controller"]["enabled"] = true;
+#else
     defConfig["moduleInstances"]["Airspy Source"]["module"] = "airspy_source";
     defConfig["moduleInstances"]["Airspy Source"]["enabled"] = true;
     defConfig["moduleInstances"]["AirspyHF+ Source"]["module"] = "airspyhf_source";
@@ -216,14 +253,10 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["moduleInstances"]["Network Sink"] = "network_sink";
 
     defConfig["moduleInstances"]["Radio"] = "radio";
-
     defConfig["moduleInstances"]["Frequency Manager"] = "frequency_manager";
     defConfig["moduleInstances"]["Recorder"] = "recorder";
     defConfig["moduleInstances"]["Rigctl Server"] = "rigctl_server";
-    // defConfig["moduleInstances"]["Rigctl Client"] = "rigctl_client";
-    // TODO: Enable rigctl_client when ready
-    // defConfig["moduleInstances"]["Scanner"] = "scanner";
-    // TODO: Enable scanner when ready
+#endif
 
 
     // Themes

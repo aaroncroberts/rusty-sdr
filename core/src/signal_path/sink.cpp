@@ -381,6 +381,16 @@ std::vector<std::string> SinkManager::getStreamNames() {
     return streamNames;
 }
 
+void SinkManager::setStreamVolume(std::string name, float volume) {
+    if (!streams.count(name)) return;
+    streams[name]->setVolume(volume);
+}
+
+float SinkManager::getStreamVolume(std::string name) {
+    if (!streams.count(name)) return 1.0f;
+    return streams[name]->getVolume();
+}
+
 void SinkManager::refreshProviders() {
     providerNamesTxt.clear();
     for (auto& provName : providerNames) {
