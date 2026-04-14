@@ -111,7 +111,8 @@ void MainWindow::init() {
         }
     }
     else {
-        flog::warn("Module directory {0} does not exist, not loading modules from directory", modulesDir);
+        flog::error("Module directory '{0}' does not exist — no modules will be loaded. "
+            "Check 'modulesDirectory' in config.json, or delete config.json to reset to defaults.", modulesDir);
     }
 
     // Read module config

@@ -368,7 +368,16 @@ int sdrpp_main(int argc, char* argv[]) {
     // Assert that the resource directory is absolute and check existence
     resDir = std::filesystem::absolute(resDir).string();
     if (!std::filesystem::is_directory(resDir)) {
-        flog::error("Resource directory doesn't exist! Please make sure that you've configured it correctly in config.json (check readme for details)");
+#ifdef IS_MACOS_BUNDLE
+        flog::error("Resource directory '{0}' doesn't exist. "
+            "Your config.json may have been created by a build without -DUSE_BUNDLE_DEFAULTS=ON. "
+            "Delete '{1}/config.json' and relaunch to regenerate it with correct paths.",
+            resDir, root);
+#else
+        flog::error("Resource directory '{0}' doesn't exist. "
+            "Check the 'resourcesDirectory' value in '{1}/config.json'.",
+            resDir, root);
+#endif
         return 1;
     }
 
