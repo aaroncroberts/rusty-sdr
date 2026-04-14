@@ -57,22 +57,77 @@ struct MidiEvent {
 //   S/M/R buttons (NoteOn): S=32–39, M=48–55, R=64–71
 // ─────────────────────────────────────────────────────────────────────────────
 namespace NK2Defaults {
-    constexpr int CC_TUNE_COARSE = 0;
-    constexpr int CC_TUNE_FINE   = 1;
-    constexpr int CC_ZOOM        = 17;
+    // ── Sliders (CC, absolute position 0–127) ────────────────────────────────
+    constexpr int CC_SLIDER_1 = 0;   // = CC_TUNE_COARSE
+    constexpr int CC_SLIDER_2 = 1;   // = CC_TUNE_FINE
+    constexpr int CC_SLIDER_3 = 2;
+    constexpr int CC_SLIDER_4 = 3;
+    constexpr int CC_SLIDER_5 = 4;
+    constexpr int CC_SLIDER_6 = 5;
+    constexpr int CC_SLIDER_7 = 6;
+    constexpr int CC_SLIDER_8 = 7;
+
+    // ── Knobs (CC, absolute position 0–127) ──────────────────────────────────
+    constexpr int CC_KNOB_1 = 16;   // gain — no generic SDR++ gain API
+    constexpr int CC_KNOB_2 = 17;   // = CC_ZOOM
+    constexpr int CC_KNOB_3 = 18;
+    constexpr int CC_KNOB_4 = 19;
+    constexpr int CC_KNOB_5 = 20;
+    constexpr int CC_KNOB_6 = 21;
+    constexpr int CC_KNOB_7 = 22;
+    constexpr int CC_KNOB_8 = 23;
+
+    // ── Friendly aliases used in defaults ────────────────────────────────────
+    constexpr int CC_TUNE_COARSE = CC_SLIDER_1;
+    constexpr int CC_TUNE_FINE   = CC_SLIDER_2;
+    constexpr int CC_ZOOM        = CC_KNOB_2;
+
+    // ── Transport (CC button, 127=press / 0=release) ─────────────────────────
     constexpr int CC_PLAY        = 41;
     constexpr int CC_STOP        = 42;
     constexpr int CC_REW         = 43;
     constexpr int CC_FF          = 44;
-    constexpr int CC_CYCLE       = 46;
+    constexpr int CC_REC         = 45;
+    constexpr int CC_CYCLE       = 46;   // → global page advance
+
+    // ── Track navigation (CC button) ─────────────────────────────────────────
     constexpr int CC_TRACK_PREV  = 58;
     constexpr int CC_TRACK_NEXT  = 59;
-    constexpr int NOTE_S1        = 32;
-    constexpr int NOTE_M1        = 48;
-    constexpr int NOTE_R1        = 64;
-    constexpr double STEP_COARSE_HZ = 1e6;
-    constexpr double STEP_FINE_HZ   = 10e3;
-    constexpr double STEP_MEDIUM_HZ = 100e3;
+
+    // ── S buttons (solo, NoteOn) ──────────────────────────────────────────────
+    constexpr int NOTE_S1 = 32;
+    constexpr int NOTE_S2 = 33;
+    constexpr int NOTE_S3 = 34;
+    constexpr int NOTE_S4 = 35;
+    constexpr int NOTE_S5 = 36;
+    constexpr int NOTE_S6 = 37;
+    constexpr int NOTE_S7 = 38;
+    constexpr int NOTE_S8 = 39;
+
+    // ── M buttons (mute, NoteOn) ──────────────────────────────────────────────
+    constexpr int NOTE_M1 = 48;
+    constexpr int NOTE_M2 = 49;
+    constexpr int NOTE_M3 = 50;
+    constexpr int NOTE_M4 = 51;
+    constexpr int NOTE_M5 = 52;
+    constexpr int NOTE_M6 = 53;
+    constexpr int NOTE_M7 = 54;
+    constexpr int NOTE_M8 = 55;
+
+    // ── R buttons (record arm, NoteOn) ───────────────────────────────────────
+    constexpr int NOTE_R1 = 64;
+    constexpr int NOTE_R2 = 65;
+    constexpr int NOTE_R3 = 66;
+    constexpr int NOTE_R4 = 67;
+    constexpr int NOTE_R5 = 68;
+    constexpr int NOTE_R6 = 69;
+    constexpr int NOTE_R7 = 70;
+    constexpr int NOTE_R8 = 71;
+
+    // ── Step sizes ────────────────────────────────────────────────────────────
+    constexpr double STEP_COARSE_HZ = 1e6;    // 1 MHz  — Slider 1
+    constexpr double STEP_FINE_HZ   = 10e3;   // 10 kHz — Slider 2
+    constexpr double STEP_MEDIUM_HZ = 100e3;  // 100 kHz — REW/FF buttons
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,36 +281,79 @@ private:
             }
         }
 
-        // Page 0 (Tune) — full nanoKontrol2 defaults
-        auto& t = mappings[0];
-        t[(int)Action::TuneCoarse]   = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
-        t[(int)Action::TuneFine]     = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
-        t[(int)Action::Zoom]         = { NK2Defaults::CC_ZOOM,        -1, -1, 0 };
-        t[(int)Action::Play]         = { NK2Defaults::CC_PLAY,        -1, -1, 0 };
-        t[(int)Action::Stop]         = { NK2Defaults::CC_STOP,        -1, -1, 0 };
-        t[(int)Action::StepTuneUp]   = { NK2Defaults::CC_FF,          -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
-        t[(int)Action::StepTuneDown] = { NK2Defaults::CC_REW,         -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
-        t[(int)Action::BandPlanNext] = { NK2Defaults::CC_TRACK_NEXT,  -1, -1, 0 };
-        t[(int)Action::BandPlanPrev] = { NK2Defaults::CC_TRACK_PREV,  -1, -1, 0 };
-        t[(int)Action::VFOCycle]     = { -1, NK2Defaults::NOTE_S1,    -1, 0 };
-        t[(int)Action::AudioMute]    = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
-        t[(int)Action::RecorderArm]  = { -1, NK2Defaults::NOTE_R1,    -1, 0 };
+        // ── Page 0: Tune ──────────────────────────────────────────────────────
+        // Slider 1 (CC0)          → TuneCoarse  ±1 MHz
+        // Slider 2 (CC1)          → TuneFine    ±10 kHz
+        // Knob 2   (CC17)         → Zoom
+        // PLAY     (CC41)         → Play/toggle source
+        // STOP     (CC42)         → Stop source
+        // REW      (CC43)         → StepTuneDown 100 kHz
+        // FF       (CC44)         → StepTuneUp   100 kHz
+        // REC      (CC45)         → RecorderArm  (CC alternative to R1 note)
+        // Track ◀  (CC58)         → BandPlanPrev
+        // Track ▶  (CC59)         → BandPlanNext
+        // S1       (Note 32)      → VFOCycle
+        // M1       (Note 48)      → AudioMute
+        // R1       (Note 64)      → RecorderArm  (Note alternative to REC)
+        // Unassigned: Sliders 3–8, Knobs 1,3–8, S2–8, M2–8, R2–8
+        {
+            auto& pg = mappings[0];
+            pg[(int)Action::TuneCoarse]   = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
+            pg[(int)Action::TuneFine]     = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
+            pg[(int)Action::Zoom]         = { NK2Defaults::CC_ZOOM,        -1, -1, 0 };
+            pg[(int)Action::Play]         = { NK2Defaults::CC_PLAY,        -1, -1, 0 };
+            pg[(int)Action::Stop]         = { NK2Defaults::CC_STOP,        -1, -1, 0 };
+            pg[(int)Action::StepTuneDown] = { NK2Defaults::CC_REW,         -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
+            pg[(int)Action::StepTuneUp]   = { NK2Defaults::CC_FF,          -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
+            pg[(int)Action::RecorderArm]  = { NK2Defaults::CC_REC,         NK2Defaults::NOTE_R1, -1, 0 };
+            pg[(int)Action::BandPlanPrev] = { NK2Defaults::CC_TRACK_PREV,  -1, -1, 0 };
+            pg[(int)Action::BandPlanNext] = { NK2Defaults::CC_TRACK_NEXT,  -1, -1, 0 };
+            pg[(int)Action::VFOCycle]     = { -1, NK2Defaults::NOTE_S1,    -1, 0 };
+            pg[(int)Action::AudioMute]    = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
+        }
 
-        // Page 1 (Monitor) — keep tune + zoom + mute
-        auto& m = mappings[1];
-        m[(int)Action::TuneCoarse] = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
-        m[(int)Action::TuneFine]   = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
-        m[(int)Action::Zoom]       = { NK2Defaults::CC_ZOOM,        -1, -1, 0 };
-        m[(int)Action::AudioMute]  = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
+        // ── Page 1: Monitor ────────────────────────────────────────────────────
+        // Slider 1 (CC0)          → TuneCoarse  ±1 MHz
+        // Slider 2 (CC1)          → TuneFine    ±10 kHz
+        // Knob 2   (CC17)         → Zoom
+        // REW      (CC43)         → StepTuneDown 100 kHz  (for quick navigation)
+        // FF       (CC44)         → StepTuneUp   100 kHz
+        // Track ◀  (CC58)         → BandPlanPrev
+        // Track ▶  (CC59)         → BandPlanNext
+        // S1       (Note 32)      → VFOCycle
+        // M1       (Note 48)      → AudioMute
+        // Unassigned: transport play/stop, recorder, R buttons
+        {
+            auto& pg = mappings[1];
+            pg[(int)Action::TuneCoarse]   = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
+            pg[(int)Action::TuneFine]     = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
+            pg[(int)Action::Zoom]         = { NK2Defaults::CC_ZOOM,        -1, -1, 0 };
+            pg[(int)Action::StepTuneDown] = { NK2Defaults::CC_REW,         -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
+            pg[(int)Action::StepTuneUp]   = { NK2Defaults::CC_FF,          -1, -1, NK2Defaults::STEP_MEDIUM_HZ };
+            pg[(int)Action::BandPlanPrev] = { NK2Defaults::CC_TRACK_PREV,  -1, -1, 0 };
+            pg[(int)Action::BandPlanNext] = { NK2Defaults::CC_TRACK_NEXT,  -1, -1, 0 };
+            pg[(int)Action::VFOCycle]     = { -1, NK2Defaults::NOTE_S1,    -1, 0 };
+            pg[(int)Action::AudioMute]    = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
+        }
 
-        // Page 2 (Recorder) — tune, play, recorder arm
-        auto& r = mappings[2];
-        r[(int)Action::TuneCoarse]  = { NK2Defaults::CC_TUNE_COARSE, -1, -1, NK2Defaults::STEP_COARSE_HZ };
-        r[(int)Action::TuneFine]    = { NK2Defaults::CC_TUNE_FINE,   -1, -1, NK2Defaults::STEP_FINE_HZ   };
-        r[(int)Action::Play]        = { NK2Defaults::CC_PLAY,        -1, -1, 0 };
-        r[(int)Action::Stop]        = { NK2Defaults::CC_STOP,        -1, -1, 0 };
-        r[(int)Action::AudioMute]   = { -1, NK2Defaults::NOTE_M1,    -1, 0 };
-        r[(int)Action::RecorderArm] = { -1, NK2Defaults::NOTE_R1,    -1, 0 };
+        // ── Page 2: Recorder ──────────────────────────────────────────────────
+        // Slider 1 (CC0)          → TuneCoarse  ±1 MHz  (stay on-frequency while recording)
+        // Slider 2 (CC1)          → TuneFine    ±10 kHz
+        // PLAY     (CC41)         → Play/toggle source
+        // STOP     (CC42)         → Stop source
+        // REC      (CC45)         → RecorderArm (start/stop recording)
+        // M1       (Note 48)      → AudioMute   (silence monitoring while recording)
+        // R1–R8    (Notes 64–71)  → RecorderArm (any R button starts/stops)
+        // Unassigned: knobs, S buttons, REW/FF, track nav
+        {
+            auto& pg = mappings[2];
+            pg[(int)Action::TuneCoarse]  = { NK2Defaults::CC_TUNE_COARSE, -1,                  -1, NK2Defaults::STEP_COARSE_HZ };
+            pg[(int)Action::TuneFine]    = { NK2Defaults::CC_TUNE_FINE,   -1,                  -1, NK2Defaults::STEP_FINE_HZ   };
+            pg[(int)Action::Play]        = { NK2Defaults::CC_PLAY,        -1,                  -1, 0 };
+            pg[(int)Action::Stop]        = { NK2Defaults::CC_STOP,        -1,                  -1, 0 };
+            pg[(int)Action::RecorderArm] = { NK2Defaults::CC_REC,         NK2Defaults::NOTE_R1, -1, 0 };
+            pg[(int)Action::AudioMute]   = { -1,                          NK2Defaults::NOTE_M1, -1, 0 };
+        }
     }
 
     void loadConfig() {
