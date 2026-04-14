@@ -28,6 +28,7 @@ cmake .. \
     \
     -DOPT_BUILD_SDRPLAY_SOURCE=ON \
     -DOPT_BUILD_M17_DECODER=OFF \
+    -DOPT_BUILD_MIDI_CONTROLLER=ON \
     \
     "$@"
 
