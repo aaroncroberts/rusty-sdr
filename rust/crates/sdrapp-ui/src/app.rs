@@ -86,6 +86,17 @@ pub struct SdrApp {
     vu_peak: f32,
     /// Peak-hold buffer: tracks per-bin maximum with slow decay
     peak_hold: Vec<f32>,
+    // ── dBFS range ────────────────────────────────────────────────────────────
+    /// Lower bound of display range (dBFS)
+    db_floor: f32,
+    /// Upper bound of display range (dBFS)
+    db_ceil: f32,
+    /// Whether auto-range is active
+    auto_range: bool,
+    /// Slow EMA of 10th-percentile FFT bin — noise floor estimate
+    noise_floor_ema: f32,
+    /// Slow EMA of 99th-percentile FFT bin — signal ceiling estimate
+    signal_ceil_ema: f32,
 }
 
 impl SdrApp {
@@ -109,6 +120,11 @@ impl SdrApp {
             config_dirty: false,
             vu_peak: 0.0,
             peak_hold: Vec::new(),
+            db_floor: -120.0,
+            db_ceil: 0.0,
+            auto_range: true,
+            noise_floor_ema: -90.0,
+            signal_ceil_ema: -30.0,
         }
     }
 
@@ -329,7 +345,6 @@ impl SdrApp {
 
         let freq = self.config.ui.frequency_hz;
         let span = self.config.ui.span_hz;
-        let db_range = (-120.0_f32, 0.0_f32);
 
         // Update peak-hold: expand/shrink buffer with FFT size, then take max
         // per bin with a slow decay (≈ -0.5 dB/frame at 30fps = ~15 dB/s)
@@ -346,8 +361,31 @@ impl SdrApp {
                     *ph -= 0.5; // decay per frame
                 }
             }
+
+            // Auto-range: slow EMA on 10th/99th percentiles of FFT bins
+            if self.auto_range && n >= 10 {
+                let mut sorted = fft_data.to_vec();
+                sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let floor_sample = sorted[n / 10];
+                let ceil_sample = sorted[(n * 99 / 100).min(n - 1)];
+                const ALPHA: f32 = 0.95;
+                self.noise_floor_ema = ALPHA * self.noise_floor_ema + (1.0 - ALPHA) * floor_sample;
+                self.signal_ceil_ema = ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
+                // 20 dB below noise floor … 10 dB above signal ceiling
+                self.db_floor = (self.noise_floor_ema - 20.0).max(-140.0);
+                self.db_ceil = (self.signal_ceil_ema + 10.0).min(20.0);
+                // Ensure minimum 30 dB span to avoid degenerate zoom
+                if self.db_ceil - self.db_floor < 30.0 {
+                    self.db_ceil = self.db_floor + 30.0;
+                }
+            }
+
+            let db_range = (self.db_floor, self.db_ceil);
+            self.waterfall.set_db_range(db_range);
             self.waterfall.push_row(&fft_data);
         }
+
+        let db_range = (self.db_floor, self.db_ceil);
 
         let available_h = ui.available_height();
         // Spectrum gets a fixed portion; waterfall fills the rest
@@ -408,20 +446,59 @@ impl SdrApp {
         // ── dBFS range control ────────────────────────────────────────────────
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("dBFS range:")
+            // Auto button (toggle)
+            let auto_label = if self.auto_range { "↕ Auto ✓" } else { "↕ Auto" };
+            let auto_color = if self.auto_range {
+                theme::ACCENT
+            } else {
+                theme::TEXT_MUTED
+            };
+            if ui
+                .small_button(RichText::new(auto_label).color(auto_color))
+                .clicked()
+            {
+                self.auto_range = !self.auto_range;
+            }
+
+            if self.auto_range {
+                // Display current auto-computed range
+                ui.label(
+                    RichText::new(format!(
+                        "  {:.0} → {:.0} dBFS",
+                        self.db_floor, self.db_ceil
+                    ))
                     .color(theme::TEXT_MUTED)
                     .small(),
-            );
-            ui.label(RichText::new("-120  →  0").color(theme::TEXT_MUTED).small());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                );
+            } else {
+                // Manual: compact floor/ceil sliders
+                ui.add_space(4.0);
+                ui.label(RichText::new("Floor").color(theme::TEXT_MUTED).small());
+                let mut floor = self.db_floor;
                 if ui
-                    .small_button(RichText::new("↕ Auto").color(theme::TEXT_MUTED))
-                    .clicked()
+                    .add(
+                        egui::Slider::new(&mut floor, -140.0_f32..=-20.0_f32)
+                            .show_value(true)
+                            .integer(),
+                    )
+                    .changed()
                 {
-                    // Future: auto-range
+                    self.db_floor = floor.min(self.db_ceil - 10.0);
                 }
-            });
+                ui.add_space(4.0);
+                ui.label(RichText::new("Ceil").color(theme::TEXT_MUTED).small());
+                let mut ceil = self.db_ceil;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut ceil, -60.0_f32..=20.0_f32)
+                            .show_value(true)
+                            .integer(),
+                    )
+                    .changed()
+                {
+                    self.db_ceil = ceil.max(self.db_floor + 10.0);
+                }
+            }
         });
 
         // ── Waterfall ─────────────────────────────────────────────────────────

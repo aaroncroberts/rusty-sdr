@@ -84,6 +84,11 @@ impl WaterfallWidget {
         }
     }
 
+    /// Update the dBFS mapping range (used by push_row for future rows).
+    pub fn set_db_range(&mut self, range: (f32, f32)) {
+        self.db_range = range;
+    }
+
     /// Render the waterfall into the UI.
     ///
     /// The texture contains `WATERFALL_HEIGHT` rows of history; the display rect
