@@ -58,6 +58,8 @@ pub struct SharedState {
     pub is_recording: bool,
     /// Current volume (linear).
     pub volume: f32,
+    /// Active source name — "Demo Mode" when running on the test signal source.
+    pub source_name: Option<String>,
     /// MIDI device name when connected, None otherwise.
     pub midi_device: Option<String>,
     /// Active MIDI page index.

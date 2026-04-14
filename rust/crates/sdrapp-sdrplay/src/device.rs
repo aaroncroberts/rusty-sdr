@@ -72,6 +72,36 @@ impl RspdxSource {
         Arc::clone(&self.frequency_hz)
     }
 
+    /// Returns `true` if the SDRplay API opens successfully **and** at least one
+    /// device is enumerated. Used by `main.rs` as a pre-flight check before
+    /// committing to the hardware source path.
+    ///
+    /// Opens and immediately closes the API, so it has no side effects on the
+    /// subsequent `RspdxSource::start()` call.
+    pub fn is_device_available() -> bool {
+        // Open the SDRplay service.
+        let err = unsafe { sys::sdrplay_api_Open() };
+        if err != sys::sdrplay_api_ErrT_sdrplay_api_Success {
+            tracing::debug!("sdrplay_api_Open failed ({err}) — no hardware available");
+            return false;
+        }
+
+        // Enumerate connected devices.
+        let mut devices = [sys::sdrplay_api_DeviceT::default(); 16];
+        let mut num: u32 = 0;
+        let enum_err =
+            unsafe { sys::sdrplay_api_GetDevices(devices.as_mut_ptr(), &mut num, 16) };
+
+        // Always close the API, regardless of enumeration result.
+        unsafe { sys::sdrplay_api_Close() };
+
+        let found = enum_err == sys::sdrplay_api_ErrT_sdrplay_api_Success && num > 0;
+        if !found {
+            tracing::info!("no SDRplay devices found — will start in demo mode");
+        }
+        found
+    }
+
     pub fn available_devices() -> Vec<String> {
         let mut devices = [sys::sdrplay_api_DeviceT::default(); 16];
         let mut num: u32 = 0;

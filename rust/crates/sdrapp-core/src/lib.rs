@@ -9,3 +9,4 @@ pub mod sample;
 pub mod signal_path;
 pub mod sink;
 pub mod source;
+pub mod test_source;

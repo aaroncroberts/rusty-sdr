@@ -152,10 +152,41 @@ impl SdrApp {
         ui.label(RichText::new("SOURCE").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        for src in &self.registry.sources {
+        let source_name = self.shared.read().source_name.clone();
+        let is_demo = source_name
+            .as_deref()
+            .map(|n| n.contains("Demo"))
+            .unwrap_or(false);
+
+        let display_name = source_name
+            .as_deref()
+            .or_else(|| {
+                self.registry
+                    .sources
+                    .first()
+                    .map(|s| s.display_name)
+            })
+            .unwrap_or("No device");
+
+        ui.horizontal(|ui| {
+            let (icon, color) = if is_demo {
+                ("⚠", theme::DANGER)
+            } else {
+                ("◈", theme::ACCENT_DIM)
+            };
+            ui.label(RichText::new(icon).color(color));
+            ui.label(RichText::new(display_name).color(theme::TEXT_PRIMARY));
+        });
+
+        if is_demo {
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("◈").color(theme::ACCENT_DIM));
-                ui.label(RichText::new(src.display_name).color(theme::TEXT_PRIMARY));
+                ui.add_space(14.0);
+                ui.label(
+                    RichText::new("no hardware connected")
+                        .color(theme::DANGER)
+                        .small(),
+                );
             });
         }
 
@@ -736,7 +767,7 @@ impl SdrApp {
     // ── Status Bar ────────────────────────────────────────────────────────────
 
     fn status_bar(&self, ui: &mut Ui) {
-        let (is_running, is_recording, center_freq, sample_rate, midi_device, midi_page, buf_fill) = {
+        let (is_running, is_recording, center_freq, sample_rate, midi_device, midi_page, buf_fill, source_name) = {
             let s = self.shared.read();
             (
                 s.is_running,
@@ -746,16 +777,20 @@ impl SdrApp {
                 s.midi_device.clone(),
                 s.midi_page,
                 s.audio_buffer_fill,
+                s.source_name.clone(),
             )
         };
 
         ui.horizontal(|ui| {
             // Left: device + sample rate + frequency
-            let device_label = self
-                .registry
-                .sources
-                .first()
-                .map(|s| s.display_name)
+            let device_label = source_name
+                .as_deref()
+                .or_else(|| {
+                    self.registry
+                        .sources
+                        .first()
+                        .map(|s| s.display_name)
+                })
                 .unwrap_or("No device");
 
             let rate_label = if sample_rate >= 1_000_000 {

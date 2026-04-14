@@ -70,24 +70,57 @@ fn main() -> anyhow::Result<()> {
     // Recorder::start() needs to run inside the tokio runtime
     rt.spawn(async move { recorder.start().await });
 
-    // ── SDRplay source ────────────────────────────────────────────────────────
+    // ── IQ source: real hardware or demo mode ─────────────────────────────────
+    //
+    // Try to open the SDRplay API and enumerate devices.  If that fails (device
+    // not connected, service not running), fall back to a synthetic test signal
+    // source so the UI is always usable.
+    //
+    // Both source types implement Source + Block and expose `frequency_atomic()`
+    // so the signal path and UI work identically in both modes.
+    //
+    // The source variables must stay alive until `eframe::run_native` returns
+    // (i.e. the whole app lifetime) so their internal Arcs remain valid.
     let antenna = match config.source.antenna.as_str() {
         "B" => sdrapp_sdrplay::Antenna::B,
         "C" => sdrapp_sdrplay::Antenna::C,
         _ => sdrapp_sdrplay::Antenna::A,
     };
 
-    let mut source = sdrapp_sdrplay::RspdxSource::new(sdrapp_sdrplay::RspdxConfig {
-        frequency_hz: config.ui.frequency_hz,
-        sample_rate_sps: config.source.sample_rate_sps,
-        antenna,
-        agc_enabled: config.source.agc_enabled,
-        lna_state: config.source.lna_state,
-        ..Default::default()
-    });
+    let mut _sdrplay_source: Option<sdrapp_sdrplay::RspdxSource> = None;
+    let mut _demo_source: Option<sdrapp_core::test_source::TestSignalSource> = None;
 
-    let iq_rx = source.subscribe();
-    let _source_handle = source.start();
+    let (iq_rx, freq_atomic) = if sdrapp_sdrplay::RspdxSource::is_device_available() {
+        tracing::info!("SDRplay device found — starting in hardware mode");
+        shared.write().source_name = Some("SDRplay RSPdx-R2".to_string());
+
+        let mut src = sdrapp_sdrplay::RspdxSource::new(sdrapp_sdrplay::RspdxConfig {
+            frequency_hz: config.ui.frequency_hz,
+            sample_rate_sps: config.source.sample_rate_sps,
+            antenna,
+            agc_enabled: config.source.agc_enabled,
+            lna_state: config.source.lna_state,
+            ..Default::default()
+        });
+        let rx = src.subscribe();
+        let fa = src.frequency_atomic();
+        let _ = src.start();
+        _sdrplay_source = Some(src);
+        (rx, fa)
+    } else {
+        tracing::warn!("no SDRplay device — starting in demo mode (synthetic test signal)");
+        shared.write().source_name = Some("Demo Mode".to_string());
+
+        let mut src = sdrapp_core::test_source::TestSignalSource::new(
+            config.ui.frequency_hz,
+            config.source.sample_rate_sps,
+        );
+        let rx = src.subscribe();
+        let fa = src.frequency_atomic();
+        let _ = src.start();
+        _demo_source = Some(src);
+        (rx, fa)
+    };
 
     // ── Signal path ───────────────────────────────────────────────────────────
     let _signal_path = SignalPath::start(
@@ -96,7 +129,7 @@ fn main() -> anyhow::Result<()> {
         Some(audio_tx),
         Some(recorder_audio_tx),
         None, // RepaintHandle: egui context not available yet; UI polls SharedState
-        Some(source.frequency_atomic()),
+        Some(freq_atomic),
     );
 
     // ── MIDI controller ───────────────────────────────────────────────────────
