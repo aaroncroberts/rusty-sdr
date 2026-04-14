@@ -256,6 +256,28 @@ impl SdrApp {
             }
         });
 
+        // ── NFM squelch ───────────────────────────────────────────────────────
+        if current_mode == DemodMode::Nfm {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            ui.label(RichText::new("SQUELCH").color(theme::TEXT_MUTED).small());
+            ui.add_space(4.0);
+
+            let mut sq_threshold = self.shared.read().squelch_threshold;
+            let sq_label = format!("{:.0} dBFS", sq_threshold);
+            ui.label(RichText::new(&sq_label).color(theme::TEXT_PRIMARY).small());
+            let sq_slider = egui::Slider::new(&mut sq_threshold, -120.0_f32..=0.0_f32)
+                .show_value(false)
+                .trailing_fill(true);
+            if ui.add(sq_slider).changed() {
+                let _ = self
+                    .cmd_tx
+                    .try_send(SignalPathCommand::SetSquelchThreshold(sq_threshold));
+            }
+        }
+
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(6.0);

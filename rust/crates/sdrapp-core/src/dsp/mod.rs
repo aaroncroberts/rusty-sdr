@@ -9,9 +9,11 @@
 pub mod demod;
 pub mod fft;
 pub mod packer;
+pub mod squelch;
 pub mod volume;
 
 pub use demod::{AmDemodulator, FmDemodulator};
 pub use fft::FftProcessor;
 pub use packer::Packer;
+pub use squelch::Squelch;
 pub use volume::Volume;

@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use rustfft::num_complex::Complex;
 
-use crate::dsp::{AmDemodulator, FmDemodulator, FftProcessor, Volume};
+use crate::dsp::{AmDemodulator, FmDemodulator, FftProcessor, Squelch, Volume};
 use crate::sample::{IqSample, StereoFrame};
 
 const FFT_SIZE: usize = 2048;
@@ -68,6 +68,8 @@ pub struct SharedState {
     pub audio_buffer_fill: f32,
     /// Current demodulation mode.
     pub demod_mode: DemodMode,
+    /// NFM squelch threshold in dBFS (e.g. -50.0). Applied only in NFM mode.
+    pub squelch_threshold: f32,
 }
 
 impl SharedState {
@@ -75,6 +77,7 @@ impl SharedState {
         Self {
             fft_magnitudes: vec![-120.0; FFT_SIZE],
             volume: 0.8,
+            squelch_threshold: -50.0,
             ..Default::default()
         }
     }
@@ -86,6 +89,8 @@ pub enum SignalPathCommand {
     SetFrequency(u64),
     SetVolume(f32),
     SetDemodMode(DemodMode),
+    /// Set NFM squelch threshold in dBFS (ignored outside NFM mode).
+    SetSquelchThreshold(f32),
     StartRecording,
     StopRecording,
     Stop,
@@ -149,6 +154,7 @@ impl SignalPath {
             let mut fft = FftProcessor::new(FFT_SIZE);
             let mut vol = Volume::new(0.8);
             let mut demod: Demod = Demod::Wbfm(FmDemodulator::wbfm(sr));
+            let mut squelch = Squelch::new(48_000, -50.0);
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
 
@@ -178,8 +184,13 @@ impl SignalPath {
                                 }
                                 DemodMode::Am => Demod::Am(AmDemodulator::standard(sr)),
                             };
+                            squelch.reset();
                             shared_clone.write().demod_mode = mode;
                             tracing::info!(?mode, "demod mode changed");
+                        }
+                        SignalPathCommand::SetSquelchThreshold(t) => {
+                            squelch.set_threshold_dbfs(t);
+                            shared_clone.write().squelch_threshold = t;
                         }
                         SignalPathCommand::StartRecording => {
                             shared_clone.write().is_recording = true;
@@ -223,7 +234,15 @@ impl SignalPath {
                     .collect();
                 let demod_audio = demod.process(&iq_complex);
 
-                let stereo: Vec<StereoFrame> = demod_audio
+                // Apply NFM squelch gate (silence audio below threshold).
+                // WBFM and AM are unaffected.
+                let gated_audio = if matches!(demod, Demod::Nfm(_)) {
+                    squelch.process(&demod_audio)
+                } else {
+                    demod_audio
+                };
+
+                let stereo: Vec<StereoFrame> = gated_audio
                     .into_iter()
                     .map(StereoFrame::mono)
                     .collect();
