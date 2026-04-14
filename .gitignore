@@ -21,3 +21,8 @@ source_modules/badgesdr_source
 decoder_modules/mystery_decoder
 decoder_modules/tetra_decoder
 misc_modules/modulation_monitor
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
