@@ -33,12 +33,20 @@ pub struct SharedState {
     pub fft_magnitudes: Vec<f32>,
     /// Center frequency (Hz) as reported by the source.
     pub center_freq_hz: u64,
+    /// Sample rate (sps) as reported by the source.
+    pub sample_rate_sps: u32,
     /// Whether the signal path is currently running.
     pub is_running: bool,
     /// Whether recording is active.
     pub is_recording: bool,
     /// Current volume (linear).
     pub volume: f32,
+    /// MIDI device name when connected, None otherwise.
+    pub midi_device: Option<String>,
+    /// Active MIDI page index.
+    pub midi_page: usize,
+    /// Audio buffer fill fraction [0.0, 1.0] — written by audio sink.
+    pub audio_buffer_fill: f32,
 }
 
 impl SharedState {

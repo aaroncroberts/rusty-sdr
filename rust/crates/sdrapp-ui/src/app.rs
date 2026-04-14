@@ -155,15 +155,95 @@ impl SdrApp {
         ui.separator();
         ui.add_space(6.0);
 
-        // ── Device info section ────────────────────────────────────────────────
-        ui.label(RichText::new("DEVICE INFO").color(theme::TEXT_MUTED).small());
+        // ── Device settings ────────────────────────────────────────────────────
+        ui.label(RichText::new("DEVICE SETTINGS").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
+        // Antenna selector
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Antenna").color(theme::TEXT_MUTED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                for port in ["A", "B", "C"] {
+                    let selected = self.config.source.antenna == port;
+                    let label = RichText::new(port).small();
+                    let label = if selected { label.color(theme::ACCENT).strong() } else { label.color(theme::TEXT_MUTED) };
+                    if ui.selectable_label(selected, label).clicked() && !selected {
+                        self.config.source.antenna = port.into();
+                        self.config_dirty = true;
+                    }
+                }
+            });
+        });
+
+        // Sample rate dropdown
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Rate").color(theme::TEXT_MUTED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let rates: &[(u32, &str)] = &[
+                    (200_000, "200k"),
+                    (500_000, "500k"),
+                    (1_000_000, "1M"),
+                    (2_000_000, "2M"),
+                    (6_000_000, "6M"),
+                    (8_000_000, "8M"),
+                    (10_000_000, "10M"),
+                ];
+                let current = rates.iter()
+                    .find(|&&(r, _)| r == self.config.source.sample_rate_sps)
+                    .map(|&(_, label)| label)
+                    .unwrap_or("?");
+
+                egui::ComboBox::from_id_salt("sample_rate")
+                    .selected_text(RichText::new(current).small())
+                    .width(60.0)
+                    .show_ui(ui, |ui| {
+                        for &(rate, label) in rates {
+                            let selected = rate == self.config.source.sample_rate_sps;
+                            if ui.selectable_label(selected, label).clicked() {
+                                self.config.source.sample_rate_sps = rate;
+                                self.config_dirty = true;
+                            }
+                        }
+                    });
+            });
+        });
+
+        // AGC toggle
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("AGC").color(theme::TEXT_MUTED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let agc = &mut self.config.source.agc_enabled;
+                let label = if *agc {
+                    RichText::new("ON").color(theme::STATUS_OK).small().strong()
+                } else {
+                    RichText::new("OFF").color(theme::TEXT_MUTED).small()
+                };
+                if ui.selectable_label(*agc, label).clicked() {
+                    *agc = !*agc;
+                    self.config_dirty = true;
+                }
+            });
+        });
+
+        // LNA state (only when AGC is off)
+        if !self.config.source.agc_enabled {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("LNA").color(theme::TEXT_MUTED).small());
+                let mut lna = self.config.source.lna_state as i32;
+                if ui.add(egui::Slider::new(&mut lna, 0..=9).show_value(true)).changed() {
+                    self.config.source.lna_state = lna as u8;
+                    self.config_dirty = true;
+                }
+            });
+        }
+
+        // Signal path status
         let (center_freq, is_recording) = {
             let s = self.shared.read();
             (s.center_freq_hz, s.is_recording)
         };
 
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             let status_dot_color = if is_running { theme::STATUS_OK } else { theme::TEXT_DISABLED };
             ui.label(RichText::new("●").color(status_dot_color));
@@ -370,11 +450,44 @@ impl SdrApp {
         ui.label(RichText::new("MIDI").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        // Placeholder — real status comes from MidiController when wired in
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("●").color(theme::TEXT_DISABLED));
-            ui.label(RichText::new("Not connected").color(theme::TEXT_MUTED).small());
-        });
+        let (midi_device, midi_page) = {
+            let s = self.shared.read();
+            (s.midi_device.clone(), s.midi_page)
+        };
+
+        if let Some(ref device_name) = midi_device {
+            // Connected
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("●").color(theme::STATUS_OK));
+                ui.label(RichText::new(device_name).color(theme::TEXT_PRIMARY).small());
+            });
+
+            // Page display with navigation buttons
+            let page_names = ["Tune", "Monitor", "Recorder"];
+            let page_label = page_names.get(midi_page).copied().unwrap_or("Page ?");
+            let page_color = theme::midi_page_color(midi_page);
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Page:").color(theme::TEXT_MUTED).small());
+                ui.label(
+                    RichText::new(format!("{midi_page}  {page_label}"))
+                        .color(page_color)
+                        .small()
+                        .strong(),
+                );
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("●").color(theme::TEXT_DISABLED));
+                ui.label(RichText::new("Not connected").color(theme::TEXT_MUTED).small());
+            });
+            ui.label(
+                RichText::new("Connect nanoKontrol2 via USB")
+                    .color(theme::TEXT_DISABLED)
+                    .small(),
+            );
+        }
     }
 
     // ── VU Meter helper ───────────────────────────────────────────────────────
@@ -417,40 +530,68 @@ impl SdrApp {
     // ── Status Bar ────────────────────────────────────────────────────────────
 
     fn status_bar(&self, ui: &mut Ui) {
-        let (is_running, is_recording, center_freq) = {
+        let (is_running, is_recording, center_freq, sample_rate, midi_device, midi_page, buf_fill) = {
             let s = self.shared.read();
-            (s.is_running, s.is_recording, s.center_freq_hz)
+            (s.is_running, s.is_recording, s.center_freq_hz,
+             s.sample_rate_sps, s.midi_device.clone(), s.midi_page, s.audio_buffer_fill)
         };
 
         ui.horizontal(|ui| {
-            // Left: device + frequency
+            // Left: device + sample rate + frequency
             let device_label = self.registry.sources.first()
                 .map(|s| s.display_name.as_ref())
                 .unwrap_or("No device");
 
+            let rate_label = if sample_rate >= 1_000_000 {
+                format!("{:.1} Msps", sample_rate as f64 / 1_000_000.0)
+            } else if sample_rate >= 1_000 {
+                format!("{:.0} ksps", sample_rate as f64 / 1_000.0)
+            } else {
+                format!("{sample_rate} sps")
+            };
+
             let freq_label = format_frequency(center_freq);
             ui.label(
-                RichText::new(format!("◈  {device_label}  ·  {freq_label}"))
+                RichText::new(format!("◈  {device_label}  ·  {rate_label}  ·  {freq_label}"))
                     .color(theme::TEXT_MUTED)
                     .small(),
             );
 
-            // Spacer
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Right: recording status
+                // Right: recording
                 if is_recording {
                     ui.label(RichText::new("● REC").color(theme::DANGER).small().strong());
                     ui.add_space(8.0);
                 }
 
+                // Audio buffer health (tiny bar)
+                let buf_color = if buf_fill > 0.8 {
+                    theme::STATUS_WARN
+                } else {
+                    theme::STATUS_OK
+                };
+                ui.label(RichText::new(format!("BUF {:.0}%", buf_fill * 100.0)).color(buf_color).small());
+                ui.add_space(8.0);
+
+                // MIDI status
+                if let Some(ref dev) = midi_device {
+                    let page_color = theme::midi_page_color(midi_page);
+                    let page_names = ["Tune", "Monitor", "Rec"];
+                    let page_name = page_names.get(midi_page).copied().unwrap_or("?");
+                    ui.label(
+                        RichText::new(format!("MIDI: {dev}  P{midi_page}:{page_name}"))
+                            .color(page_color)
+                            .small(),
+                    );
+                } else {
+                    ui.label(RichText::new("MIDI: —").color(theme::TEXT_DISABLED).small());
+                }
+                ui.add_space(8.0);
+
                 // Running indicator
                 let dot = if is_running { "●" } else { "○" };
                 let color = if is_running { theme::STATUS_OK } else { theme::TEXT_DISABLED };
                 ui.label(RichText::new(dot).color(color).small());
-                ui.add_space(8.0);
-
-                // MIDI placeholder
-                ui.label(RichText::new("MIDI: —").color(theme::TEXT_DISABLED).small());
             });
         });
     }

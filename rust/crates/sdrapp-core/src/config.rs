@@ -20,6 +20,35 @@ pub struct AppConfig {
     pub active_source: ActiveSource,
     pub active_sink: ActiveSink,
     pub ui: UiConfig,
+    #[serde(default)]
+    pub source: SourceConfig,
+}
+
+/// SDR source hardware configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceConfig {
+    /// Antenna port: "A", "B", or "C".
+    pub antenna: String,
+    /// AGC enabled.
+    pub agc_enabled: bool,
+    /// LNA state (0–9); used when AGC is disabled.
+    pub lna_state: u8,
+    /// Sample rate in sps.
+    pub sample_rate_sps: u32,
+    /// IF mode: "ZeroIF", "LowIF200kHz", "LowIF500kHz".
+    pub if_mode: String,
+}
+
+impl Default for SourceConfig {
+    fn default() -> Self {
+        Self {
+            antenna: "A".into(),
+            agc_enabled: true,
+            lna_state: 3,
+            sample_rate_sps: 2_000_000,
+            if_mode: "ZeroIF".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +84,7 @@ impl Default for AppConfig {
             active_source: ActiveSource::default(),
             active_sink: ActiveSink::default(),
             ui: UiConfig::default(),
+            source: SourceConfig::default(),
         }
     }
 }
