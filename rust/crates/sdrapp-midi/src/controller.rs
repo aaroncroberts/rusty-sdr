@@ -151,7 +151,11 @@ impl MidiController {
                             let next = match shared.read().demod_mode {
                                 DemodMode::Wbfm => DemodMode::Nfm,
                                 DemodMode::Nfm => DemodMode::Am,
-                                DemodMode::Am => DemodMode::Wbfm,
+                                DemodMode::Am  => DemodMode::Usb,
+                                DemodMode::Usb => DemodMode::Lsb,
+                                DemodMode::Lsb => DemodMode::Dsb,
+                                DemodMode::Dsb => DemodMode::Cw,
+                                DemodMode::Cw  => DemodMode::Wbfm,
                             };
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetDemodMode(next));
                         }

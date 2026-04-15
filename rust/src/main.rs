@@ -45,6 +45,10 @@ fn main() -> anyhow::Result<()> {
             let mode = match b.mode.as_str() {
                 "Nfm" => DemodMode::Nfm,
                 "Am" => DemodMode::Am,
+                "Usb" => DemodMode::Usb,
+                "Lsb" => DemodMode::Lsb,
+                "Dsb" => DemodMode::Dsb,
+                "Cw" => DemodMode::Cw,
                 _ => DemodMode::Wbfm,
             };
             Bookmark::new(&b.name, b.freq_hz, mode)

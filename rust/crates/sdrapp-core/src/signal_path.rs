@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use rustfft::num_complex::Complex;
 
-use crate::dsp::{AmDemodulator, AudioBandpass, CtcssDetector, FmDemodulator, FftProcessor, RdsDecoder, Squelch, StereoFmDecoder, Volume};
+use crate::dsp::{AmDemodulator, AudioBandpass, CtcssDetector, CwDemodulator, FmDemodulator, FftProcessor, RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder, Volume};
 use crate::sample::{IqSample, StereoFrame};
 
 const FFT_SIZE: usize = 2048;
@@ -63,6 +63,14 @@ pub enum DemodMode {
     Nfm,
     /// AM envelope detection
     Am,
+    /// Upper sideband SSB
+    Usb,
+    /// Lower sideband SSB
+    Lsb,
+    /// Double sideband (both sidebands, suppressed carrier)
+    Dsb,
+    /// CW (Morse code) — narrow 400–900 Hz bandpass
+    Cw,
 }
 
 /// A saved frequency bookmark.
@@ -221,11 +229,13 @@ impl SignalPath {
 
         // Demodulator state — switched at runtime by SetDemodMode.
         // WBFM uses StereoFmDecoder (outputs Vec<StereoFrame> + is_stereo flag).
-        // NFM and AM use the mono FmDemodulator / AmDemodulator and convert to stereo.
+        // NFM, AM, SSB, and CW use mono demodulators converted to StereoFrame.
         enum Demod {
             Wbfm(StereoFmDecoder),
             Nfm(FmDemodulator),
             Am(AmDemodulator),
+            Ssb(SsbDemodulator),
+            Cw(CwDemodulator),
         }
 
         impl Demod {
@@ -234,6 +244,8 @@ impl SignalPath {
                     Demod::Wbfm(d) => d.reset(),
                     Demod::Nfm(d) => d.reset(),
                     Demod::Am(d) => d.reset(),
+                    Demod::Ssb(d) => d.reset(),
+                    Demod::Cw(d) => d.reset(),
                 }
             }
         }
@@ -285,6 +297,16 @@ impl SignalPath {
                                     Demod::Nfm(FmDemodulator::new(sr, 48_000, nfm_bw_hz as f32, 0.0))
                                 }
                                 DemodMode::Am => Demod::Am(AmDemodulator::standard(sr)),
+                                DemodMode::Usb => {
+                                    Demod::Ssb(SsbDemodulator::standard(SsbMode::Usb, sr))
+                                }
+                                DemodMode::Lsb => {
+                                    Demod::Ssb(SsbDemodulator::standard(SsbMode::Lsb, sr))
+                                }
+                                DemodMode::Dsb => {
+                                    Demod::Ssb(SsbDemodulator::standard(SsbMode::Dsb, sr))
+                                }
+                                DemodMode::Cw => Demod::Cw(CwDemodulator::standard(sr)),
                             };
                             squelch.reset();
                             audio_bp.reset();
@@ -422,6 +444,14 @@ impl SignalPath {
                         filtered.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Am(d) => {
+                        let mono = d.process(&iq_complex);
+                        mono.into_iter().map(StereoFrame::mono).collect()
+                    }
+                    Demod::Ssb(d) => {
+                        let mono = d.process(&iq_complex);
+                        mono.into_iter().map(StereoFrame::mono).collect()
+                    }
+                    Demod::Cw(d) => {
                         let mono = d.process(&iq_complex);
                         mono.into_iter().map(StereoFrame::mono).collect()
                     }

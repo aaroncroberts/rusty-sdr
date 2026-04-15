@@ -10,6 +10,8 @@
 
 use rustfft::num_complex::Complex;
 
+use super::bandpass::AudioBandpass;
+
 /// FM discriminator + de-emphasis + rational resampler.
 ///
 /// Converts wideband FM (IQ at `sample_rate` Hz) to audio at `audio_rate` Hz.
@@ -186,6 +188,286 @@ impl AmDemodulator {
     }
 }
 
+// ── Internal biquad for SSB and CW demodulators ───────────────────────────────
+//
+// Mirrors the private `Biquad` in bandpass.rs (which is inaccessible here).
+// Transposed Direct Form II; RBJ Audio EQ Cookbook coefficients.
+
+struct DspBiquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+impl DspBiquad {
+    fn lowpass(cutoff_hz: f32, fs_hz: f32) -> Self {
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        let w0 = 2.0 * std::f32::consts::PI * cutoff_hz / fs_hz;
+        let alpha = w0.sin() / (2.0 * q);
+        let cos_w0 = w0.cos();
+        let b0 = (1.0 - cos_w0) / 2.0;
+        let b1 = 1.0 - cos_w0;
+        let b2 = (1.0 - cos_w0) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0, z1: 0.0, z2: 0.0 }
+    }
+
+    fn highpass(cutoff_hz: f32, fs_hz: f32) -> Self {
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        let w0 = 2.0 * std::f32::consts::PI * cutoff_hz / fs_hz;
+        let alpha = w0.sin() / (2.0 * q);
+        let cos_w0 = w0.cos();
+        let b0 = (1.0 + cos_w0) / 2.0;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = (1.0 + cos_w0) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0, z1: 0.0, z2: 0.0 }
+    }
+
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        y
+    }
+
+    fn reset(&mut self) {
+        self.z1 = 0.0;
+        self.z2 = 0.0;
+    }
+}
+
+// ── SSB / DSB demodulator (Weaver phasing method) ─────────────────────────────
+
+/// Sideband selection for [`SsbDemodulator`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SsbMode {
+    /// Upper sideband — demodulates positive-frequency (above-carrier) content.
+    Usb,
+    /// Lower sideband — demodulates negative-frequency (below-carrier) content.
+    Lsb,
+    /// Double sideband — passes both sidebands; takes I channel directly.
+    Dsb,
+}
+
+/// SSB and DSB demodulator using the Weaver phasing method.
+///
+/// Algorithm (USB / LSB):
+///   1. **Mix down** input IQ by fc = 1650 Hz (midpoint of the 300–3 kHz voice
+///      band): `z_bb[n] = z[n] · exp(-j·2π·fc/fs·n)`.
+///      For LSB the input Q is negated first (conjugates the spectrum), so the
+///      upper sideband of the original signal shifts into the passband.
+///   2. **Lowpass filter** I and Q of `z_bb` with a 4th-order Butterworth at
+///      1350 Hz (two cascaded 2nd-order sections ≈ 25 dB rejection at 2650 Hz).
+///   3. **Mix back up** and take the real part:
+///      `audio = I_filt · cos(θ) − Q_filt · sin(θ)`.
+///   4. **Rational resample** to `audio_rate` via a phase accumulator; apply a
+///      300–3 kHz voice bandpass filter at audio rate.
+///
+/// Algorithm (DSB):
+///   Takes the real part (I channel) of the baseband IQ directly, lowpass-
+///   filtered at input rate, resampled, then voice-bandpassed at audio rate.
+///
+/// The Weaver oscillator advances at input rate; the mix-up step uses the same
+/// phase as mix-down, making the two stages coherent.
+pub struct SsbDemodulator {
+    mode: SsbMode,
+    /// Fractional output phase accumulator (0..1)
+    phase_acc: f64,
+    /// Increment per input sample = audio_rate / sample_rate
+    phase_step: f64,
+    /// Weaver oscillator phase (radians), advanced at input rate
+    lo_phase: f32,
+    /// Weaver oscillator step per input sample = 2π · fc / sample_rate
+    lo_step: f32,
+    /// 4th-order input-rate Butterworth LPF for I channel (2 cascaded sections)
+    lpf_i1: DspBiquad,
+    lpf_i2: DspBiquad,
+    /// 4th-order input-rate Butterworth LPF for Q channel
+    lpf_q1: DspBiquad,
+    lpf_q2: DspBiquad,
+    /// Voice bandpass (300–3000 Hz) applied at audio rate
+    audio_bp: AudioBandpass,
+}
+
+impl SsbDemodulator {
+    /// Weaver carrier frequency in Hz (midpoint of the voice passband).
+    const WEAVER_FC: f32 = 1_650.0;
+    /// Weaver LPF cutoff in Hz — half the voice bandwidth (3000−300)/2 ≈ 1350 Hz.
+    const WEAVER_LPF: f32 = 1_350.0;
+
+    /// Create an SSB/DSB demodulator.
+    ///
+    /// * `mode`        — [`SsbMode::Usb`], [`SsbMode::Lsb`], or [`SsbMode::Dsb`]
+    /// * `sample_rate` — IQ input sample rate in Hz
+    /// * `audio_rate`  — desired audio output rate in Hz (typically 48 000)
+    pub fn new(mode: SsbMode, sample_rate: u32, audio_rate: u32) -> Self {
+        let phase_step = audio_rate as f64 / sample_rate as f64;
+        let lo_step = 2.0 * std::f32::consts::PI * Self::WEAVER_FC / sample_rate as f32;
+        let fs = sample_rate as f32;
+        Self {
+            mode,
+            phase_acc: 0.0,
+            phase_step,
+            lo_phase: 0.0,
+            lo_step,
+            lpf_i1: DspBiquad::lowpass(Self::WEAVER_LPF, fs),
+            lpf_i2: DspBiquad::lowpass(Self::WEAVER_LPF, fs),
+            lpf_q1: DspBiquad::lowpass(Self::WEAVER_LPF, fs),
+            lpf_q2: DspBiquad::lowpass(Self::WEAVER_LPF, fs),
+            audio_bp: AudioBandpass::voice(audio_rate as f32),
+        }
+    }
+
+    /// Convenience constructor for standard SDR audio output (48 kHz).
+    pub fn standard(mode: SsbMode, sample_rate: u32) -> Self {
+        Self::new(mode, sample_rate, 48_000)
+    }
+
+    /// Process a batch of IQ samples and return resampled audio.
+    pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(
+            (samples.len() as f64 * self.phase_step).ceil() as usize + 2,
+        );
+
+        for &s in samples {
+            // Snapshot oscillator phase before advancing (used for both
+            // mix-down and mix-up to keep the two stages coherent).
+            let lo_cos = self.lo_phase.cos();
+            let lo_sin = self.lo_phase.sin();
+            self.lo_phase += self.lo_step;
+            if self.lo_phase >= std::f32::consts::TAU {
+                self.lo_phase -= std::f32::consts::TAU;
+            }
+
+            let audio_raw = match self.mode {
+                SsbMode::Dsb => {
+                    // DSB: take I channel through input-rate LPF (both sidebands contribute)
+                    self.lpf_i2.process(self.lpf_i1.process(s.re))
+                }
+                SsbMode::Usb | SsbMode::Lsb => {
+                    // LSB: conjugate input (negate Q) to mirror spectrum into USB path
+                    let (i_in, q_in) = if self.mode == SsbMode::Lsb {
+                        (s.re, -s.im)
+                    } else {
+                        (s.re, s.im)
+                    };
+                    // Weaver mix-down: multiply by exp(-j·lo_phase)
+                    let i_bb = i_in * lo_cos + q_in * lo_sin;
+                    let q_bb = q_in * lo_cos - i_in * lo_sin;
+                    // 4th-order Butterworth LPF (two cascaded 2nd-order sections)
+                    let i_filt = self.lpf_i2.process(self.lpf_i1.process(i_bb));
+                    let q_filt = self.lpf_q2.process(self.lpf_q1.process(q_bb));
+                    // Weaver mix-up: Re(z_filt · exp(+j·lo_phase))
+                    i_filt * lo_cos - q_filt * lo_sin
+                }
+            };
+
+            // Rational resampler: emit when phase crosses integer boundary
+            self.phase_acc += self.phase_step;
+            while self.phase_acc >= 1.0 {
+                out.push(audio_raw);
+                self.phase_acc -= 1.0;
+            }
+        }
+
+        // Voice bandpass at audio rate then clamp
+        self.audio_bp.process_inplace(&mut out);
+        for s in &mut out {
+            *s = s.clamp(-1.0, 1.0);
+        }
+
+        out
+    }
+
+    /// Reset demodulator state (e.g. after a frequency change).
+    pub fn reset(&mut self) {
+        self.phase_acc = 0.0;
+        self.lo_phase = 0.0;
+        self.lpf_i1.reset();
+        self.lpf_i2.reset();
+        self.lpf_q1.reset();
+        self.lpf_q2.reset();
+        self.audio_bp.reset();
+    }
+}
+
+// ── CW demodulator ────────────────────────────────────────────────────────────
+
+/// CW (Morse code) demodulator with narrow audio bandpass.
+///
+/// Algorithm:
+///   1. Take the real part (I channel) of the baseband IQ.
+///   2. Rational resample to `audio_rate` via phase accumulator.
+///   3. Apply a narrow CW bandpass (HP @ 400 Hz, LP @ 900 Hz) at audio rate.
+///      This centres on the conventional 700 Hz CW sidetone and rejects voice
+///      and other off-frequency signals.
+pub struct CwDemodulator {
+    phase_acc: f64,
+    phase_step: f64,
+    /// HP at 400 Hz (audio rate) — removes low-frequency noise and voice
+    hp: DspBiquad,
+    /// LP at 900 Hz (audio rate) — narrow CW passband centred on 700 Hz sidetone
+    lp: DspBiquad,
+}
+
+impl CwDemodulator {
+    /// Create a CW demodulator.
+    ///
+    /// * `sample_rate` — IQ input sample rate in Hz
+    /// * `audio_rate`  — desired audio output rate in Hz (typically 48 000)
+    pub fn new(sample_rate: u32, audio_rate: u32) -> Self {
+        let phase_step = audio_rate as f64 / sample_rate as f64;
+        let fs = audio_rate as f32;
+        Self {
+            phase_acc: 0.0,
+            phase_step,
+            hp: DspBiquad::highpass(400.0, fs),
+            lp: DspBiquad::lowpass(900.0, fs),
+        }
+    }
+
+    /// Convenience constructor for standard SDR audio output (48 kHz).
+    pub fn standard(sample_rate: u32) -> Self {
+        Self::new(sample_rate, 48_000)
+    }
+
+    /// Process a batch of IQ samples and return resampled audio.
+    pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(
+            (samples.len() as f64 * self.phase_step).ceil() as usize + 2,
+        );
+
+        for &s in samples {
+            self.phase_acc += self.phase_step;
+            while self.phase_acc >= 1.0 {
+                // I channel → narrow bandpass (HP 400 Hz, LP 900 Hz)
+                let filtered = self.lp.process(self.hp.process(s.re));
+                out.push(filtered.clamp(-1.0, 1.0));
+                self.phase_acc -= 1.0;
+            }
+        }
+
+        out
+    }
+
+    /// Reset demodulator state.
+    pub fn reset(&mut self) {
+        self.phase_acc = 0.0;
+        self.hp.reset();
+        self.lp.reset();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +545,142 @@ mod tests {
         for &s in &out {
             assert!((-1.0..=1.0).contains(&s), "sample {s} out of [-1, 1]");
         }
+    }
+
+    // ── SSB / DSB tests ───────────────────────────────────────────────────────
+
+    fn iq_tone(freq_hz: f32, fs: f32, n: usize) -> Vec<Complex<f32>> {
+        (0..n)
+            .map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * freq_hz / fs * i as f32;
+                Complex::new(phase.cos(), phase.sin())
+            })
+            .collect()
+    }
+
+    fn rms_second_half(samples: &[f32]) -> f32 {
+        let half = samples.len() / 2;
+        let count = samples.len() - half;
+        (samples[half..].iter().map(|&v| v * v).sum::<f32>() / count as f32).sqrt()
+    }
+
+    /// USB should pass a +1 kHz baseband tone (above-carrier content).
+    #[test]
+    fn ssb_usb_passes_upper_sideband() {
+        let sr = 48_000u32;
+        let mut demod = SsbDemodulator::standard(SsbMode::Usb, sr);
+        let samples = iq_tone(1_000.0, sr as f32, 24_000);
+        let out = demod.process(&samples);
+        let rms = rms_second_half(&out);
+        assert!(rms > 0.1, "USB +1 kHz should produce audio (rms={rms:.4})");
+    }
+
+    /// USB should reject a -1 kHz tone (lower sideband).
+    #[test]
+    fn ssb_usb_rejects_lower_sideband() {
+        let sr = 48_000u32;
+        let mut demod = SsbDemodulator::standard(SsbMode::Usb, sr);
+        // -1 kHz: conjugate of +1 kHz phasor
+        let samples: Vec<Complex<f32>> = iq_tone(1_000.0, sr as f32, 24_000)
+            .into_iter()
+            .map(|s| Complex::new(s.re, -s.im))
+            .collect();
+        let out = demod.process(&samples);
+        let rms = rms_second_half(&out);
+        assert!(rms < 0.15, "USB should reject -1 kHz LSB tone (rms={rms:.4})");
+    }
+
+    /// LSB should pass a -1 kHz baseband tone (below-carrier content).
+    #[test]
+    fn ssb_lsb_passes_lower_sideband() {
+        let sr = 48_000u32;
+        let mut demod = SsbDemodulator::standard(SsbMode::Lsb, sr);
+        let samples: Vec<Complex<f32>> = iq_tone(1_000.0, sr as f32, 24_000)
+            .into_iter()
+            .map(|s| Complex::new(s.re, -s.im))
+            .collect();
+        let out = demod.process(&samples);
+        let rms = rms_second_half(&out);
+        assert!(rms > 0.1, "LSB -1 kHz should produce audio (rms={rms:.4})");
+    }
+
+    /// LSB should reject a +1 kHz tone (upper sideband).
+    #[test]
+    fn ssb_lsb_rejects_upper_sideband() {
+        let sr = 48_000u32;
+        let mut demod = SsbDemodulator::standard(SsbMode::Lsb, sr);
+        let samples = iq_tone(1_000.0, sr as f32, 24_000);
+        let out = demod.process(&samples);
+        let rms = rms_second_half(&out);
+        assert!(rms < 0.15, "LSB should reject +1 kHz USB tone (rms={rms:.4})");
+    }
+
+    /// DSB should produce audio for a real (both-sideband) cosine input.
+    #[test]
+    fn ssb_dsb_produces_audio() {
+        let sr = 48_000u32;
+        let mut demod = SsbDemodulator::standard(SsbMode::Dsb, sr);
+        // Real cosine: I = cos(1000t), Q = 0 (equal energy in both sidebands)
+        let samples: Vec<Complex<f32>> = (0..24_000)
+            .map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * 1_000.0 / sr as f32 * i as f32;
+                Complex::new(phase.cos(), 0.0)
+            })
+            .collect();
+        let out = demod.process(&samples);
+        let rms = rms_second_half(&out);
+        assert!(rms > 0.1, "DSB should produce audio for real 1 kHz input (rms={rms:.4})");
+    }
+
+    /// Output sample count follows the rate-conversion contract.
+    #[test]
+    fn ssb_output_count_matches_rate() {
+        let sr = 240_000u32;
+        let ar = 48_000u32;
+        let mut demod = SsbDemodulator::new(SsbMode::Usb, sr, ar);
+        let n = sr as usize; // 1 second of input
+        let samples = iq_tone(1_000.0, sr as f32, n);
+        let out = demod.process(&samples);
+        let expected = ar as usize;
+        let diff = (out.len() as i64 - expected as i64).abs();
+        assert!(diff <= 2, "expected ~{expected} samples, got {}", out.len());
+    }
+
+    // ── CW tests ──────────────────────────────────────────────────────────────
+
+    /// CW bandpass passes the standard 700 Hz sidetone.
+    #[test]
+    fn cw_passes_700hz_sidetone() {
+        let sr = 48_000u32;
+        let ar = 48_000u32;
+        let mut demod = CwDemodulator::new(sr, ar);
+        let n = 24_000;
+        let samples: Vec<Complex<f32>> = (0..n)
+            .map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * 700.0 / sr as f32 * i as f32;
+                Complex::new(phase.cos(), 0.0)
+            })
+            .collect();
+        let out = demod.process(&samples);
+        let rms = rms_second_half(&out);
+        assert!(rms > 0.1, "CW bandpass should pass 700 Hz (rms={rms:.4})");
+    }
+
+    /// CW bandpass rejects 2 kHz (voice range, outside CW sidetone window).
+    #[test]
+    fn cw_rejects_2khz_voice() {
+        let sr = 48_000u32;
+        let ar = 48_000u32;
+        let mut demod = CwDemodulator::new(sr, ar);
+        let n = 24_000;
+        let samples: Vec<Complex<f32>> = (0..n)
+            .map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * 2_000.0 / sr as f32 * i as f32;
+                Complex::new(phase.cos(), 0.0)
+            })
+            .collect();
+        let out = demod.process(&samples);
+        let rms = rms_second_half(&out);
+        assert!(rms < 0.15, "CW bandpass should reject 2 kHz voice (rms={rms:.4})");
     }
 }

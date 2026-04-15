@@ -318,6 +318,7 @@ impl SdrApp {
         ui.add_space(4.0);
 
         let current_mode = self.shared.read().demod_mode;
+        // Row 1: FM and AM modes
         ui.horizontal(|ui| {
             for (mode, label, tooltip) in [
                 (DemodMode::Wbfm, "WBFM", "Wideband FM — FM broadcast stations (88–108 MHz). 75 kHz deviation, stereo, RDS."),
@@ -326,11 +327,23 @@ impl SdrApp {
             ] {
                 let selected = current_mode == mode;
                 let text = RichText::new(label).small();
-                let text = if selected {
-                    text.color(theme::ACCENT).strong()
-                } else {
-                    text.color(theme::TEXT_MUTED)
-                };
+                let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
+                if ui.selectable_label(selected, text).on_hover_text(tooltip).clicked() && !selected {
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
+                }
+            }
+        });
+        // Row 2: SSB and CW modes
+        ui.horizontal(|ui| {
+            for (mode, label, tooltip) in [
+                (DemodMode::Usb, "USB", "Upper Sideband SSB — HF amateur and maritime voice. Tune above the suppressed carrier."),
+                (DemodMode::Lsb, "LSB", "Lower Sideband SSB — HF amateur voice below 10 MHz (160m–40m). Tune below the carrier."),
+                (DemodMode::Dsb, "DSB", "Double Sideband — both sidebands, suppressed carrier. Rare; used in some utility stations."),
+                (DemodMode::Cw, "CW", "CW / Morse code — narrow 400–900 Hz bandpass centred on the 700 Hz sidetone."),
+            ] {
+                let selected = current_mode == mode;
+                let text = RichText::new(label).small();
+                let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
                 if ui.selectable_label(selected, text).on_hover_text(tooltip).clicked() && !selected {
                     let _ = self.cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
                 }
@@ -503,6 +516,10 @@ impl SdrApp {
             let mode_str = match mode {
                 DemodMode::Nfm => "Nfm",
                 DemodMode::Am => "Am",
+                DemodMode::Usb => "Usb",
+                DemodMode::Lsb => "Lsb",
+                DemodMode::Dsb => "Dsb",
+                DemodMode::Cw => "Cw",
                 _ => "Wbfm",
             };
             self.config.bookmarks.push(BookmarkConfig::new(name, freq, mode_str));
