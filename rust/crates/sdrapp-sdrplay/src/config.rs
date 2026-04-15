@@ -35,6 +35,28 @@ pub struct RspdxConfig {
     pub lna_state: u8,
     /// Enable automatic gain control.
     pub agc_enabled: bool,
+    /// IF gain in dBFS (−59 to 0); used when AGC is disabled.
+    #[serde(default)]
+    pub if_gain_dbfs: i32,
+    /// AGC setpoint in dBFS (−60 to 0).
+    #[serde(default = "default_agc_setpoint")]
+    pub agc_setpoint_dbfs: i32,
+    /// Bias-T power supply on the coax connector.
+    #[serde(default)]
+    pub bias_t_enabled: bool,
+    /// High Dynamic Range mode (RSPdx-R2 specific).
+    #[serde(default)]
+    pub hdr_mode: bool,
+    /// AM broadcast notch filter.
+    #[serde(default)]
+    pub am_notch_enabled: bool,
+    /// FM broadcast / DAB notch filter.
+    #[serde(default)]
+    pub fm_notch_enabled: bool,
+}
+
+fn default_agc_setpoint() -> i32 {
+    -60
 }
 
 impl Default for RspdxConfig {
@@ -46,6 +68,12 @@ impl Default for RspdxConfig {
             if_mode: IfMode::ZeroIf,
             lna_state: 3,
             agc_enabled: true,
+            if_gain_dbfs: 0,
+            agc_setpoint_dbfs: -60,
+            bias_t_enabled: false,
+            hdr_mode: false,
+            am_notch_enabled: false,
+            fm_notch_enabled: false,
         }
     }
 }

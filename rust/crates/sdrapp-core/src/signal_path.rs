@@ -150,6 +150,26 @@ pub struct SharedState {
     pub scheduled_record_delay_secs: Option<u64>,
     /// Scheduled recording duration in seconds.
     pub scheduled_record_duration_secs: u32,
+
+    // ── Hardware control state (RSPdx-R2) ─────────────────────────────────────
+    /// LNA gain reduction state (0–9). 0 = max gain, 9 = max attenuation.
+    pub lna_state: u8,
+    /// IF gain in dBFS (−59 to 0). Used when AGC is disabled.
+    pub if_gain_dbfs: i32,
+    /// AGC enabled flag.
+    pub agc_enabled: bool,
+    /// AGC setpoint in dBFS (−60 to 0). Ignored when AGC is disabled.
+    pub agc_setpoint_dbfs: i32,
+    /// Bias-T power on coax (powers active antennas).
+    pub bias_t_enabled: bool,
+    /// High Dynamic Range mode (RSPdx-R2 specific).
+    pub hdr_mode: bool,
+    /// AM broadcast notch filter enabled.
+    pub am_notch_enabled: bool,
+    /// FM broadcast notch filter enabled.
+    pub fm_notch_enabled: bool,
+    /// Active antenna port: 0=A, 1=B, 2=C.
+    pub antenna_port: u8,
 }
 
 impl SharedState {
@@ -168,6 +188,25 @@ impl SharedState {
             ..Default::default()
         }
     }
+}
+
+/// Commands forwarded from the signal path to the hardware device thread.
+///
+/// The signal path holds an optional `crossbeam_channel::Sender<HardwareCommand>`.
+/// When a hardware-related [`SignalPathCommand`] is received, the signal path
+/// updates [`SharedState`] and forwards a `HardwareCommand` to the device.
+#[derive(Debug, Clone)]
+pub enum HardwareCommand {
+    SetLnaState(u8),
+    SetIfGain(i32),
+    SetAgcEnabled(bool),
+    SetAgcSetpoint(i32),
+    SetBiasT(bool),
+    SetHdrMode(bool),
+    SetAmNotch(bool),
+    SetFmNotch(bool),
+    /// Antenna port: 0 = A, 1 = B, 2 = C.
+    SetAntenna(u8),
 }
 
 /// Commands from the UI to the signal path.
@@ -194,6 +233,17 @@ pub enum SignalPathCommand {
     SetNfmBandwidth(u32),
     /// Enable or disable CTCSS tone squelch in NFM mode.
     SetCtcssEnabled(bool),
+    // ── Hardware controls (forwarded to device thread via HardwareCommand) ───
+    SetLnaState(u8),
+    SetIfGain(i32),
+    SetAgcEnabled(bool),
+    SetAgcSetpoint(i32),
+    SetBiasT(bool),
+    SetHdrMode(bool),
+    SetAmNotch(bool),
+    SetFmNotch(bool),
+    /// Antenna port: 0 = A, 1 = B, 2 = C.
+    SetAntenna(u8),
     Stop,
 }
 
@@ -219,10 +269,14 @@ impl SignalPath {
         // Optional hardware frequency atomic — if Some, SetFrequency writes here
         // so the device thread (polling every 50ms) picks up the new value.
         freq_atomic: Option<Arc<AtomicU64>>,
+        // Optional hardware command channel — if Some, hardware control commands
+        // (LNA, AGC, bias-T, etc.) are forwarded to the device thread.
+        hardware_cmd_tx: Option<crossbeam_channel::Sender<HardwareCommand>>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<SignalPathCommand>(64);
         let shared_clone = Arc::clone(&shared);
         let freq_atomic_clone = freq_atomic;
+        let hw_cmd_tx = hardware_cmd_tx;
 
         // Read initial sample rate before moving shared into the task
         let sample_rate = shared.read().sample_rate_sps;
@@ -371,6 +425,61 @@ impl SignalPath {
                             ctcss.reset();
                             shared_clone.write().ctcss_squelch_enabled = enabled;
                             shared_clone.write().ctcss_tone_detected = false;
+                        }
+                        // ── Hardware control commands ─────────────────────────
+                        SignalPathCommand::SetLnaState(n) => {
+                            shared_clone.write().lna_state = n;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetLnaState(n));
+                            }
+                        }
+                        SignalPathCommand::SetIfGain(g) => {
+                            shared_clone.write().if_gain_dbfs = g;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetIfGain(g));
+                            }
+                        }
+                        SignalPathCommand::SetAgcEnabled(en) => {
+                            shared_clone.write().agc_enabled = en;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetAgcEnabled(en));
+                            }
+                        }
+                        SignalPathCommand::SetAgcSetpoint(sp) => {
+                            shared_clone.write().agc_setpoint_dbfs = sp;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetAgcSetpoint(sp));
+                            }
+                        }
+                        SignalPathCommand::SetBiasT(en) => {
+                            shared_clone.write().bias_t_enabled = en;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetBiasT(en));
+                            }
+                        }
+                        SignalPathCommand::SetHdrMode(en) => {
+                            shared_clone.write().hdr_mode = en;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetHdrMode(en));
+                            }
+                        }
+                        SignalPathCommand::SetAmNotch(en) => {
+                            shared_clone.write().am_notch_enabled = en;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetAmNotch(en));
+                            }
+                        }
+                        SignalPathCommand::SetFmNotch(en) => {
+                            shared_clone.write().fm_notch_enabled = en;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetFmNotch(en));
+                            }
+                        }
+                        SignalPathCommand::SetAntenna(port) => {
+                            shared_clone.write().antenna_port = port;
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(HardwareCommand::SetAntenna(port));
+                            }
                         }
                         SignalPathCommand::Stop => {
                             shared_clone.write().is_running = false;

@@ -99,24 +99,43 @@ fn main() -> anyhow::Result<()> {
     let mut _sdrplay_source: Option<sdrapp_sdrplay::RspdxSource> = None;
     let mut _demo_source: Option<sdrapp_core::test_source::TestSignalSource> = None;
 
-    let (iq_rx, iq_recorder_rx, freq_atomic) = if sdrapp_sdrplay::RspdxSource::is_device_available() {
+    let (iq_rx, iq_recorder_rx, freq_atomic, hardware_cmd_tx) = if sdrapp_sdrplay::RspdxSource::is_device_available() {
         tracing::info!("SDRplay device found — starting in hardware mode");
         shared.write().source_name = Some("SDRplay RSPdx-R2".to_string());
 
+        {
+            let mut s = shared.write();
+            s.lna_state = config.source.lna_state;
+            s.if_gain_dbfs = config.source.if_gain_dbfs;
+            s.agc_enabled = config.source.agc_enabled;
+            s.agc_setpoint_dbfs = config.source.agc_setpoint_dbfs;
+            s.bias_t_enabled = config.source.bias_t_enabled;
+            s.hdr_mode = config.source.hdr_mode;
+            s.am_notch_enabled = config.source.am_notch_enabled;
+            s.fm_notch_enabled = config.source.fm_notch_enabled;
+            s.antenna_port = match config.source.antenna.as_str() { "B" => 1, "C" => 2, _ => 0 };
+        }
         let mut src = sdrapp_sdrplay::RspdxSource::new(sdrapp_sdrplay::RspdxConfig {
             frequency_hz: config.ui.frequency_hz,
             sample_rate_sps: config.source.sample_rate_sps,
             antenna,
             agc_enabled: config.source.agc_enabled,
             lna_state: config.source.lna_state,
+            if_gain_dbfs: config.source.if_gain_dbfs,
+            agc_setpoint_dbfs: config.source.agc_setpoint_dbfs,
+            bias_t_enabled: config.source.bias_t_enabled,
+            hdr_mode: config.source.hdr_mode,
+            am_notch_enabled: config.source.am_notch_enabled,
+            fm_notch_enabled: config.source.fm_notch_enabled,
             ..Default::default()
         });
         let rx = src.subscribe();
         let iq_rec_rx = src.subscribe();
         let fa = src.frequency_atomic();
+        let hw_tx = src.hardware_cmd_tx();
         drop(src.start());
         _sdrplay_source = Some(src);
-        (rx, iq_rec_rx, fa)
+        (rx, iq_rec_rx, fa, Some(hw_tx))
     } else {
         tracing::warn!("no SDRplay device — starting in demo mode (synthetic test signal)");
         shared.write().source_name = Some("Demo Mode".to_string());
@@ -130,7 +149,7 @@ fn main() -> anyhow::Result<()> {
         let fa = src.frequency_atomic();
         drop(src.start());
         _demo_source = Some(src);
-        (rx, iq_rec_rx, fa)
+        (rx, iq_rec_rx, fa, None)
     };
 
     // ── Recorder ─────────────────────────────────────────────────────────────
@@ -153,6 +172,7 @@ fn main() -> anyhow::Result<()> {
         Some(recorder_audio_tx),
         None, // RepaintHandle: egui context not available yet; UI polls SharedState
         Some(freq_atomic),
+        hardware_cmd_tx,
     );
     // Use the command sender that the signal path actually reads from.
     let cmd_tx = signal_path.cmd_tx.clone();

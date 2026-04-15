@@ -553,6 +553,8 @@ impl SdrApp {
                     if ui.selectable_label(selected, label).clicked() && !selected {
                         self.config.source.antenna = port.into();
                         self.config_dirty = true;
+                        let port_num: u8 = match port { "B" => 1, "C" => 2, _ => 0 };
+                        let _ = self.cmd_tx.try_send(SignalPathCommand::SetAntenna(port_num));
                     }
                 }
             });
@@ -605,6 +607,7 @@ impl SdrApp {
                 if ui.selectable_label(*agc, label).clicked() {
                     *agc = !*agc;
                     self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetAgcEnabled(*agc));
                 }
             });
         });
@@ -620,6 +623,102 @@ impl SdrApp {
                 {
                     self.config.source.lna_state = lna as u8;
                     self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetLnaState(lna as u8));
+                }
+            });
+
+            // IF gain slider (−59 to 0 dBFS)
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("IF Gain").color(theme::TEXT_MUTED).small());
+                let mut gain = self.config.source.if_gain_dbfs;
+                if ui
+                    .add(egui::Slider::new(&mut gain, -59..=0).suffix(" dBFS").show_value(true))
+                    .changed()
+                {
+                    self.config.source.if_gain_dbfs = gain;
+                    self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetIfGain(gain));
+                }
+            });
+        }
+
+        // AGC setpoint (only when AGC is on)
+        if self.config.source.agc_enabled {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Setpoint").color(theme::TEXT_MUTED).small());
+                let mut sp = self.config.source.agc_setpoint_dbfs;
+                if ui
+                    .add(egui::Slider::new(&mut sp, -60..=0).suffix(" dBFS").show_value(true))
+                    .changed()
+                {
+                    self.config.source.agc_setpoint_dbfs = sp;
+                    self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetAgcSetpoint(sp));
+                }
+            });
+        }
+
+        // Hardware-only advanced controls (not shown in demo mode)
+        if !is_demo {
+            ui.add_space(4.0);
+
+            // Bias-T, HDR mode
+            ui.horizontal(|ui| {
+                // Bias-T
+                let bias_t = self.config.source.bias_t_enabled;
+                let label = RichText::new("Bias-T").small();
+                let label = if bias_t { label.color(theme::ACCENT).strong() } else { label.color(theme::TEXT_MUTED) };
+                if ui.selectable_label(bias_t, label)
+                    .on_hover_text("Enable Bias-T 4.7 V supply on coax connector for active antennas.")
+                    .clicked()
+                {
+                    self.config.source.bias_t_enabled = !bias_t;
+                    self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetBiasT(!bias_t));
+                }
+
+                ui.add_space(6.0);
+
+                // HDR mode
+                let hdr = self.config.source.hdr_mode;
+                let label = RichText::new("HDR").small();
+                let label = if hdr { label.color(theme::ACCENT).strong() } else { label.color(theme::TEXT_MUTED) };
+                if ui.selectable_label(hdr, label)
+                    .on_hover_text("High Dynamic Range mode — improves ADC performance below 2 MHz.")
+                    .clicked()
+                {
+                    self.config.source.hdr_mode = !hdr;
+                    self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetHdrMode(!hdr));
+                }
+            });
+
+            // AM notch, FM notch
+            ui.horizontal(|ui| {
+                let am = self.config.source.am_notch_enabled;
+                let label = RichText::new("AM notch").small();
+                let label = if am { label.color(theme::ACCENT).strong() } else { label.color(theme::TEXT_MUTED) };
+                if ui.selectable_label(am, label)
+                    .on_hover_text("AM broadcast notch filter — reduces LW/MW overload interference.")
+                    .clicked()
+                {
+                    self.config.source.am_notch_enabled = !am;
+                    self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetAmNotch(!am));
+                }
+
+                ui.add_space(6.0);
+
+                let fm = self.config.source.fm_notch_enabled;
+                let label = RichText::new("FM notch").small();
+                let label = if fm { label.color(theme::ACCENT).strong() } else { label.color(theme::TEXT_MUTED) };
+                if ui.selectable_label(fm, label)
+                    .on_hover_text("FM broadcast / DAB notch filter — reduces overload from strong FM stations.")
+                    .clicked()
+                {
+                    self.config.source.fm_notch_enabled = !fm;
+                    self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetFmNotch(!fm));
                 }
             });
         }

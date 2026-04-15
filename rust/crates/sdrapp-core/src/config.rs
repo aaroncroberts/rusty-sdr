@@ -44,6 +44,31 @@ pub struct SourceConfig {
     pub sample_rate_sps: u32,
     /// IF mode: "ZeroIF", "LowIF200kHz", "LowIF500kHz".
     pub if_mode: String,
+    /// IF gain in dBFS (−59 to 0); combined with LNA state for manual gain.
+    #[serde(default = "default_if_gain_dbfs")]
+    pub if_gain_dbfs: i32,
+    /// AGC setpoint in dBFS (−60 to 0).
+    #[serde(default = "default_agc_setpoint_dbfs")]
+    pub agc_setpoint_dbfs: i32,
+    /// Bias-T power supply on the coax connector (for active antennas).
+    #[serde(default)]
+    pub bias_t_enabled: bool,
+    /// High Dynamic Range mode (RSPdx-R2 specific).
+    #[serde(default)]
+    pub hdr_mode: bool,
+    /// AM broadcast notch filter (reduces LW/MW interference).
+    #[serde(default)]
+    pub am_notch_enabled: bool,
+    /// FM broadcast notch filter (reduces FM overload above 65 MHz).
+    #[serde(default)]
+    pub fm_notch_enabled: bool,
+}
+
+fn default_if_gain_dbfs() -> i32 {
+    0
+}
+fn default_agc_setpoint_dbfs() -> i32 {
+    -60
 }
 
 impl Default for SourceConfig {
@@ -54,6 +79,12 @@ impl Default for SourceConfig {
             lna_state: 3,
             sample_rate_sps: 2_000_000,
             if_mode: "ZeroIF".into(),
+            if_gain_dbfs: 0,
+            agc_setpoint_dbfs: -60,
+            bias_t_enabled: false,
+            hdr_mode: false,
+            am_notch_enabled: false,
+            fm_notch_enabled: false,
         }
     }
 }

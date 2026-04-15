@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use sdrapp_core::{block::Block, error::SourceError, sample::IqSample, source::Source};
+use sdrapp_core::{block::Block, error::SourceError, sample::IqSample, signal_path::HardwareCommand, source::Source};
 
 use crate::config::{Antenna, RspdxConfig};
 
@@ -50,22 +50,37 @@ pub struct RspdxSource {
     running: Arc<AtomicBool>,
     tx: broadcast::Sender<Arc<[IqSample]>>,
     stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Sender side of the hardware command channel; exposed to callers via
+    /// `hardware_cmd_tx()` so they can send runtime parameter changes.
+    hw_cmd_tx: crossbeam_channel::Sender<HardwareCommand>,
+    /// Receiver side kept here until `start()` moves it into the device thread.
+    hw_cmd_rx: Option<crossbeam_channel::Receiver<HardwareCommand>>,
 }
 
 impl RspdxSource {
     pub fn new(config: RspdxConfig) -> Self {
         let (tx, _) = broadcast::channel(64);
         let frequency_hz = Arc::new(AtomicU64::new(config.frequency_hz));
+        let (hw_cmd_tx, hw_cmd_rx) = crossbeam_channel::bounded::<HardwareCommand>(32);
         Self {
             config,
             frequency_hz,
             running: Arc::new(AtomicBool::new(false)),
             tx,
             stop_tx: None,
+            hw_cmd_tx,
+            hw_cmd_rx: Some(hw_cmd_rx),
         }
     }
 
-    /// Returns a list of available SDRplay device hardware names.
+    /// Returns a clone of the hardware command sender.
+    ///
+    /// Pass this to [`SignalPath::start`] as the `hardware_cmd_tx` parameter
+    /// so the signal path can forward hardware-control UI commands to the device thread.
+    pub fn hardware_cmd_tx(&self) -> crossbeam_channel::Sender<HardwareCommand> {
+        self.hw_cmd_tx.clone()
+    }
+
     /// Returns a clone of the shared frequency atomic so callers can write new
     /// frequencies that the device thread will pick up within one poll interval.
     pub fn frequency_atomic(&self) -> Arc<AtomicU64> {
@@ -131,6 +146,9 @@ impl Block for RspdxSource {
         let config = self.config.clone();
         let running = Arc::clone(&self.running);
         let freq_atomic = Arc::clone(&self.frequency_hz);
+        // Take the hardware command receiver out of self — it is consumed by the thread.
+        let hw_cmd_rx = self.hw_cmd_rx.take()
+            .expect("RspdxSource::start() called twice");
 
         // Bridge channel: callback thread → tokio task
         let (iq_tx, iq_rx) = crossbeam_channel::bounded::<Arc<[IqSample]>>(128);
@@ -141,7 +159,7 @@ impl Block for RspdxSource {
         std::thread::Builder::new()
             .name("sdrapp-sdrplay".into())
             .spawn(move || {
-                if let Err(e) = run_sdrplay_thread(config, iq_tx_clone, running, freq_atomic_clone) {
+                if let Err(e) = run_sdrplay_thread(config, iq_tx_clone, running, freq_atomic_clone, hw_cmd_rx) {
                     tracing::error!("SDRplay thread error: {e}");
                 }
             })
@@ -211,6 +229,7 @@ fn run_sdrplay_thread(
     iq_tx: crossbeam_channel::Sender<Arc<[IqSample]>>,
     running: Arc<AtomicBool>,
     freq_atomic: Arc<AtomicU64>,
+    hw_cmd_rx: crossbeam_channel::Receiver<HardwareCommand>,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
 
@@ -294,19 +313,20 @@ fn run_sdrplay_thread(
     // Frequency
     ch.tunerParams.rfFreq.rfHz = config.frequency_hz as f64;
 
-    // AGC
+    // AGC and gain
     if config.agc_enabled {
         ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_CTRL_EN;
-        ch.ctrlParams.agc.setPoint_dBfs = -60;
+        ch.ctrlParams.agc.setPoint_dBfs = config.agc_setpoint_dbfs;
     } else {
         ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_DISABLE;
         ch.tunerParams.gain.LNAstate = config.lna_state;
+        ch.tunerParams.gain.gRdB = config.if_gain_dbfs.clamp(-59, 0);
     }
 
     // IF mode
     ch.tunerParams.bwType = sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_1_536;
 
-    // RSPdx-R2 antenna selection (rspDxParams is a direct field on DevParamsT)
+    // RSPdx-R2 specific parameters (rspDxParams is a direct field on DevParamsT)
     unsafe {
         let rsp_params = &mut (*params.devParams).rspDxParams;
         rsp_params.antennaSel = match config.antenna {
@@ -314,6 +334,10 @@ fn run_sdrplay_thread(
             Antenna::B => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_B,
             Antenna::C => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_C,
         };
+        rsp_params.biasTEnable = config.bias_t_enabled as u8;
+        rsp_params.hdrEnable = config.hdr_mode as u8;
+        rsp_params.rfNotchEnable = config.am_notch_enabled as u8;
+        rsp_params.rfDabNotchEnable = config.fm_notch_enabled as u8;
     }
 
     // ── Set up callback context ───────────────────────────────────────────────
@@ -370,6 +394,78 @@ fn run_sdrplay_thread(
                 }
             }
             last_freq = new_freq;
+        }
+
+        // Drain hardware commands (non-blocking)
+        while let Ok(cmd) = hw_cmd_rx.try_recv() {
+            unsafe {
+                let ch = &mut *(*params_ptr).rxChannelA;
+                let rsp = &mut (*params.devParams).rspDxParams;
+                let (reason, reason_ext) = match cmd {
+                    HardwareCommand::SetLnaState(n) => {
+                        ch.tunerParams.gain.LNAstate = n;
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Gr,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
+                    }
+                    HardwareCommand::SetIfGain(g) => {
+                        ch.tunerParams.gain.gRdB = g.clamp(-59, 0);
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Gr,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
+                    }
+                    HardwareCommand::SetAgcEnabled(en) => {
+                        if en {
+                            ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_CTRL_EN;
+                        } else {
+                            ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_DISABLE;
+                        }
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Agc,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
+                    }
+                    HardwareCommand::SetAgcSetpoint(sp) => {
+                        ch.ctrlParams.agc.setPoint_dBfs = sp;
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Agc,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
+                    }
+                    HardwareCommand::SetBiasT(en) => {
+                        rsp.biasTEnable = en as u8;
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_BiasTControl)
+                    }
+                    HardwareCommand::SetHdrMode(en) => {
+                        rsp.hdrEnable = en as u8;
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_HdrEnable)
+                    }
+                    HardwareCommand::SetAmNotch(en) => {
+                        rsp.rfNotchEnable = en as u8;
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_RfNotchControl)
+                    }
+                    HardwareCommand::SetFmNotch(en) => {
+                        rsp.rfDabNotchEnable = en as u8;
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_RfDabNotchControl)
+                    }
+                    HardwareCommand::SetAntenna(port) => {
+                        rsp.antennaSel = match port {
+                            1 => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_B,
+                            2 => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_C,
+                            _ => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_A,
+                        };
+                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_AntennaControl)
+                    }
+                };
+                let err = sys::sdrplay_api_Update(
+                    dev_handle,
+                    sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+                    reason,
+                    reason_ext,
+                );
+                if err != sys::sdrplay_api_ErrT_sdrplay_api_Success {
+                    tracing::warn!(err, "sdrplay_api_Update (hardware cmd) failed");
+                }
+            }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(50));
