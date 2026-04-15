@@ -1686,6 +1686,43 @@ impl SdrApp {
                     .small(),
             );
         }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // ── Rigctl (Hamlib) server ────────────────────────────────────────────
+        ui.label(RichText::new("RIGCTL").color(theme::TEXT_MUTED).small());
+        ui.add_space(4.0);
+
+        let enabled = self.config.rigctl.enabled;
+        ui.horizontal(|ui| {
+            let en_color = if enabled { theme::STATUS_OK } else { theme::TEXT_MUTED };
+            let en_label = RichText::new(if enabled { "ON" } else { "OFF" }).color(en_color).small().strong();
+            if ui.selectable_label(enabled, en_label)
+                .on_hover_text("Enable Hamlib-compatible CAT server (requires app restart to take effect)")
+                .clicked()
+            {
+                self.config.rigctl.enabled = !enabled;
+                self.config_dirty = true;
+            }
+
+            if enabled {
+                ui.label(RichText::new(format!("port {}", self.config.rigctl.port)).color(theme::TEXT_MUTED).small());
+            }
+        });
+
+        if enabled {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Port").color(theme::TEXT_MUTED).small());
+                let mut port = self.config.rigctl.port as i32;
+                if ui.add(egui::DragValue::new(&mut port).range(1024..=65535)).changed() {
+                    self.config.rigctl.port = port as u16;
+                    self.config_dirty = true;
+                }
+            });
+            ui.label(RichText::new("Connect: nc 127.0.0.1 <port>").color(theme::TEXT_DISABLED).small());
+        }
     }
 
     // ── VU Meter helper ───────────────────────────────────────────────────────

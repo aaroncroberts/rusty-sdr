@@ -211,6 +211,17 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // ── Rigctl server ─────────────────────────────────────────────────────────
+    if config.rigctl.enabled {
+        let shared_for_rigctl = Arc::clone(&shared);
+        let cmd_tx_for_rigctl = cmd_tx.clone();
+        let port = config.rigctl.port;
+        rt.spawn(async move {
+            let handle = sdrapp_core::rigctl::start(port, shared_for_rigctl, cmd_tx_for_rigctl);
+            let _ = handle.await;
+        });
+    }
+
     // ── MIDI controller ───────────────────────────────────────────────────────
     let midi_ctrl = sdrapp_midi::MidiController::new(
         sdrapp_midi::MidiConfig::with_nanokontrol2_defaults(),

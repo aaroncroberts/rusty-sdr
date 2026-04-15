@@ -20,7 +20,7 @@ publish = false
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
 
 # DSP
 num-complex = "0.4"

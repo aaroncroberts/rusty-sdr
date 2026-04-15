@@ -25,10 +25,28 @@ pub struct AppConfig {
     /// Saved frequency bookmarks.
     #[serde(default = "default_bookmarks")]
     pub bookmarks: Vec<BookmarkConfig>,
+    /// Hamlib rigctl TCP server configuration.
+    #[serde(default)]
+    pub rigctl: RigctlConfig,
 }
 
 fn default_bookmarks() -> Vec<BookmarkConfig> {
     vec![BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm")]
+}
+
+/// Hamlib-compatible rigctl TCP server configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RigctlConfig {
+    /// Whether the rigctl server is enabled.
+    pub enabled: bool,
+    /// TCP port to listen on (default 4532, same as Hamlib default).
+    pub port: u16,
+}
+
+impl Default for RigctlConfig {
+    fn default() -> Self {
+        Self { enabled: false, port: 4532 }
+    }
 }
 
 /// SDR source hardware configuration.
@@ -195,6 +213,7 @@ impl Default for AppConfig {
             bookmarks: vec![
                 BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm"),
             ],
+            rigctl: RigctlConfig::default(),
         }
     }
 }
