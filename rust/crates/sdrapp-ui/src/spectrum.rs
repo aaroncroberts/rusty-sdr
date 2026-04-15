@@ -13,6 +13,7 @@
 use egui::epaint::{Mesh, Vertex};
 use egui::{Color32, Painter, Pos2, Rect, Response, Sense, Stroke, Ui};
 
+use crate::band_plan;
 use crate::theme;
 
 /// UV coordinate that samples the white texel from egui's font atlas.
@@ -31,6 +32,8 @@ pub struct SpectrumWidget<'a> {
     pub vfo_hz: u64,
     /// Optional peak-hold buffer (same length as fft_data).
     pub peak_hold: Option<&'a [f32]>,
+    /// Whether to draw the frequency band allocation overlay.
+    pub show_band_plan: bool,
 }
 
 impl<'a> SpectrumWidget<'a> {
@@ -92,6 +95,60 @@ impl<'a> SpectrumWidget<'a> {
                     egui::FontId::proportional(9.0),
                     if is_major { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED },
                 );
+            }
+        }
+
+        // ── Band allocation overlay ───────────────────────────────────────────
+        // Drawn before the signal trace so bands appear behind the spectrum.
+        if self.show_band_plan && freq_hi > freq_lo {
+            let freq_span = freq_hi - freq_lo;
+            for band in band_plan::USA {
+                // Skip bands entirely outside the visible range.
+                if band.end_hz as f64 <= freq_lo || band.start_hz as f64 >= freq_hi {
+                    continue;
+                }
+                // Map band edges to pixel x coords, clamped to the plot rect.
+                let x_lo = plot_rect.left()
+                    + ((band.start_hz as f64 - freq_lo) / freq_span) as f32
+                        * plot_rect.width();
+                let x_hi = plot_rect.left()
+                    + ((band.end_hz as f64 - freq_lo) / freq_span) as f32
+                        * plot_rect.width();
+                let x_lo = x_lo.max(plot_rect.left());
+                let x_hi = x_hi.min(plot_rect.right());
+                let visible_w = x_hi - x_lo;
+                if visible_w < 1.5 {
+                    continue; // too narrow to be visible
+                }
+
+                let band_rect = Rect::from_min_max(
+                    Pos2::new(x_lo, plot_rect.top()),
+                    Pos2::new(x_hi, plot_rect.bottom()),
+                );
+
+                // Semi-transparent fill
+                painter.rect_filled(band_rect, 0.0, band.band_type.fill());
+
+                // Top edge line for a cleaner look
+                painter.line_segment(
+                    [Pos2::new(x_lo, plot_rect.top()), Pos2::new(x_hi, plot_rect.top())],
+                    Stroke::new(1.0, band.band_type.accent()),
+                );
+
+                // Label — only if the visible slice is wide enough to hold text.
+                if visible_w >= 28.0 {
+                    let label_x = x_lo + visible_w * 0.5;
+                    // Clip text so it doesn't bleed into adjacent bands.
+                    let clip_rect = band_rect.intersect(plot_rect);
+                    let clipped = painter.with_clip_rect(clip_rect);
+                    clipped.text(
+                        Pos2::new(label_x, plot_rect.top() + 3.0),
+                        egui::Align2::CENTER_TOP,
+                        band.name,
+                        egui::FontId::proportional(8.5),
+                        band.band_type.accent(),
+                    );
+                }
             }
         }
 
@@ -311,6 +368,7 @@ mod tests {
                     freq_range: (95_000_000, 105_000_000),
                     vfo_hz: 100_000_000,
                     peak_hold: Some(&peak),
+                    show_band_plan: true,
                 }
                 .show(ui);
             });

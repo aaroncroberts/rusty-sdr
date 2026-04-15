@@ -832,6 +832,7 @@ impl SdrApp {
             freq_range: (freq.saturating_sub(span), freq + span),
             vfo_hz: freq,
             peak_hold: peak_ref,
+            show_band_plan: true,
         }
         .show(&mut spectrum_ui);
 
