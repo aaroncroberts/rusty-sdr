@@ -17,7 +17,7 @@ impl SdrApp {
                 s.midi_page,
                 s.audio_buffer_fill,
                 s.source_name.clone(),
-                s.is_stereo,
+                s.rds.is_stereo,
             )
         };
 

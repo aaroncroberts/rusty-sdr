@@ -15,7 +15,7 @@ impl SdrApp {
     pub(in crate::app) fn center_panel(&mut self, ui: &mut Ui) {
         let (fft_data, band_plan_enabled, snr_db) = {
             let s = self.shared.read();
-            (s.fft_magnitudes.clone(), s.band_plan_enabled, s.snr_db)
+            (s.fft.fft_magnitudes.clone(), s.fft.band_plan_enabled, s.fft.snr_db)
         };
 
         let freq = self.config.ui.frequency_hz;
@@ -123,7 +123,7 @@ impl SdrApp {
                 self.config_dirty = true;
             } else {
                 // Plain scroll → step-tune frequency
-                let step = self.shared.read().tune_step_hz;
+                let step = self.shared.read().demod.tune_step_hz;
                 let new_freq = if scroll_delta > 0.0 {
                     freq.saturating_add(step)
                 } else {
@@ -273,7 +273,7 @@ impl SdrApp {
         ui.horizontal(|ui| {
             let (cur_fft_size, cur_fft_window, cur_fft_avg) = {
                 let s = self.shared.read();
-                (s.fft_size, s.fft_window, s.fft_averaging)
+                (s.fft.fft_size, s.fft.fft_window, s.fft.fft_averaging)
             };
 
             // FFT size dropdown
@@ -376,7 +376,7 @@ impl SdrApp {
                 self.config.ui.zoom_level = new_z;
                 self.config_dirty = true;
             } else {
-                let step = self.shared.read().tune_step_hz;
+                let step = self.shared.read().demod.tune_step_hz;
                 let new_freq = if wf_scroll_delta > 0.0 {
                     freq.saturating_add(step)
                 } else {

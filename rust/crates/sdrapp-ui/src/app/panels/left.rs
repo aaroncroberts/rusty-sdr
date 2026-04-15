@@ -114,7 +114,7 @@ impl SdrApp {
         }
 
         // ── Tuning step controls ──────────────────────────────────────────────
-        let step_hz = self.shared.read().tune_step_hz;
+        let step_hz = self.shared.read().demod.tune_step_hz;
         ui.add_space(4.0);
 
         // Step size selector row
@@ -171,7 +171,7 @@ impl SdrApp {
         ui.label(RichText::new("DEMOD MODE").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        let current_mode = self.shared.read().demod_mode;
+        let current_mode = self.shared.read().demod.demod_mode;
         // Row 1: FM and AM modes
         ui.horizontal(|ui| {
             for (mode, label, tooltip) in [
@@ -214,7 +214,7 @@ impl SdrApp {
             ui.add_space(4.0);
 
             // Channel bandwidth selector (12.5 / 25 kHz)
-            let nfm_bw = self.shared.read().nfm_bandwidth_hz;
+            let nfm_bw = self.shared.read().demod.nfm_bandwidth_hz;
             ui.horizontal(|ui| {
                 ui.label(RichText::new("BW").color(theme::TEXT_MUTED).small());
                 for (bw, label) in [(12_500u32, "12.5k"), (25_000u32, "25k")] {
@@ -238,7 +238,7 @@ impl SdrApp {
             ui.label(RichText::new("SQUELCH").color(theme::TEXT_MUTED).small());
             ui.add_space(2.0);
 
-            let mut sq_threshold = self.shared.read().squelch_threshold;
+            let mut sq_threshold = self.shared.read().demod.squelch_threshold;
             let sq_label = format!("{:.0} dBFS", sq_threshold);
             ui.label(RichText::new(&sq_label).color(theme::TEXT_PRIMARY).small());
             let sq_slider = egui::Slider::new(&mut sq_threshold, -120.0_f32..=0.0_f32)
@@ -263,7 +263,7 @@ impl SdrApp {
             // CTCSS tone squelch toggle
             let (ctcss_enabled, ctcss_detected) = {
                 let s = self.shared.read();
-                (s.ctcss_squelch_enabled, s.ctcss_tone_detected)
+                (s.demod.ctcss_squelch_enabled, s.demod.ctcss_tone_detected)
             };
             ui.horizontal(|ui| {
                 let label_color = if ctcss_enabled { theme::ACCENT } else { theme::TEXT_MUTED };
@@ -508,7 +508,7 @@ impl SdrApp {
             if ui.small_button(RichText::new("+ Save").color(theme::ACCENT_DIM)).clicked() {
                 let (freq, mode) = {
                     let s = self.shared.read();
-                    (s.center_freq_hz, s.demod_mode)
+                    (s.center_freq_hz, s.demod.demod_mode)
                 };
                 let name = format!("{:.3} MHz", freq as f64 / 1_000_000.0);
                 let _ = self.cmd_tx.try_send(SignalPathCommand::AddBookmark(name.clone()));
@@ -585,7 +585,7 @@ impl SdrApp {
         ui.label(RichText::new("SCANNER").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        let scan_running = self.shared.read().scan_running;
+        let scan_running = self.shared.read().scanner.scan_running;
 
         // Category filter
         ui.horizontal(|ui| {
@@ -829,10 +829,10 @@ impl SdrApp {
             (
                 s.center_freq_hz,
                 s.is_recording,
-                s.rds_ps_name.clone(),
-                s.rds_pty.map(|c| sdrapp_core::dsp::rds::pty_to_str(c).to_string()),
-                s.rds_ta,
-                s.rds_rt.clone(),
+                s.rds.ps_name.clone(),
+                s.rds.pty.map(|c| sdrapp_core::dsp::rds::pty_to_str(c).to_string()),
+                s.rds.ta,
+                s.rds.rt.clone(),
             )
         };
 

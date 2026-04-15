@@ -119,7 +119,7 @@ fn process_command(
 
         // ── Get mode ──────────────────────────────────────────────────────────
         "m" | "get_mode" => {
-            let mode = shared.read().demod_mode;
+            let mode = shared.read().demod.demod_mode;
             let (mode_str, bw) = mode_to_hamlib(mode);
             format!("{mode_str}\n{bw}\nRPRT 0\n")
         }
@@ -139,7 +139,7 @@ fn process_command(
         "l" | "get_level" => {
             // STRENGTH is defined as 0.0–1.0 by Hamlib (maps to S0–S9+40).
             // We return SNR normalised to roughly 0.0–1.0 (60 dB = 1.0).
-            let snr = shared.read().snr_db.unwrap_or(-10.0);
+            let snr = shared.read().fft.snr_db.unwrap_or(-10.0);
             let level = (snr / 60.0).clamp(0.0, 1.0);
             format!("{level:.6}\nRPRT 0\n")
         }

@@ -184,7 +184,7 @@ impl eframe::App for SdrApp {
             i.key_pressed(egui::Key::ArrowRight),
         ));
         if up || down || left || right {
-            let step = self.shared.read().tune_step_hz;
+            let step = self.shared.read().demod.tune_step_hz;
             let coarse = step * 10;
             let delta: i64 = match (up, down, left, right) {
                 (true, _, _, _) => step as i64,

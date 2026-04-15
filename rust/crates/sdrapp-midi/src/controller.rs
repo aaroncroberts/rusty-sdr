@@ -148,7 +148,7 @@ impl MidiController {
                         // ── Demod & step size cycling ─────────────────────────
                         MidiAction::DemodModeCycle => {
                             use sdrapp_core::signal_path::DemodMode;
-                            let next = match shared.read().demod_mode {
+                            let next = match shared.read().demod.demod_mode {
                                 DemodMode::Wbfm => DemodMode::Nfm,
                                 DemodMode::Nfm => DemodMode::Am,
                                 DemodMode::Am  => DemodMode::Usb,
@@ -160,7 +160,7 @@ impl MidiController {
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetDemodMode(next));
                         }
                         MidiAction::StepSizeCycle => {
-                            let next_step = match shared.read().tune_step_hz {
+                            let next_step = match shared.read().demod.tune_step_hz {
                                 100 => 1_000,
                                 1_000 => 10_000,
                                 10_000 => 100_000,
@@ -195,12 +195,12 @@ impl MidiController {
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetZoom(z));
                         }
                         MidiAction::WaterfallSpeedUp => {
-                            let s = (shared.read().waterfall_speed + 0.5).min(10.0);
-                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(s));
+                            let spd = (shared.read().waterfall_speed + 0.5).min(10.0);
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(spd));
                         }
                         MidiAction::WaterfallSpeedDown => {
-                            let s = (shared.read().waterfall_speed - 0.5).max(0.1);
-                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(s));
+                            let spd = (shared.read().waterfall_speed - 0.5).max(0.1);
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(spd));
                         }
                         MidiAction::WaterfallSpeedSet(_) => {
                             // 0–127 → 0.1 to 5.0

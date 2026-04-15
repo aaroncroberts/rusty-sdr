@@ -34,22 +34,22 @@ fn main() -> anyhow::Result<()> {
         let mut s = shared.write();
         s.center_freq_hz = config.ui.frequency_hz;
         s.sample_rate_sps = config.source.sample_rate_sps;
-        s.volume = config.ui.volume;
+        s.demod.volume = config.ui.volume;
         s.zoom_level = config.ui.zoom_level;
         s.waterfall_speed = config.ui.waterfall_speed;
-        s.nfm_bandwidth_hz = config.ui.nfm_bandwidth_hz;
-        s.ctcss_squelch_enabled = config.ui.ctcss_enabled;
+        s.demod.nfm_bandwidth_hz = config.ui.nfm_bandwidth_hz;
+        s.demod.ctcss_squelch_enabled = config.ui.ctcss_enabled;
         // FFT / spectrum display settings
-        s.fft_size = config.ui.fft_size;
-        s.fft_averaging = config.ui.fft_averaging;
-        s.band_plan_enabled = config.ui.band_plan_enabled;
-        s.fft_window = match config.ui.fft_window.as_str() {
+        s.fft.fft_size = config.ui.fft_size;
+        s.fft.fft_averaging = config.ui.fft_averaging;
+        s.fft.band_plan_enabled = config.ui.band_plan_enabled;
+        s.fft.fft_window = match config.ui.fft_window.as_str() {
             "Rectangular" => sdrapp_core::dsp::FftWindow::Rectangular,
             "Hamming" => sdrapp_core::dsp::FftWindow::Hamming,
             "BlackmanHarris" => sdrapp_core::dsp::FftWindow::BlackmanHarris,
             _ => sdrapp_core::dsp::FftWindow::Hann,
         };
-        s.fft_magnitudes = vec![-120.0; config.ui.fft_size];
+        s.fft.fft_magnitudes = vec![-120.0; config.ui.fft_size];
         // Load persisted bookmarks
         s.bookmarks = config.bookmarks.iter().map(|b| {
             use sdrapp_core::signal_path::{Bookmark, DemodMode};
@@ -117,15 +117,15 @@ fn main() -> anyhow::Result<()> {
 
         {
             let mut s = shared.write();
-            s.lna_state = config.source.lna_state;
-            s.if_gain_dbfs = config.source.if_gain_dbfs;
-            s.agc_enabled = config.source.agc_enabled;
-            s.agc_setpoint_dbfs = config.source.agc_setpoint_dbfs;
-            s.bias_t_enabled = config.source.bias_t_enabled;
-            s.hdr_mode = config.source.hdr_mode;
-            s.am_notch_enabled = config.source.am_notch_enabled;
-            s.fm_notch_enabled = config.source.fm_notch_enabled;
-            s.antenna_port = match config.source.antenna.as_str() { "B" => 1, "C" => 2, _ => 0 };
+            s.hardware.lna_state = config.source.lna_state;
+            s.hardware.if_gain_dbfs = config.source.if_gain_dbfs;
+            s.hardware.agc_enabled = config.source.agc_enabled;
+            s.hardware.agc_setpoint_dbfs = config.source.agc_setpoint_dbfs;
+            s.hardware.bias_t_enabled = config.source.bias_t_enabled;
+            s.hardware.hdr_mode = config.source.hdr_mode;
+            s.hardware.am_notch_enabled = config.source.am_notch_enabled;
+            s.hardware.fm_notch_enabled = config.source.fm_notch_enabled;
+            s.hardware.antenna_port = match config.source.antenna.as_str() { "B" => 1, "C" => 2, _ => 0 };
         }
         let mut src = sdrapp_sdrplay::RspdxSource::new(sdrapp_sdrplay::RspdxConfig {
             frequency_hz: config.ui.frequency_hz,
