@@ -268,10 +268,10 @@ impl eframe::App for SdrApp {
             self.settings_window(ctx);
         }
 
-        // Request continuous repaint while running
-        if self.shared.read().is_running {
-            ctx.request_repaint_after(std::time::Duration::from_millis(33)); // ~30fps
-        }
+        // Keep the UI live at ~30 fps unconditionally.
+        // When idle (not running) this still lets the VU meter, status bar, and
+        // waterfall react promptly to state changes (e.g. auto-start, hot-plug).
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
