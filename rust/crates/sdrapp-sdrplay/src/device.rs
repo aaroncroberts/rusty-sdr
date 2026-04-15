@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use sdrapp_core::{block::Block, error::SourceError, sample::IqSample, signal_path::HardwareCommand, source::Source};
+use sdrapp_core::{block::Block, error::SourceError, sample::IqSample, signal_path::HardwareCommand, source::{Source, SourceCapabilities}};
 
 use crate::config::{Antenna, RspdxConfig};
 
@@ -219,6 +219,20 @@ impl Source for RspdxSource {
 
     fn sample_rate(&self) -> u32 {
         self.config.sample_rate_sps
+    }
+
+    fn frequency_atomic(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.frequency_hz)
+    }
+
+    fn capabilities(&self) -> SourceCapabilities {
+        SourceCapabilities {
+            name: "SDRplay RSPdx-R2".into(),
+            bias_t: true,
+            direct_sampling: false,
+            gain_range_db: (0.0, 59.0),
+            has_hardware_cmd_tx: true,
+        }
     }
 }
 

@@ -7,6 +7,7 @@ members = [
     "crates/sdrapp-audio",
     "crates/sdrapp-recorder",
     "crates/sdrapp-midi",
+    "crates/sdrapp-rtlsdr",
     "crates/sdrapp-ui",
     ".",
 ]
@@ -91,4 +92,5 @@ sdrapp-sdrplay = { path = "crates/sdrapp-sdrplay" }
 sdrapp-audio = { path = "crates/sdrapp-audio" }
 sdrapp-recorder = { path = "crates/sdrapp-recorder" }
 sdrapp-midi = { path = "crates/sdrapp-midi" }
+sdrapp-rtlsdr = { path = "crates/sdrapp-rtlsdr" }
 sdrapp-ui = { path = "crates/sdrapp-ui" }

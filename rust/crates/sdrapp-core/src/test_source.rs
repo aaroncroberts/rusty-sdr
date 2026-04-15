@@ -19,7 +19,7 @@ use num_complex::Complex;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::{block::Block, error::SourceError, sample::IqSample, source::Source};
+use crate::{block::Block, error::SourceError, sample::IqSample, source::{Source, SourceCapabilities}};
 
 /// IQ samples per broadcast batch — matches the SDRplay source's batch size.
 const BATCH_SIZE: usize = 1024;
@@ -142,6 +142,17 @@ impl Source for TestSignalSource {
 
     fn sample_rate(&self) -> u32 {
         self.sample_rate_sps
+    }
+
+    fn frequency_atomic(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.frequency_hz)
+    }
+
+    fn capabilities(&self) -> SourceCapabilities {
+        SourceCapabilities {
+            name: "Demo Mode".into(),
+            ..Default::default()
+        }
     }
 }
 

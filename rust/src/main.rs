@@ -108,6 +108,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut _sdrplay_source: Option<sdrapp_sdrplay::RspdxSource> = None;
+    let mut _rtlsdr_source: Option<sdrapp_rtlsdr::RtlSdrSource> = None;
     let mut _demo_source: Option<sdrapp_core::test_source::TestSignalSource> = None;
 
     let (iq_rx, iq_recorder_rx, freq_atomic, hardware_cmd_tx) = if sdrapp_sdrplay::RspdxSource::is_device_available() {
@@ -142,13 +143,30 @@ fn main() -> anyhow::Result<()> {
         });
         let rx = src.subscribe();
         let iq_rec_rx = src.subscribe();
-        let fa = src.frequency_atomic();
+        let fa = Source::frequency_atomic(&src);
         let hw_tx = src.hardware_cmd_tx();
         drop(src.start());
         _sdrplay_source = Some(src);
         (rx, iq_rec_rx, fa, Some(hw_tx))
+    } else if sdrapp_rtlsdr::RtlSdrSource::is_device_available() {
+        tracing::info!("RTL-SDR device found — starting in RTL-SDR mode");
+        let rtl_cfg = sdrapp_rtlsdr::RtlSdrConfig {
+            frequency_hz: config.ui.frequency_hz,
+            sample_rate_sps: config.source.sample_rate_sps.min(2_048_000),
+            ..Default::default()
+        };
+        let caps_name = format!("RTL-SDR (device 0)");
+        let mut src = sdrapp_rtlsdr::RtlSdrSource::open(rtl_cfg)
+            .expect("device available but open failed");
+        shared.write().source_name = Some(caps_name);
+        let rx = src.subscribe();
+        let iq_rec_rx = src.subscribe();
+        let fa = Source::frequency_atomic(&src);
+        drop(src.start());
+        _rtlsdr_source = Some(src);
+        (rx, iq_rec_rx, fa, None)
     } else {
-        tracing::warn!("no SDRplay device — starting in demo mode (synthetic test signal)");
+        tracing::warn!("no hardware device found — starting in demo mode (synthetic test signal)");
         shared.write().source_name = Some("Demo Mode".to_string());
 
         let mut src = sdrapp_core::test_source::TestSignalSource::new(
@@ -157,7 +175,7 @@ fn main() -> anyhow::Result<()> {
         );
         let rx = src.subscribe();
         let iq_rec_rx = src.subscribe();
-        let fa = src.frequency_atomic();
+        let fa = Source::frequency_atomic(&src);
         drop(src.start());
         _demo_source = Some(src);
         (rx, iq_rec_rx, fa, None)

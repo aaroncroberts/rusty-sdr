@@ -1,0 +1,30 @@
+[package]
+name = "sdrapp-rtlsdr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "RTL-SDR IQ source adapter for sdrapp"
+
+[features]
+# The rtlsdr feature gates the actual hardware driver. When disabled the crate
+# compiles cleanly but RtlSdrSource::is_device_available() always returns false.
+#
+# To enable RTL-SDR hardware:
+# 1. Install librtlsdr (brew install librtlsdr on macOS)
+# 2. Add a compatible rtlsdr Rust binding to the dependencies below
+# 3. Enable the feature: cargo build --features sdrapp-rtlsdr/rtlsdr
+#
+# NOTE: rtlsdr-rs 0.1 conflicts with sdrapp-sdrplay-sys's bindgen version at
+# the Cargo resolution level. A custom sys crate or a newer binding is needed.
+default = []
+rtlsdr = []
+
+[dependencies]
+sdrapp-core = { path = "../sdrapp-core" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+num-complex = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
