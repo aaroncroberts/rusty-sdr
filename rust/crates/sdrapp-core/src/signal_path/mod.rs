@@ -2,18 +2,27 @@
 
 //! Signal path: wires source → IQ frontend (FFT) → audio sink.
 //!
-//! Topology:
-//!   Source ──broadcast──► IQ Frontend ──┬──► FFT (spectrum display)
-//!                                       └──► Audio Sink (cpal)
-//!                                       └──► Recorder
+//! # Topology
+//! ```text
+//! Source ──broadcast──► IQ Frontend ──┬──► FFT (spectrum display)
+//!                                     └──► Audio Sink (cpal)
+//!                                     └──► Recorder
+//! ```
 //!
-//! Communication:
-//!   - Source → IQ frontend: broadcast channel (Arc<[IqSample]> batches)
-//!   - IQ frontend → spectrum: writes into SharedState.fft_magnitudes (RwLock)
-//!   - IQ frontend → audio/record: mpsc channels (Arc<[StereoFrame]> batches)
+//! # Communication
+//! - Source → IQ frontend: broadcast channel (`Arc<[IqSample]>` batches)
+//! - IQ frontend → spectrum: writes into `SharedState.fft_magnitudes` (RwLock)
+//! - IQ frontend → audio/record: mpsc channels (`Arc<[StereoFrame]>` batches)
 //!
-//! The IQ frontend is intentionally simple right now (no decimation, no VFO shift).
-//! It will grow as we add demodulation.
+//! # Submodules
+//! - [`shared_state`]: All shared data structures read by the UI
+//! - [`commands`]: Command enums sent from UI/MIDI to the signal path
+
+mod shared_state;
+mod commands;
+
+pub use shared_state::*;
+pub use commands::*;
 
 use parking_lot::RwLock;
 use std::sync::{
@@ -28,374 +37,8 @@ use rustfft::num_complex::Complex;
 use crate::dsp::{AmDemodulator, AudioBandpass, CtcssDetector, CwDemodulator, FmDemodulator, FftProcessor, RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder, Volume};
 use crate::sample::{IqSample, StereoFrame};
 
-const FFT_SIZE: usize = 2048;
+pub(super) const FFT_SIZE: usize = 2048;
 const AUDIO_FRAME_SIZE: usize = 1024;
-
-/// Which streams to capture when recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RecordingMode {
-    /// Demodulated stereo audio → .wav
-    #[default]
-    AudioOnly,
-    /// Raw I/Q complex samples → .iq
-    IqOnly,
-    /// Both simultaneously.
-    Both,
-}
-
-impl std::fmt::Display for RecordingMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AudioOnly => write!(f, "Audio only"),
-            Self::IqOnly => write!(f, "IQ only"),
-            Self::Both => write!(f, "Audio + IQ"),
-        }
-    }
-}
-
-/// Demodulation mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DemodMode {
-    /// Wideband FM broadcast (75 kHz deviation, 75 µs de-emphasis)
-    #[default]
-    Wbfm,
-    /// Narrow FM (12.5 kHz deviation, no de-emphasis)
-    Nfm,
-    /// AM envelope detection
-    Am,
-    /// Upper sideband SSB
-    Usb,
-    /// Lower sideband SSB
-    Lsb,
-    /// Double sideband (both sidebands, suppressed carrier)
-    Dsb,
-    /// CW (Morse code) — narrow 400–900 Hz bandpass
-    Cw,
-}
-
-/// A saved frequency bookmark.
-#[derive(Debug, Clone)]
-pub struct Bookmark {
-    pub name: String,
-    pub freq_hz: u64,
-    pub mode: DemodMode,
-    /// Optional group/category name (empty = uncategorised).
-    pub category: String,
-}
-
-impl Bookmark {
-    pub fn new(name: impl Into<String>, freq_hz: u64, mode: DemodMode) -> Self {
-        Self { name: name.into(), freq_hz, mode, category: String::new() }
-    }
-
-    pub fn with_category(mut self, cat: impl Into<String>) -> Self {
-        self.category = cat.into();
-        self
-    }
-}
-
-/// Hardware control state (RSPdx-R2).
-#[derive(Default, Clone)]
-pub struct HardwareState {
-    /// LNA gain reduction state (0–9). 0 = max gain, 9 = max attenuation.
-    pub lna_state: u8,
-    /// IF gain in dBFS (−59 to 0). Used when AGC is disabled.
-    pub if_gain_dbfs: i32,
-    /// AGC enabled flag.
-    pub agc_enabled: bool,
-    /// AGC setpoint in dBFS (−60 to 0). Ignored when AGC is disabled.
-    pub agc_setpoint_dbfs: i32,
-    /// Bias-T power on coax (powers active antennas).
-    pub bias_t_enabled: bool,
-    /// High Dynamic Range mode (RSPdx-R2 specific).
-    pub hdr_mode: bool,
-    /// AM broadcast notch filter enabled.
-    pub am_notch_enabled: bool,
-    /// FM broadcast notch filter enabled.
-    pub fm_notch_enabled: bool,
-    /// Active antenna port: 0=A, 1=B, 2=C.
-    pub antenna_port: u8,
-}
-
-/// Demodulation configuration and audio state.
-#[derive(Default)]
-pub struct DemodState {
-    /// Current demodulation mode.
-    pub demod_mode: DemodMode,
-    /// Current volume (linear).
-    pub volume: f32,
-    /// NFM squelch threshold in dBFS (e.g. -50.0). Applied only in NFM mode.
-    pub squelch_threshold: f32,
-    /// NFM channel bandwidth in Hz (12500 or 25000).
-    pub nfm_bandwidth_hz: u32,
-    /// Whether CTCSS tone squelch is enabled in NFM mode.
-    pub ctcss_squelch_enabled: bool,
-    /// Whether a CTCSS tone is currently detected (NFM + CTCSS enabled).
-    pub ctcss_tone_detected: bool,
-    /// Frequency step size for keyboard/scroll tuning (Hz).
-    pub tune_step_hz: u64,
-}
-
-/// Frequency scanner state.
-#[derive(Default)]
-pub struct ScannerState {
-    /// Whether the frequency scanner is currently running.
-    pub scan_running: bool,
-    /// Index of the bookmark the scanner is currently dwelling on.
-    pub scan_cursor: usize,
-    /// Dwell time in seconds before advancing to the next bookmark.
-    pub scan_dwell_secs: f32,
-    /// Category filter for scanner (empty = scan all bookmarks).
-    pub scan_category: String,
-}
-
-/// FFT / spectrum display settings and data.
-#[derive(Default)]
-pub struct FftDisplayState {
-    /// Latest FFT magnitudes (dBFS), length = fft_size.
-    pub fft_magnitudes: Vec<f32>,
-    /// FFT bin count for spectrum display (512, 1024, 2048, 4096, 8192).
-    pub fft_size: usize,
-    /// FFT window function applied before transform.
-    pub fft_window: crate::dsp::FftWindow,
-    /// Number of FFT frames to average (exponential moving average). 1 = no averaging.
-    pub fft_averaging: u8,
-    /// Whether to show the band plan overlay on the spectrum.
-    pub band_plan_enabled: bool,
-    /// Estimated SNR in the active demod channel (dB). None until computed.
-    pub snr_db: Option<f32>,
-}
-
-/// RDS (Radio Data System) decoded state (WBFM only).
-#[derive(Default)]
-pub struct RdsState {
-    /// Whether a stereo pilot tone is currently detected (WBFM only).
-    pub is_stereo: bool,
-    /// RDS Programme Service name, if decoded (WBFM only).
-    pub ps_name: Option<String>,
-    /// RDS Programme Type code (0-31).
-    pub pty: Option<u8>,
-    /// RDS Traffic Programme flag.
-    pub tp: bool,
-    /// RDS Traffic Announcement flag.
-    pub ta: bool,
-    /// RDS RadioText (up to 64 chars).
-    pub rt: Option<String>,
-}
-
-/// Shared display state written by the signal path, read by the UI.
-#[derive(Default)]
-pub struct SharedState {
-    // ── Display / core ────────────────────────────────────────────────
-    /// Center frequency (Hz) as reported by the source.
-    pub center_freq_hz: u64,
-    /// Sample rate (sps) as reported by the source.
-    pub sample_rate_sps: u32,
-    /// Whether the signal path is currently running.
-    pub is_running: bool,
-    /// Whether recording is active.
-    pub is_recording: bool,
-    /// Active source name — "Demo Mode" when running on the test signal source.
-    pub source_name: Option<String>,
-    /// MIDI device name when connected, None otherwise.
-    pub midi_device: Option<String>,
-    /// Active MIDI page index.
-    pub midi_page: usize,
-    /// Audio buffer fill fraction [0.0, 1.0] — written by audio sink.
-    pub audio_buffer_fill: f32,
-    /// Spectrum zoom level: 1.0 = full bandwidth, 0.1 = 10× zoom.
-    pub zoom_level: f32,
-    /// Waterfall scroll speed multiplier (1.0 = normal).
-    pub waterfall_speed: f32,
-    /// Saved frequency bookmarks.
-    pub bookmarks: Vec<Bookmark>,
-    /// Index of the currently selected bookmark (for MIDI navigation).
-    pub bookmark_cursor: usize,
-    /// Whether the help panel is open.
-    pub help_panel_open: bool,
-    /// Active recording mode (what to capture when recording starts).
-    pub recording_mode: RecordingMode,
-    /// Last recorder error message (disk full, permission denied, etc.).
-    /// Cleared when a new recording starts successfully.
-    pub recorder_error: Option<String>,
-    // ── MIDI Learn ────────────────────────────────────────────────────
-    /// If Some(knob_id), the next incoming MIDI CC will be bound to that knob.
-    pub midi_learn_target: Option<String>,
-    /// Learned CC bindings: MIDI CC number → knob ID string.
-    /// Set by the MIDI controller; read by the MIDI dispatcher and KnobWidget.
-    pub midi_cc_to_knob: std::collections::HashMap<u8, String>,
-    /// Scheduled recording: seconds until start (0 = start now, None = not scheduled).
-    pub scheduled_record_delay_secs: Option<u64>,
-    /// Scheduled recording duration in seconds.
-    pub scheduled_record_duration_secs: u32,
-    // ── Sub-structs ───────────────────────────────────────────────────
-    pub hardware: HardwareState,
-    pub demod: DemodState,
-    pub scanner: ScannerState,
-    pub fft: FftDisplayState,
-    pub rds: RdsState,
-}
-
-impl SharedState {
-    pub fn new() -> Self {
-        Self {
-            zoom_level: 1.0,
-            waterfall_speed: 1.0,
-            bookmarks: vec![
-                Bookmark::new("BBC Radio 4", 93_500_000, DemodMode::Wbfm),
-            ],
-            demod: DemodState {
-                volume: 0.8,
-                squelch_threshold: -50.0,
-                nfm_bandwidth_hz: 12_500,
-                tune_step_hz: 100_000,
-                ..Default::default()
-            },
-            scanner: ScannerState {
-                scan_dwell_secs: 2.0,
-                ..Default::default()
-            },
-            fft: FftDisplayState {
-                fft_magnitudes: vec![-120.0; FFT_SIZE],
-                fft_size: FFT_SIZE,
-                fft_window: crate::dsp::FftWindow::Hann,
-                fft_averaging: 4,
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-}
-
-/// Commands forwarded from the signal path to the hardware device thread.
-///
-/// The signal path holds an optional `crossbeam_channel::Sender<HardwareCommand>`.
-/// When a hardware-related [`SignalPathCommand`] is received, the signal path
-/// updates [`SharedState`] and forwards a `HardwareCommand` to the device.
-#[derive(Debug, Clone)]
-pub enum HardwareCommand {
-    SetLnaState(u8),
-    SetIfGain(i32),
-    SetAgcEnabled(bool),
-    SetAgcSetpoint(i32),
-    SetBiasT(bool),
-    SetHdrMode(bool),
-    SetAmNotch(bool),
-    SetFmNotch(bool),
-    /// Antenna port: 0 = A, 1 = B, 2 = C.
-    SetAntenna(u8),
-}
-
-/// Core receiver tuning and demodulation commands.
-#[derive(Debug, Clone)]
-pub enum ReceiverCmd {
-    SetFrequency(u64),
-    SetVolume(f32),
-    SetDemodMode(DemodMode),
-    /// Set NFM squelch threshold in dBFS (ignored outside NFM mode).
-    SetSquelchThreshold(f32),
-    /// Set keyboard/scroll tuning step in Hz.
-    SetTuneStep(u64),
-    /// Set NFM channel bandwidth in Hz (12500 or 25000).
-    SetNfmBandwidth(u32),
-    /// Enable or disable CTCSS tone squelch in NFM mode.
-    SetCtcssEnabled(bool),
-}
-
-/// Spectrum/waterfall display commands.
-#[derive(Debug, Clone)]
-pub enum DisplayCmd {
-    /// Adjust zoom level (1.0 = full BW, lower = zoomed in).
-    SetZoom(f32),
-    /// Adjust waterfall scroll speed multiplier.
-    SetWaterfallSpeed(f32),
-    /// Change the FFT bin count (must be a power of two: 512–8192).
-    SetFftSize(usize),
-    /// Change the FFT window function.
-    SetFftWindow(crate::dsp::FftWindow),
-    /// Set exponential averaging: 1 = off, 2–16 = frames to average.
-    SetFftAveraging(u8),
-    /// Toggle band plan overlay.
-    SetBandPlanEnabled(bool),
-}
-
-/// Bookmark management commands.
-#[derive(Debug, Clone)]
-pub enum BookmarkCmd {
-    /// Add a bookmark at the current frequency and mode.
-    Add(String),
-    /// Remove bookmark at the given index.
-    Remove(usize),
-    /// Edit an existing bookmark at index: new (name, freq_hz, mode, category).
-    Edit(usize, String, u64, DemodMode, String),
-}
-
-/// Bookmark scanner commands.
-#[derive(Debug, Clone)]
-pub enum ScanCmd {
-    /// Start cycling through bookmarks in the given category (empty = all).
-    Start(String),
-    /// Stop the scanner.
-    Stop,
-    /// Skip to the next bookmark immediately (also works during scan).
-    Next,
-    /// Set scanner dwell time in seconds (0.5–30 s).
-    SetDwell(f32),
-}
-
-/// Commands from the UI to the signal path.
-///
-/// Each variant wraps a domain-specific sub-enum so the match handler can
-/// delegate to focused sub-handlers.  Use `.into()` at call sites (all sub-enum
-/// types implement `From<_> for SignalPathCommand`):
-///
-/// ```rust,ignore
-/// cmd_tx.try_send(ReceiverCmd::SetFrequency(101_700_000).into()).ok();
-/// cmd_tx.try_send(HardwareCommand::SetLnaState(3).into()).ok();
-/// ```
-#[derive(Debug)]
-pub enum SignalPathCommand {
-    Receiver(ReceiverCmd),
-    /// Hardware device settings — forwarded verbatim to the device thread.
-    Hardware(HardwareCommand),
-    Display(DisplayCmd),
-    Bookmark(BookmarkCmd),
-    Scan(ScanCmd),
-    StartRecording,
-    StopRecording,
-    /// Begin (or resume) signal processing.  The signal path starts in a
-    /// paused state; send this command to begin demodulating and producing audio.
-    Start,
-    /// Pause signal processing.  The task stays alive; send `Start` to resume.
-    Stop,
-    /// Hot-swap the IQ source.  Sent by the hardware probe task when a device
-    /// appears (or reappears) while the app is running.  Clears `source_dead`
-    /// and updates the hardware command channel to the new device.
-    ///
-    /// After swapping, the signal path re-applies current frequency, demod mode,
-    /// and hardware settings so the new device comes up in the user's current state.
-    ReconnectSource {
-        iq_rx: broadcast::Receiver<Arc<[IqSample]>>,
-        /// New hardware command channel, or `None` for sources without one.
-        hardware_cmd_tx: Option<crossbeam_channel::Sender<HardwareCommand>>,
-    },
-}
-
-impl From<ReceiverCmd> for SignalPathCommand {
-    fn from(c: ReceiverCmd) -> Self { Self::Receiver(c) }
-}
-impl From<HardwareCommand> for SignalPathCommand {
-    fn from(c: HardwareCommand) -> Self { Self::Hardware(c) }
-}
-impl From<DisplayCmd> for SignalPathCommand {
-    fn from(c: DisplayCmd) -> Self { Self::Display(c) }
-}
-impl From<BookmarkCmd> for SignalPathCommand {
-    fn from(c: BookmarkCmd) -> Self { Self::Bookmark(c) }
-}
-impl From<ScanCmd> for SignalPathCommand {
-    fn from(c: ScanCmd) -> Self { Self::Scan(c) }
-}
 
 /// Manages the running signal path tasks.
 pub struct SignalPath {
@@ -447,11 +90,11 @@ impl SignalPath {
         impl Demod {
             fn reset(&mut self) {
                 match self {
-                    Demod::Wbfm(d) => d.reset(),
-                    Demod::Nfm(d) => d.reset(),
-                    Demod::Am(d) => d.reset(),
-                    Demod::Ssb(d) => d.reset(),
-                    Demod::Cw(d) => d.reset(),
+                    Self::Wbfm(d) => d.reset(),
+                    Self::Nfm(d) => d.reset(),
+                    Self::Am(d) => d.reset(),
+                    Self::Ssb(d) => d.reset(),
+                    Self::Cw(d) => d.reset(),
                 }
             }
         }
@@ -989,10 +632,12 @@ impl SignalPath {
         }
     }
 
+    /// Send a command to the signal path (non-blocking).
     pub fn send_command(&self, cmd: SignalPathCommand) {
         let _ = self.cmd_tx.try_send(cmd);
     }
 
+    /// Access the shared state arc.
     pub fn shared(&self) -> &Arc<RwLock<SharedState>> {
         &self.shared
     }

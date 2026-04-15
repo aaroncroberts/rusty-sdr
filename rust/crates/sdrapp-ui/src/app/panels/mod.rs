@@ -6,6 +6,8 @@
 
 pub(super) mod center;
 pub(super) mod left;
+mod left_bookmarks;
+mod left_device;
 pub(super) mod right;
 pub(super) mod settings;
 pub(super) mod status;
