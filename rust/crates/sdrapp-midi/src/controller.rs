@@ -88,11 +88,12 @@ impl MidiController {
         // Forward callbacks to msg_tx so the tokio task can process them.
         let inject_tx = msg_tx.clone();
         let port_name = config.port_name.clone().unwrap_or_default();
+        let shared_for_midi_thread = Arc::clone(&shared);
 
         std::thread::Builder::new()
             .name("sdrapp-midi".into())
             .spawn(move || {
-                open_midi_port(&port_name, inject_tx);
+                open_midi_port(&port_name, inject_tx, shared_for_midi_thread);
             })
             .expect("failed to spawn MIDI thread");
 
@@ -301,7 +302,8 @@ impl MidiController {
 /// Open the named midir input port and forward messages to `tx`.
 /// If the exact name isn't found, tries a case-insensitive prefix match,
 /// then falls back to the first available port with a warning.
-fn open_midi_port(port_name: &str, tx: mpsc::UnboundedSender<Vec<u8>>) {
+/// On successful connection, writes the port name to `shared.midi_device`.
+fn open_midi_port(port_name: &str, tx: mpsc::UnboundedSender<Vec<u8>>, shared: Arc<RwLock<SharedState>>) {
     use midir::MidiInput;
 
     let midi_in = match MidiInput::new("sdrapp") {
@@ -364,6 +366,8 @@ fn open_midi_port(port_name: &str, tx: mpsc::UnboundedSender<Vec<u8>>) {
     match _conn {
         Ok(_conn) => {
             tracing::info!("MIDI connection established");
+            // Update shared state so the UI can show the connected device name.
+            shared.write().midi_device = Some(name.clone());
             // Park the thread — connection stays alive until the process exits
             // or the tx is dropped (channel closed).
             loop {

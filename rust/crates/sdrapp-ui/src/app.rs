@@ -145,12 +145,12 @@ impl SdrApp {
             config_dirty: false,
             vu_peak: 0.0,
             peak_hold: Vec::new(),
-            ref_level: -20.0,
-            dyn_range: 80.0,
+            ref_level: -30.0,
+            dyn_range: 60.0,
             auto_ref: true,
-            wf_gain: 20.0,
-            noise_floor_ema: -90.0,
-            signal_ceil_ema: -30.0,
+            wf_gain: 10.0,
+            noise_floor_ema: -85.0,
+            signal_ceil_ema: -40.0,
             waterfall_row_frac: 0.0,
             help_panel: HelpPanel::default(),
             midi_bindings,
@@ -732,7 +732,11 @@ impl SdrApp {
                 }
             }
 
-            // Auto-ref: slow EMA on 10th/99th percentiles to track signal ceiling
+            // Auto-ref: anchor ref_level to the noise floor so the full signal
+            // range stays visible regardless of signal strength.
+            // ref_level = noise_floor + dyn_range * 0.9  means the noise floor
+            // sits at ~10% from the bottom of the display, and signals up to
+            // 90% of dyn_range above the floor remain on-screen.
             if self.auto_ref && n >= 10 {
                 let mut sorted = fft_data.to_vec();
                 sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -741,8 +745,8 @@ impl SdrApp {
                 const ALPHA: f32 = 0.95;
                 self.noise_floor_ema = ALPHA * self.noise_floor_ema + (1.0 - ALPHA) * floor_sample;
                 self.signal_ceil_ema = ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
-                // Target: ref_level sits ~10 dB above signal ceiling; clamp to [-10, 10]
-                self.ref_level = (self.signal_ceil_ema + 10.0).clamp(-120.0, 10.0);
+                // Place ref_level so the noise floor is ~10% up from the bottom.
+                self.ref_level = (self.noise_floor_ema + self.dyn_range * 0.9).clamp(-120.0, 20.0);
             }
             let db_floor = self.ref_level - self.dyn_range;
             let db_ceil = self.ref_level;
