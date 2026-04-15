@@ -38,6 +38,10 @@ const SYNC_THRESHOLD: usize = 4;
 /// Number of Group-2 segments needed for a complete RadioText (16 for 2A, 8 for 2B).
 const RT_SEGMENTS_2A: usize = 16;
 
+/// Number of consecutive non-Group-2 group dispatches after which a partial
+/// RadioText is considered stale and flushed.  At ~11.25 groups/s this is ≈ 5 s.
+const RT_STALE_GROUP_COUNT: usize = 56;
+
 // ── PTY table ─────────────────────────────────────────────────────────────────
 
 /// RDS Programme Type (PTY) code → genre string (RBDS/RDS-Europe).
@@ -138,6 +142,11 @@ pub struct RdsDecoder {
     rt_received: [bool; RT_SEGMENTS_2A],
     rt_ab_flag: Option<bool>, // current A/B flag — flip = clear and restart
 
+    // RT stale-text detection: counts group dispatches since the last Group 2
+    // segment.  At ~11.25 groups/s, 56 dispatches ≈ 5 s of no RT activity.
+    // When the count exceeds the threshold, partial RT is flushed.
+    rt_groups_since_last_seg: usize,
+
     /// Latest decoded RDS data.
     pub data: RdsData,
 }
@@ -166,6 +175,7 @@ impl RdsDecoder {
             rt_chars: [b' '; 64],
             rt_received: [false; RT_SEGMENTS_2A],
             rt_ab_flag: None,
+            rt_groups_since_last_seg: 0,
             data: RdsData::default(),
         }
     }
@@ -266,16 +276,37 @@ impl RdsDecoder {
             self.data.pty = Some(pty);
         }
 
+        let mut stale_rt_cleared = false;
+        if group_type == 2 {
+            // Group 2 received — reset stale counter.
+            self.rt_groups_since_last_seg = 0;
+        } else {
+            // Non-Group-2 group: increment stale counter and flush if threshold reached.
+            self.rt_groups_since_last_seg =
+                self.rt_groups_since_last_seg.saturating_add(1);
+            if self.rt_groups_since_last_seg >= RT_STALE_GROUP_COUNT
+                && (self.rt_received.iter().any(|&r| r) || self.data.rt.is_some())
+            {
+                // No Group 2 segment for ~5 s on a weak signal — discard stale RT.
+                self.rt_chars = [b' '; 64];
+                self.rt_received = [false; RT_SEGMENTS_2A];
+                self.rt_ab_flag = None;
+                self.data.rt = None;
+                self.rt_groups_since_last_seg = 0;
+                stale_rt_cleared = true;
+            }
+        }
+
         match group_type {
             0 => {
                 let changed = self.dispatch_group0(block_b);
-                changed || pty_changed
+                changed || pty_changed || stale_rt_cleared
             }
             2 => {
                 let changed = self.dispatch_group2(block_b);
                 changed || pty_changed
             }
-            _ => pty_changed,
+            _ => pty_changed || stale_rt_cleared,
         }
     }
 
@@ -380,6 +411,7 @@ impl RdsDecoder {
         self.rt_chars = [b' '; 64];
         self.rt_received = [false; RT_SEGMENTS_2A];
         self.rt_ab_flag = None;
+        self.rt_groups_since_last_seg = 0;
         self.data = RdsData::default();
     }
 }
@@ -627,6 +659,68 @@ mod tests {
         assert_eq!(
             dec.rt_chars[0], b' ',
             "buffer should be cleared on A/B flip"
+        );
+    }
+
+    // ── Stale RadioText timeout ──────────────────────────────────────────────
+
+    #[test]
+    fn stale_partial_rt_is_cleared_after_timeout() {
+        let mut dec = make_decoder_at_chip_rate();
+        dec.synced = true;
+        dec.sync_count = SYNC_THRESHOLD;
+
+        // Plant partial RT: mark 3 of 16 segments received and set data.rt.
+        dec.rt_chars[0] = b'H';
+        dec.rt_chars[1] = b'i';
+        dec.rt_received[0] = true;
+        dec.data.rt = Some("Hi".into());
+
+        // Simulate RT_STALE_GROUP_COUNT non-Group-2 group dispatches.
+        // Group 0 Block B: group=0, no TP, PTY=0, TA=0, seg=0.
+        let group0_block_b: u16 = 0x0000; // group=0, everything else 0
+        for _ in 0..RT_STALE_GROUP_COUNT {
+            dec.group_words[1] = group0_block_b;
+            dec.group_words[0] = 0; // PI
+            dec.group_words[2] = 0; // Block C
+            dec.group_words[3] = 0; // Block D (PS seg chars)
+            dec.dispatch_group();
+        }
+
+        assert!(
+            dec.data.rt.is_none(),
+            "stale partial RT should be flushed after timeout"
+        );
+        assert!(
+            dec.rt_received.iter().all(|&r| !r),
+            "rt_received flags should be cleared after timeout"
+        );
+    }
+
+    #[test]
+    fn complete_rt_not_cleared_by_ongoing_group2() {
+        // A station that consistently sends Group 2 should never trigger the flush.
+        let mut dec = make_decoder_at_chip_rate();
+        dec.synced = true;
+        dec.sync_count = SYNC_THRESHOLD;
+        dec.data.rt = Some("Test Station RT".into());
+
+        // Alternate Group 2 and Group 0 dispatches; Group 2 resets the counter.
+        let group2_b: u16 = (2 << 12); // group=2, seg=0, AB=0
+        let group0_b: u16 = 0x0000;
+
+        for i in 0..(RT_STALE_GROUP_COUNT * 4) {
+            dec.group_words[1] = if i % 2 == 0 { group2_b } else { group0_b };
+            dec.group_words[0] = 0;
+            dec.group_words[2] = 0;
+            dec.group_words[3] = 0;
+            dec.dispatch_group();
+        }
+
+        // RT should still be set — Group 2 kept arriving to reset the counter.
+        assert!(
+            dec.data.rt.is_some(),
+            "RT should not be cleared when Group 2 keeps arriving"
         );
     }
 }

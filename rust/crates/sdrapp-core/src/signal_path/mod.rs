@@ -35,8 +35,8 @@ use tokio::task::JoinHandle;
 use rustfft::num_complex::Complex;
 
 use crate::dsp::{
-    AmDemodulator, AudioBandpass, CtcssDetector, CwDemodulator, FftProcessor, FmDemodulator,
-    RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder, Volume,
+    volume::soft_limit, AmDemodulator, AudioBandpass, CtcssDetector, CwDemodulator, FftProcessor,
+    FmDemodulator, RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder, Volume,
 };
 use crate::sample::{IqSample, StereoFrame};
 
@@ -216,6 +216,7 @@ impl SignalPath {
                                         Demod::Nfm(FmDemodulator::new(sr, 48_000, bw as f32, 0.0));
                                     audio_bp.reset();
                                     ctcss.reset();
+                                    audio_accumulator.clear(); // discard cross-rate samples
                                 }
                                 shared_clone.write().demod.nfm_bandwidth_hz = bw;
                             }
@@ -681,7 +682,14 @@ impl SignalPath {
                     }
                 };
 
-                let mut stereo_processed = vol.process(&stereo);
+                let mut stereo_processed: Vec<StereoFrame> = vol
+                    .process(&stereo)
+                    .into_iter()
+                    .map(|f| StereoFrame {
+                        left: soft_limit(f.left),
+                        right: soft_limit(f.right),
+                    })
+                    .collect();
                 audio_accumulator.append(&mut stereo_processed);
 
                 // Emit audio frames

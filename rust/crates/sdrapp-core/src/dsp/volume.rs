@@ -46,6 +46,30 @@ impl Volume {
     }
 }
 
+/// Piecewise soft-knee limiter: identity below the knee, exponential approach
+/// to ±1.0 above it.
+///
+/// Below `KNEE` (0.95) the signal passes through unchanged — no colouration
+/// at normal listening levels.  Above the knee it applies a smooth exponential
+/// that asymptotically approaches ±1.0, completely eliminating hard digital
+/// clipping.  The transition is C¹-continuous (no derivative jump at the knee).
+///
+/// This is a stateless per-sample function; call it after volume scaling.
+#[inline]
+pub fn soft_limit(x: f32) -> f32 {
+    const KNEE: f32 = 0.95;
+    const HEADROOM: f32 = 1.0 - KNEE; // 0.05
+    let ax = x.abs();
+    if ax <= KNEE {
+        return x;
+    }
+    // Exponential approach: KNEE + HEADROOM * (1 − exp(−excess/HEADROOM))
+    // → asymptotes to 1.0, never exceeds it.
+    let excess = ax - KNEE;
+    let limited = KNEE + HEADROOM * (1.0 - (-excess / HEADROOM).exp());
+    if x >= 0.0 { limited } else { -limited }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +109,47 @@ mod tests {
 
         let vol = Volume::new(-1.0);
         assert_abs_diff_eq!(vol.get(), 0.0, epsilon = 1e-7);
+    }
+
+    #[test]
+    fn soft_limit_bounds_strong_signal() {
+        // Output magnitude must never exceed 1.0.
+        // (At extreme x the exponential term underflows to 0, so output reaches
+        // exactly 1.0 in f32 — that is acceptable; the hard clipping case we
+        // want to prevent is output > 1.0.)
+        for &x in &[1.0_f32, 1.5, 2.0, 5.0, 10.0, -1.0, -2.0] {
+            let out = soft_limit(x);
+            assert!(
+                out.abs() <= 1.0,
+                "soft_limit({x}) = {out} should be ≤ 1.0"
+            );
+        }
+        // Values strictly greater than the knee must compress below the knee level.
+        for &x in &[1.1_f32, 1.5, 2.0] {
+            let out = soft_limit(x);
+            assert!(
+                out.abs() < x.abs(),
+                "soft_limit({x}) = {out} should compress (out < in)"
+            );
+        }
+    }
+
+    #[test]
+    fn soft_limit_near_linear_at_low_amplitude() {
+        // At ±0.5 the soft limiter should change gain by less than 0.5 dB
+        // (i.e. output is between 0.473 and 0.527 for input 0.5).
+        let out = soft_limit(0.5_f32);
+        assert!(
+            (0.47..=0.53).contains(&out),
+            "soft_limit(0.5) = {out} — expected near-linear"
+        );
+    }
+
+    #[test]
+    fn soft_limit_is_odd_function() {
+        // soft_limit(-x) == -soft_limit(x) for any x.
+        for x in [0.1_f32, 0.5, 1.0, 2.0] {
+            assert_abs_diff_eq!(soft_limit(-x), -soft_limit(x), epsilon = 1e-6);
+        }
     }
 }

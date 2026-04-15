@@ -15,6 +15,12 @@
 /// Maintains a smoothed power estimate and gates audio to silence when power
 /// falls below the configured threshold. Designed to be applied to mono audio
 /// at 48 kHz after FM demodulation.
+///
+/// Uses two mechanisms to prevent choppy audio on borderline signals:
+/// 1. **Asymmetric EMA**: fast attack (~5 ms), slow release (~150 ms).
+/// 2. **Hang time**: once the gate opens, it stays open for at least
+///    `hang_time_ms` regardless of signal level. After hang expires the EMA
+///    release takes over.  Default hang time is 200 ms.
 pub struct Squelch {
     /// EMA power estimate in linear scale (amplitude²).
     avg_power: f32,
@@ -27,6 +33,14 @@ pub struct Squelch {
 
     /// Squelch threshold in linear power scale (= 10^(threshold_dbfs/10)).
     threshold_power: f32,
+
+    /// Hang-time counter: number of samples the gate must remain open after
+    /// first opening.  Decremented each sample; reset to `hang_samples` every
+    /// time the EMA crosses the threshold.
+    hang_counter: usize,
+
+    /// Maximum hang-time in samples (default: 200 ms × audio_rate).
+    hang_samples: usize,
 }
 
 impl Squelch {
@@ -34,6 +48,8 @@ impl Squelch {
     ///
     /// * `audio_rate`      — audio sample rate in Hz (typically 48_000)
     /// * `threshold_dbfs`  — squelch threshold in dBFS (e.g. -50.0)
+    ///
+    /// Hang time defaults to 200 ms; use [`Squelch::with_hang_ms`] to customise.
     pub fn new(audio_rate: u32, threshold_dbfs: f32) -> Self {
         let fs = audio_rate as f32;
 
@@ -43,12 +59,22 @@ impl Squelch {
         // Release: ~150 ms time constant — hold squelch open after signal fades
         let alpha_release = (-1.0 / (0.150 * fs)).exp();
 
+        let hang_samples = (0.200 * fs) as usize; // 200 ms default
+
         Self {
             avg_power: 0.0,
             alpha_attack,
             alpha_release,
             threshold_power: dbfs_to_power(threshold_dbfs),
+            hang_counter: 0,
+            hang_samples,
         }
+    }
+
+    /// Override the hang time in milliseconds (0 = disabled).
+    pub fn with_hang_ms(mut self, ms: u32, audio_rate: u32) -> Self {
+        self.hang_samples = (ms as f32 * audio_rate as f32 / 1_000.0) as usize;
+        self
     }
 
     /// Update the squelch threshold.
@@ -65,9 +91,10 @@ impl Squelch {
         power_to_dbfs(self.avg_power)
     }
 
-    /// Returns `true` if the squelch is currently open (signal above threshold).
+    /// Returns `true` if the squelch is currently open (signal above threshold
+    /// or hang timer still counting down).
     pub fn is_open(&self) -> bool {
-        self.avg_power >= self.threshold_power
+        self.avg_power >= self.threshold_power || self.hang_counter > 0
     }
 
     /// Process a slice of mono audio samples.
@@ -77,7 +104,8 @@ impl Squelch {
     /// - If the squelch is closed, samples are replaced with 0.0 (silence).
     ///
     /// The power estimate is updated sample-by-sample using an asymmetric EMA,
-    /// so the open/close decision can change mid-batch.
+    /// so the open/close decision can change mid-batch.  The hang counter keeps
+    /// the gate open for at least `hang_samples` after each threshold crossing.
     pub fn process(&mut self, samples: &[f32]) -> Vec<f32> {
         let mut out = Vec::with_capacity(samples.len());
 
@@ -93,8 +121,15 @@ impl Squelch {
             };
             self.avg_power = alpha * self.avg_power + (1.0 - alpha) * power;
 
-            // Gate: pass audio when open, silence when closed.
-            out.push(if self.avg_power >= self.threshold_power {
+            if self.avg_power >= self.threshold_power {
+                // Signal above threshold — reset hang counter.
+                self.hang_counter = self.hang_samples;
+            } else if self.hang_counter > 0 {
+                self.hang_counter -= 1;
+            }
+
+            // Gate: pass audio when open (EMA or hang), silence otherwise.
+            out.push(if self.hang_counter > 0 || self.avg_power >= self.threshold_power {
                 s
             } else {
                 0.0
@@ -107,6 +142,7 @@ impl Squelch {
     /// Reset internal state (e.g. after a demod mode change).
     pub fn reset(&mut self) {
         self.avg_power = 0.0;
+        self.hang_counter = 0;
     }
 }
 
@@ -201,6 +237,52 @@ mod tests {
         // With threshold at -120 dBFS, signal should always pass
         let rms_out = (out.iter().map(|&v| v * v).sum::<f32>() / out.len() as f32).sqrt();
         assert!(rms_out > 0.0, "signal should pass after lowering threshold");
+    }
+
+    #[test]
+    fn hang_time_holds_gate_open_after_signal_drops() {
+        // Use 1000 Hz audio rate to keep sample counts small in the test.
+        // Hang time: 200 ms default → 200 samples at 1000 Hz.
+        // Threshold: -30 dBFS → power = 0.001.
+        let mut sq = Squelch::new(1_000, -30.0);
+
+        // Open the gate with a signal *just* above threshold:
+        // amplitude 0.05 → RMS power ≈ 0.00125, ~25% above threshold.
+        // This means EMA decays below threshold in only ~33 silence samples,
+        // so the test can verify hang without needing thousands of samples.
+        let signal: Vec<f32> = (0..2_000)
+            .map(|i| 0.05 * (i as f32 * 0.1).sin())
+            .collect();
+        sq.process(&signal);
+        assert!(sq.is_open(), "gate should open on signal above threshold");
+
+        // Drop to silence.  EMA drops below threshold after ~33 samples, then
+        // hang_counter counts down from 200.  After 100 silence samples we are
+        // still within the 200-sample hang window.
+        let silence100: Vec<f32> = vec![0.0; 100];
+        sq.process(&silence100);
+        assert!(sq.is_open(), "gate should stay open during hang (≈100/200 samples elapsed)");
+
+        // Feed 400 more silence samples (500 total).  That is > 33 (EMA decay) +
+        // 200 (hang) = 233 samples, so both conditions expire.
+        let silence400: Vec<f32> = vec![0.0; 400];
+        sq.process(&silence400);
+        assert!(!sq.is_open(), "gate should close after hang + EMA release");
+    }
+
+    #[test]
+    fn hang_time_zero_disables_hold() {
+        let mut sq = Squelch::new(48_000, -30.0).with_hang_ms(0, 48_000);
+
+        // Open gate briefly.
+        let sig: Vec<f32> = (0..500).map(|i| (i as f32).sin()).collect();
+        sq.process(&sig);
+
+        // With hang=0, gate should close as soon as EMA falls below threshold.
+        // Feed 5000 silence samples — EMA release at 150ms, hang=0.
+        let silence: Vec<f32> = vec![0.0; 48_000];
+        sq.process(&silence);
+        assert!(!sq.is_open(), "gate should close without hang time");
     }
 
     #[test]
