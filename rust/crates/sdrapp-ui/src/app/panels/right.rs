@@ -7,6 +7,7 @@ use sdrapp_recorder::RecorderCommand;
 
 use crate::{
     frequency::FrequencyWidget,
+    knob::KnobWidget,
     theme,
 };
 use super::super::SdrApp;
@@ -64,23 +65,28 @@ impl SdrApp {
         ui.label(RichText::new("VOLUME").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        let mut vol = self.config.ui.volume;
-        let slider = egui::Slider::new(&mut vol, 0.0..=1.0)
-            .show_value(false)
-            .trailing_fill(true);
-        if ui
-            .add(slider)
-            .on_hover_text("Audio output volume (0–100%). Also controllable with nanoKontrol2 Fader 0.")
-            .changed()
-        {
-            self.config.ui.volume = vol;
-            let _ = self.cmd_tx.try_send(ReceiverCmd::SetVolume(vol).into());
-            self.config_dirty = true;
-        }
+        ui.vertical_centered(|ui| {
+            let mut vol = self.config.ui.volume;
+            let resp = KnobWidget {
+                value: &mut vol,
+                range: 0.0..=1.0,
+                default_value: 0.8,
+                step: 0.02,
+                diameter: 52.0,
+                label: Some("VOL"),
+                unit: "%",
+                midi_cc: None,
+            }.show(ui);
+            if resp.changed() {
+                self.config.ui.volume = vol;
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetVolume(vol).into());
+                self.config_dirty = true;
+            }
+        });
 
         // VU meter (stereo bars)
         // Peak level decays each frame; in real wiring this reads from AudioSink
-        let level = self.vu_peak * vol;
+        let level = self.vu_peak * self.config.ui.volume;
         self.draw_vu_meter(ui, level, level * 0.92); // slight L/R difference for visual interest
 
         ui.add_space(8.0);

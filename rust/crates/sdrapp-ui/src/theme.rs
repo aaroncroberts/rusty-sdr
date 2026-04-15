@@ -24,6 +24,9 @@ pub const WIDGET_BG: Color32 = Color32::from_rgb(28, 36, 54);
 /// Widget fill on hover
 pub const WIDGET_HOVER: Color32 = Color32::from_rgb(38, 50, 72);
 
+/// Stronger widget background (knob track, inactive arc)
+pub const WIDGET_BG_STRONG: Color32 = Color32::from_rgb(48, 55, 70);
+
 /// Widget fill when active / pressed
 pub const WIDGET_ACTIVE: Color32 = Color32::from_rgb(48, 65, 95);
 

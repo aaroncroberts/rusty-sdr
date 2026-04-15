@@ -9,6 +9,7 @@ use sdrapp_core::{
 
 use crate::{
     frequency::FrequencyWidget,
+    knob::KnobWidget,
     theme,
 };
 use super::super::SdrApp;
@@ -242,29 +243,23 @@ impl SdrApp {
 
             ui.add_space(4.0);
 
-            // Squelch threshold
-            ui.label(RichText::new("SQUELCH").color(theme::TEXT_MUTED).small());
-            ui.add_space(2.0);
-
-            let mut sq_threshold = self.shared.read().demod.squelch_threshold;
-            let sq_label = format!("{:.0} dBFS", sq_threshold);
-            ui.label(RichText::new(&sq_label).color(theme::TEXT_PRIMARY).small());
-            let sq_slider = egui::Slider::new(&mut sq_threshold, -120.0_f32..=0.0_f32)
-                .show_value(false)
-                .trailing_fill(true);
-            if ui
-                .add(sq_slider)
-                .on_hover_text(
-                    "Squelch gates audio below this signal level (dBFS).\n\
-                     Typical NFM voice: -70 to -40 dBFS.\n\
-                     Set lower to hear weaker signals; higher to cut noise.",
-                )
-                .changed()
-            {
-                let _ = self
-                    .cmd_tx
-                    .try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
-            }
+            // Squelch threshold knob
+            ui.vertical_centered(|ui| {
+                let mut sq_threshold = self.shared.read().demod.squelch_threshold;
+                let resp = KnobWidget {
+                    value: &mut sq_threshold,
+                    range: -120.0_f32..=0.0_f32,
+                    default_value: -50.0,
+                    step: 2.0,
+                    diameter: 44.0,
+                    label: Some("SQUELCH"),
+                    unit: "dBFS",
+                    midi_cc: None,
+                }.show(ui);
+                if resp.changed() {
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
+                }
+            });
 
             ui.add_space(4.0);
 
@@ -760,46 +755,73 @@ impl SdrApp {
                 self.config.source.lna_state = lna_max as u8;
                 self.config_dirty = true;
             }
+            // LNA + IF Gain knobs side by side
             ui.horizontal(|ui| {
-                ui.label(RichText::new("LNA").color(theme::TEXT_MUTED).small());
-                let mut lna = self.config.source.lna_state as i32;
-                if ui
-                    .add(egui::Slider::new(&mut lna, 0..=lna_max).show_value(true))
-                    .changed()
-                {
-                    self.config.source.lna_state = lna as u8;
-                    self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetLnaState(lna as u8).into());
-                }
-            });
-
-            // IF gain slider (−59 to 0 dBFS)
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("IF Gain").color(theme::TEXT_MUTED).small());
-                let mut gain = self.config.source.if_gain_dbfs;
-                if ui
-                    .add(egui::Slider::new(&mut gain, -59..=0).suffix(" dBFS").show_value(true))
-                    .changed()
-                {
-                    self.config.source.if_gain_dbfs = gain;
-                    self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetIfGain(gain).into());
-                }
+                let knob_w = (ui.available_width() / 2.0).min(60.0);
+                ui.allocate_ui(egui::Vec2::new(knob_w, 72.0), |ui| {
+                    ui.vertical_centered(|ui| {
+                        let mut lna = self.config.source.lna_state as f32;
+                        let resp = KnobWidget {
+                            value: &mut lna,
+                            range: 0.0..=(lna_max as f32),
+                            default_value: 4.0,
+                            step: 1.0,
+                            diameter: 40.0,
+                            label: Some("LNA"),
+                            unit: "",
+                            midi_cc: None,
+                        }.show(ui);
+                        if resp.changed() {
+                            let new_lna = lna.round() as u8;
+                            self.config.source.lna_state = new_lna;
+                            self.config_dirty = true;
+                            let _ = self.cmd_tx.try_send(HardwareCommand::SetLnaState(new_lna).into());
+                        }
+                    });
+                });
+                ui.allocate_ui(egui::Vec2::new(knob_w, 72.0), |ui| {
+                    ui.vertical_centered(|ui| {
+                        let mut gain = self.config.source.if_gain_dbfs as f32;
+                        let resp = KnobWidget {
+                            value: &mut gain,
+                            range: -59.0_f32..=0.0_f32,
+                            default_value: -34.0,
+                            step: 1.0,
+                            diameter: 40.0,
+                            label: Some("IF"),
+                            unit: "dBFS",
+                            midi_cc: None,
+                        }.show(ui);
+                        if resp.changed() {
+                            let new_gain = gain.round() as i32;
+                            self.config.source.if_gain_dbfs = new_gain;
+                            self.config_dirty = true;
+                            let _ = self.cmd_tx.try_send(HardwareCommand::SetIfGain(new_gain).into());
+                        }
+                    });
+                });
             });
         }
 
-        // AGC setpoint (only when AGC is on)
+        // AGC setpoint knob (only when AGC is on)
         if self.config.source.agc_enabled {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Setpoint").color(theme::TEXT_MUTED).small());
-                let mut sp = self.config.source.agc_setpoint_dbfs;
-                if ui
-                    .add(egui::Slider::new(&mut sp, -60..=0).suffix(" dBFS").show_value(true))
-                    .changed()
-                {
-                    self.config.source.agc_setpoint_dbfs = sp;
+            ui.vertical_centered(|ui| {
+                let mut sp = self.config.source.agc_setpoint_dbfs as f32;
+                let resp = KnobWidget {
+                    value: &mut sp,
+                    range: -60.0_f32..=0.0_f32,
+                    default_value: -30.0,
+                    step: 1.0,
+                    diameter: 40.0,
+                    label: Some("SETPNT"),
+                    unit: "dBFS",
+                    midi_cc: None,
+                }.show(ui);
+                if resp.changed() {
+                    let new_sp = sp.round() as i32;
+                    self.config.source.agc_setpoint_dbfs = new_sp;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAgcSetpoint(sp).into());
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAgcSetpoint(new_sp).into());
                 }
             });
         }

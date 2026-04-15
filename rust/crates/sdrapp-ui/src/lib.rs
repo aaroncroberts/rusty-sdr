@@ -4,6 +4,7 @@ pub mod app;
 pub mod band_plan;
 pub mod frequency;
 pub mod help;
+pub mod knob;
 pub mod spectrum;
 pub mod theme;
 pub mod waterfall;

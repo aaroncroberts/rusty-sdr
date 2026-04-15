@@ -448,6 +448,7 @@ mod tests {
                     filter_hi_hz: 100_100_000,
                     peak_hold: Some(&peak),
                     show_band_plan: true,
+                    hover_pos: None,
                 }
                 .show(ui);
             });

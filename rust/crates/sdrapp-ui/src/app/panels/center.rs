@@ -6,6 +6,7 @@ use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd};
 
 use crate::{
     frequency::FrequencyWidget,
+    knob::KnobWidget,
     spectrum::SpectrumWidget,
     theme,
 };
@@ -192,113 +193,136 @@ impl SdrApp {
         // ── Display controls toolbar ──────────────────────────────────────────
         ui.add_space(3.0);
 
-        // Row 1: Ref Level + Auto toggle
+        // Bandwidth label derived from current zoom
+        let bw_hz = (span * 2) as f64;
+        let bw_label = if bw_hz >= 1_000_000.0 {
+            format!("{:.2} MHz", bw_hz / 1_000_000.0)
+        } else {
+            format!("{:.0} kHz", bw_hz / 1_000.0)
+        };
+
+        // Knob row: REF · RANGE · WF GAIN · ZOOM · WF SPD
+        // Auto toggle + Zoom step buttons flank the knob row.
         ui.horizontal(|ui| {
+            // Auto ref toggle (compact)
             let auto_color = if self.auto_ref { theme::ACCENT } else { theme::TEXT_MUTED };
-            if ui.small_button(RichText::new(if self.auto_ref { "Auto ✓" } else { "Auto" }).color(auto_color))
-                .on_hover_text("Auto-track signal ceiling (auto reference level)")
+            if ui.small_button(RichText::new(if self.auto_ref { "A✓" } else { "A" }).color(auto_color))
+                .on_hover_text("Auto ref: tracks signal ceiling automatically. Click to toggle manual override.")
                 .clicked()
             {
                 self.auto_ref = !self.auto_ref;
             }
-            ui.label(RichText::new("Ref").color(theme::TEXT_MUTED).small());
+
+            // Ref Level knob
             let mut rl = self.ref_level;
-            if ui.add(
-                egui::Slider::new(&mut rl, -120.0_f32..=20.0_f32)
-                    .show_value(true)
-                    .suffix(" dB")
-                    .integer(),
-            ).on_hover_text("Reference level: top of spectrum display (dBFS). Drag down to see weaker signals.").changed() {
+            let ref_resp = KnobWidget {
+                value: &mut rl,
+                range: -120.0_f32..=20.0_f32,
+                default_value: -30.0,
+                step: 2.0,
+                diameter: 40.0,
+                label: Some("REF"),
+                unit: "dB",
+                midi_cc: None,
+            }.show(ui);
+            if ref_resp.changed() {
                 self.ref_level = rl;
-                self.auto_ref = false; // manual override disables auto
+                self.auto_ref = false;
             }
-            ui.label(RichText::new("Range").color(theme::TEXT_MUTED).small());
+
+            // Dynamic Range knob
             let mut dr = self.dyn_range;
-            if ui.add(
-                egui::Slider::new(&mut dr, 20.0_f32..=160.0_f32)
-                    .show_value(true)
-                    .suffix(" dB")
-                    .integer(),
-            ).on_hover_text("Dynamic range: how many dB the spectrum shows. Narrow = high contrast on weak signals.").changed() {
+            let range_resp = KnobWidget {
+                value: &mut dr,
+                range: 20.0_f32..=160.0_f32,
+                default_value: 60.0,
+                step: 5.0,
+                diameter: 40.0,
+                label: Some("RANGE"),
+                unit: "dB",
+                midi_cc: None,
+            }.show(ui);
+            if range_resp.changed() {
                 self.dyn_range = dr;
             }
-        });
 
-        // Row 2: WF Gain + Zoom (with bandwidth label) + WF Speed
-        ui.add_space(1.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("WF Gain").color(theme::TEXT_MUTED).small())
-                .on_hover_text("Waterfall brightness offset — positive reveals weaker signals in the waterfall");
+            // WF Gain knob
             let mut wg = self.wf_gain;
-            if ui.add(
-                egui::Slider::new(&mut wg, -40.0_f32..=40.0_f32)
-                    .show_value(true)
-                    .suffix(" dB")
-                    .integer(),
-            ).changed() {
+            let wfg_resp = KnobWidget {
+                value: &mut wg,
+                range: -40.0_f32..=40.0_f32,
+                default_value: 0.0,
+                step: 2.0,
+                diameter: 40.0,
+                label: Some("WF GAIN"),
+                unit: "dB",
+                midi_cc: None,
+            }.show(ui);
+            if wfg_resp.changed() {
                 self.wf_gain = wg;
             }
 
-            ui.add_space(6.0);
-
-            // Bandwidth label derived from current zoom
-            let bw_hz = (span * 2) as f64;
-            let bw_label = if bw_hz >= 1_000_000.0 {
-                format!("{:.2} MHz", bw_hz / 1_000_000.0)
-            } else {
-                format!("{:.0} kHz", bw_hz / 1_000.0)
-            };
-
-            ui.label(RichText::new("Zoom").color(theme::TEXT_MUTED).small());
-            // "In" narrows the span (÷1.5 on zoom_level) → more detail.
-            // "Out" widens the span (×1.5 on zoom_level) → less detail.
-            // "Full" shows the entire hardware bandwidth.
-            if ui.small_button(RichText::new("In").color(theme::TEXT_MUTED))
-                .on_hover_text("Zoom in: narrow the displayed span for more detail (Ctrl+scroll up)")
-                .clicked()
-            {
-                let new_z = (zoom_level / 1.5).clamp(0.005, 1.0);
-                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
-                self.config.ui.zoom_level = new_z;
-                self.config_dirty = true;
-            }
+            // Zoom knob + In/Out/Full step buttons
             let mut z = zoom_level;
-            if ui.add(
-                egui::Slider::new(&mut z, 0.005_f32..=1.0_f32)
-                    .show_value(false)
-                    .logarithmic(true),
-            ).changed() {
+            let zoom_resp = KnobWidget {
+                value: &mut z,
+                range: 0.005_f32..=1.0_f32,
+                default_value: 1.0,
+                step: 0.05,
+                diameter: 40.0,
+                label: Some("ZOOM"),
+                unit: "",
+                midi_cc: None,
+            }.show(ui);
+            if zoom_resp.changed() {
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(z).into());
                 self.config.ui.zoom_level = z;
                 self.config_dirty = true;
             }
-            if ui.small_button(RichText::new("Out").color(theme::TEXT_MUTED))
-                .on_hover_text("Zoom out: widen the displayed span (Ctrl+scroll down)")
-                .clicked()
-            {
-                let new_z = (zoom_level * 1.5).clamp(0.005, 1.0);
-                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
-                self.config.ui.zoom_level = new_z;
-                self.config_dirty = true;
-            }
-            if ui.small_button(RichText::new("Full").color(theme::ACCENT))
-                .on_hover_text("Show full hardware bandwidth")
-                .clicked()
-            {
-                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(1.0).into());
-                self.config.ui.zoom_level = 1.0;
-                self.config_dirty = true;
-            }
+            ui.vertical(|ui| {
+                if ui.small_button(RichText::new("In").color(theme::TEXT_MUTED))
+                    .on_hover_text("Zoom in (Ctrl+scroll up)")
+                    .clicked()
+                {
+                    let new_z = (zoom_level / 1.5).clamp(0.005, 1.0);
+                    let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
+                    self.config.ui.zoom_level = new_z;
+                    self.config_dirty = true;
+                }
+                if ui.small_button(RichText::new("Full").color(theme::ACCENT))
+                    .on_hover_text("Show full hardware bandwidth")
+                    .clicked()
+                {
+                    let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(1.0).into());
+                    self.config.ui.zoom_level = 1.0;
+                    self.config_dirty = true;
+                }
+                if ui.small_button(RichText::new("Out").color(theme::TEXT_MUTED))
+                    .on_hover_text("Zoom out (Ctrl+scroll down)")
+                    .clicked()
+                {
+                    let new_z = (zoom_level * 1.5).clamp(0.005, 1.0);
+                    let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
+                    self.config.ui.zoom_level = new_z;
+                    self.config_dirty = true;
+                }
+            });
             ui.label(RichText::new(&bw_label).color(theme::ACCENT).small())
                 .on_hover_text("Displayed bandwidth (zoom × hardware bandwidth)");
 
-            ui.add_space(4.0);
-            ui.label(RichText::new("WF").color(theme::TEXT_MUTED).small());
+            // Waterfall Speed knob
             let mut ws = waterfall_speed;
-            if ui.add(
-                egui::Slider::new(&mut ws, 0.1_f32..=8.0_f32)
-                    .show_value(false),
-            ).on_hover_text("Waterfall scroll speed").changed() {
+            let wfspd_resp = KnobWidget {
+                value: &mut ws,
+                range: 0.1_f32..=8.0_f32,
+                default_value: 1.0,
+                step: 0.2,
+                diameter: 40.0,
+                label: Some("WF SPD"),
+                unit: "×",
+                midi_cc: None,
+            }.show(ui);
+            if wfspd_resp.changed() {
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetWaterfallSpeed(ws).into());
                 self.config.ui.waterfall_speed = ws;
                 self.config_dirty = true;
