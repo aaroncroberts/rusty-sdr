@@ -37,6 +37,8 @@ fn main() -> anyhow::Result<()> {
         s.volume = config.ui.volume;
         s.zoom_level = config.ui.zoom_level;
         s.waterfall_speed = config.ui.waterfall_speed;
+        s.nfm_bandwidth_hz = config.ui.nfm_bandwidth_hz;
+        s.ctcss_squelch_enabled = config.ui.ctcss_enabled;
         // Load persisted bookmarks
         s.bookmarks = config.bookmarks.iter().map(|b| {
             use sdrapp_core::signal_path::{Bookmark, DemodMode};

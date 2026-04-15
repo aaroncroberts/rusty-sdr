@@ -298,14 +298,39 @@ impl SdrApp {
             }
         });
 
-        // ── NFM squelch ───────────────────────────────────────────────────────
+        // ── NFM squelch & settings ────────────────────────────────────────────
         if current_mode == DemodMode::Nfm {
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(6.0);
 
-            ui.label(RichText::new("SQUELCH").color(theme::TEXT_MUTED).small());
+            ui.label(RichText::new("NFM SETTINGS").color(theme::TEXT_MUTED).small());
             ui.add_space(4.0);
+
+            // Channel bandwidth selector (12.5 / 25 kHz)
+            let nfm_bw = self.shared.read().nfm_bandwidth_hz;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("BW").color(theme::TEXT_MUTED).small());
+                for (bw, label) in [(12_500u32, "12.5k"), (25_000u32, "25k")] {
+                    let selected = nfm_bw == bw;
+                    let text = RichText::new(label).small();
+                    let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
+                    if ui.selectable_label(selected, text)
+                        .on_hover_text("NFM channel bandwidth. 12.5 kHz for modern PMR/amateur, 25 kHz for legacy systems.")
+                        .clicked() && !selected
+                    {
+                        let _ = self.cmd_tx.try_send(SignalPathCommand::SetNfmBandwidth(bw));
+                        self.config.ui.nfm_bandwidth_hz = bw;
+                        self.config_dirty = true;
+                    }
+                }
+            });
+
+            ui.add_space(4.0);
+
+            // Squelch threshold
+            ui.label(RichText::new("SQUELCH").color(theme::TEXT_MUTED).small());
+            ui.add_space(2.0);
 
             let mut sq_threshold = self.shared.read().squelch_threshold;
             let sq_label = format!("{:.0} dBFS", sq_threshold);
@@ -326,6 +351,37 @@ impl SdrApp {
                     .cmd_tx
                     .try_send(SignalPathCommand::SetSquelchThreshold(sq_threshold));
             }
+
+            ui.add_space(4.0);
+
+            // CTCSS tone squelch toggle
+            let (ctcss_enabled, ctcss_detected) = {
+                let s = self.shared.read();
+                (s.ctcss_squelch_enabled, s.ctcss_tone_detected)
+            };
+            ui.horizontal(|ui| {
+                let label_color = if ctcss_enabled { theme::ACCENT } else { theme::TEXT_MUTED };
+                let ctcss_label = if ctcss_enabled && ctcss_detected {
+                    "CTCSS ✓"
+                } else if ctcss_enabled {
+                    "CTCSS (no tone)"
+                } else {
+                    "CTCSS off"
+                };
+                if ui
+                    .small_button(RichText::new(ctcss_label).color(label_color))
+                    .on_hover_text(
+                        "CTCSS tone squelch: mutes audio when no sub-audible tone (67–254 Hz) is detected.\n\
+                         Common on repeaters to prevent opening on distant interference.",
+                    )
+                    .clicked()
+                {
+                    let new_enabled = !ctcss_enabled;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetCtcssEnabled(new_enabled));
+                    self.config.ui.ctcss_enabled = new_enabled;
+                    self.config_dirty = true;
+                }
+            });
         }
 
         ui.add_space(8.0);

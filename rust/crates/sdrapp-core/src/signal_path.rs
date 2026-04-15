@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use rustfft::num_complex::Complex;
 
-use crate::dsp::{AmDemodulator, FmDemodulator, FftProcessor, RdsDecoder, Squelch, StereoFmDecoder, Volume};
+use crate::dsp::{AmDemodulator, AudioBandpass, CtcssDetector, FmDemodulator, FftProcessor, RdsDecoder, Squelch, StereoFmDecoder, Volume};
 use crate::sample::{IqSample, StereoFrame};
 
 const FFT_SIZE: usize = 2048;
@@ -108,6 +108,12 @@ pub struct SharedState {
     pub bookmark_cursor: usize,
     /// Whether the help panel is open.
     pub help_panel_open: bool,
+    /// NFM channel bandwidth in Hz (12500 or 25000).
+    pub nfm_bandwidth_hz: u32,
+    /// Whether CTCSS tone squelch is enabled in NFM mode.
+    pub ctcss_squelch_enabled: bool,
+    /// Whether a CTCSS tone is currently detected (NFM + CTCSS enabled).
+    pub ctcss_tone_detected: bool,
 }
 
 impl SharedState {
@@ -122,6 +128,7 @@ impl SharedState {
             bookmarks: vec![
                 Bookmark::new("BBC Radio 4", 93_500_000, DemodMode::Wbfm),
             ],
+            nfm_bandwidth_hz: 12_500,
             ..Default::default()
         }
     }
@@ -147,6 +154,10 @@ pub enum SignalPathCommand {
     AddBookmark(String),
     /// Remove bookmark at the given index.
     RemoveBookmark(usize),
+    /// Set NFM channel bandwidth in Hz (12500 or 25000).
+    SetNfmBandwidth(u32),
+    /// Enable or disable CTCSS tone squelch in NFM mode.
+    SetCtcssEnabled(bool),
     Stop,
 }
 
@@ -206,6 +217,10 @@ impl SignalPath {
             let mut demod: Demod = Demod::Wbfm(StereoFmDecoder::new(sr));
             let mut squelch = Squelch::new(48_000, -50.0);
             let mut rds = RdsDecoder::new(sr);
+            let mut audio_bp = AudioBandpass::voice(48_000.0);
+            let mut ctcss = CtcssDetector::with_default_threshold(48_000.0);
+            let mut nfm_bw_hz: u32 = 12_500;
+            let mut ctcss_enabled: bool = false;
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
 
@@ -239,11 +254,13 @@ impl SignalPath {
                             demod = match mode {
                                 DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(sr)),
                                 DemodMode::Nfm => {
-                                    Demod::Nfm(FmDemodulator::new(sr, 48_000, 12_500.0, 0.0))
+                                    Demod::Nfm(FmDemodulator::new(sr, 48_000, nfm_bw_hz as f32, 0.0))
                                 }
                                 DemodMode::Am => Demod::Am(AmDemodulator::standard(sr)),
                             };
                             squelch.reset();
+                            audio_bp.reset();
+                            ctcss.reset();
                             rds.reset();
                             let mut s = shared_clone.write();
                             s.demod_mode = mode;
@@ -288,6 +305,22 @@ impl SignalPath {
                                     s.bookmark_cursor = s.bookmarks.len() - 1;
                                 }
                             }
+                        }
+                        SignalPathCommand::SetNfmBandwidth(bw) => {
+                            nfm_bw_hz = bw;
+                            // Rebuild NFM demod with new bandwidth if currently in NFM
+                            if matches!(demod, Demod::Nfm(_)) {
+                                demod = Demod::Nfm(FmDemodulator::new(sr, 48_000, bw as f32, 0.0));
+                                audio_bp.reset();
+                                ctcss.reset();
+                            }
+                            shared_clone.write().nfm_bandwidth_hz = bw;
+                        }
+                        SignalPathCommand::SetCtcssEnabled(enabled) => {
+                            ctcss_enabled = enabled;
+                            ctcss.reset();
+                            shared_clone.write().ctcss_squelch_enabled = enabled;
+                            shared_clone.write().ctcss_tone_detected = false;
                         }
                         SignalPathCommand::Stop => {
                             shared_clone.write().is_running = false;
@@ -341,8 +374,24 @@ impl SignalPath {
                     }
                     Demod::Nfm(d) => {
                         let mono = d.process(&iq_complex);
+                        // Run CTCSS detector on raw demodulated audio (before squelch/filter)
+                        if ctcss_enabled {
+                            ctcss.process_batch(&mono);
+                            let detected = ctcss.is_tone_present();
+                            shared_clone.write().ctcss_tone_detected = detected;
+                        }
+                        // Apply squelch (dBFS threshold gate)
                         let gated = squelch.process(&mono);
-                        gated.into_iter().map(StereoFrame::mono).collect()
+                        // CTCSS gate: mute if enabled and no tone detected
+                        let ctcss_gated: Vec<f32> = if ctcss_enabled && !ctcss.is_tone_present() {
+                            vec![0.0; gated.len()]
+                        } else {
+                            gated
+                        };
+                        // Voice bandpass: 300 Hz – 3 kHz
+                        let mut filtered = ctcss_gated;
+                        audio_bp.process_inplace(&mut filtered);
+                        filtered.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Am(d) => {
                         let mono = d.process(&iq_complex);

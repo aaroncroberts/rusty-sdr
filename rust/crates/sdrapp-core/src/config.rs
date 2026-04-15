@@ -76,6 +76,12 @@ pub struct UiConfig {
     /// Waterfall scroll speed multiplier (1.0 = normal, 2.0 = 2× faster).
     #[serde(default = "default_waterfall_speed")]
     pub waterfall_speed: f32,
+    /// NFM channel bandwidth in Hz (12500 or 25000).
+    #[serde(default = "default_nfm_bandwidth")]
+    pub nfm_bandwidth_hz: u32,
+    /// CTCSS tone squelch enabled for NFM.
+    #[serde(default)]
+    pub ctcss_enabled: bool,
 }
 
 fn default_zoom_level() -> f32 {
@@ -83,6 +89,9 @@ fn default_zoom_level() -> f32 {
 }
 fn default_waterfall_speed() -> f32 {
     1.0
+}
+fn default_nfm_bandwidth() -> u32 {
+    12_500
 }
 
 impl Default for UiConfig {
@@ -95,6 +104,8 @@ impl Default for UiConfig {
             window_height: 800.0,
             zoom_level: 1.0,
             waterfall_speed: 1.0,
+            nfm_bandwidth_hz: 12_500,
+            ctcss_enabled: false,
         }
     }
 }
