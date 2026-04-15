@@ -343,7 +343,9 @@ fn run_sdrplay_thread(
     } else {
         ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_DISABLE;
         ch.tunerParams.gain.LNAstate = config.lna_state;
-        ch.tunerParams.gain.gRdB = config.if_gain_dbfs.clamp(-59, 0);
+        // Config stores if_gain_dbfs as negative (0 to −59 dBFS).
+        // The API's gRdB is the positive gain reduction (0–59). Negate to convert.
+        ch.tunerParams.gain.gRdB = (-config.if_gain_dbfs).clamp(0, 59);
     }
 
     // IF mode
@@ -443,7 +445,8 @@ fn run_sdrplay_thread(
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
                     }
                     HardwareCommand::SetIfGain(g) => {
-                        ch.tunerParams.gain.gRdB = g.clamp(-59, 0);
+                        // Same sign convention: config/UI stores negative dBFS, API wants positive.
+                        ch.tunerParams.gain.gRdB = (-g).clamp(0, 59);
                         (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Gr,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
                     }
