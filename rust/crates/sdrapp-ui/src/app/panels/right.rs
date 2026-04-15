@@ -65,6 +65,14 @@ impl SdrApp {
         ui.label(RichText::new("VOLUME").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
+        let (vol_learn, vol_cc) = {
+            let s = self.shared.read();
+            let learn = s.midi_learn_target.as_deref() == Some("volume");
+            let cc = s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "volume").map(|(&c, _)| c);
+            (learn, cc)
+        };
+        let mut vol_learn_req = false;
+        let mut vol_clear: Option<u8> = None;
         ui.vertical_centered(|ui| {
             let mut vol = self.config.ui.volume;
             let resp = KnobWidget {
@@ -75,14 +83,23 @@ impl SdrApp {
                 diameter: 52.0,
                 label: Some("VOL"),
                 unit: "%",
-                midi_cc: None,
+                midi_cc: vol_cc,
+                learn_active: vol_learn,
             }.show(ui);
+            resp.context_menu(|ui| {
+                if ui.button("Assign MIDI CC").clicked() { vol_learn_req = true; ui.close_menu(); }
+                if let Some(cc) = vol_cc {
+                    if ui.button(format!("Clear CC {cc} binding")).clicked() { vol_clear = Some(cc); ui.close_menu(); }
+                }
+            });
             if resp.changed() {
                 self.config.ui.volume = vol;
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetVolume(vol).into());
                 self.config_dirty = true;
             }
         });
+        if vol_learn_req { self.shared.write().midi_learn_target = Some("volume".into()); }
+        if let Some(cc) = vol_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
 
         // VU meter (stereo bars)
         // Peak level decays each frame; in real wiring this reads from AudioSink

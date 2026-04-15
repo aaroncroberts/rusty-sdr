@@ -169,7 +169,25 @@ impl eframe::App for SdrApp {
             self.auto_start_pending = false;
         }
 
+        // Sync MIDI Learn bindings: if the MIDI dispatcher thread learned a new CC,
+        // it wrote to shared.midi_cc_to_knob directly. Detect and persist the change.
+        {
+            let shared_len = self.shared.read().midi_cc_to_knob.len();
+            if shared_len != self.config.midi_learn.len() {
+                self.config.midi_learn = self.shared.read().midi_cc_to_knob
+                    .iter()
+                    .map(|(&cc, knob_id)| (knob_id.clone(), cc))
+                    .collect();
+                self.config_dirty = true;
+            }
+        }
+
         if self.config_dirty {
+            // Snapshot learned MIDI bindings (CC → knob_id becomes knob_id → CC)
+            self.config.midi_learn = self.shared.read().midi_cc_to_knob
+                .iter()
+                .map(|(&cc, knob_id)| (knob_id.clone(), cc))
+                .collect();
             self.config.save();
             self.config_dirty = false;
         }

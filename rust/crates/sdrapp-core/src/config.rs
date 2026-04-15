@@ -28,6 +28,9 @@ pub struct AppConfig {
     /// Hamlib rigctl TCP server configuration.
     #[serde(default)]
     pub rigctl: RigctlConfig,
+    /// Persisted MIDI Learn bindings: knob_id → CC number.
+    #[serde(default)]
+    pub midi_learn: std::collections::HashMap<String, u8>,
 }
 
 fn default_bookmarks() -> Vec<BookmarkConfig> {
@@ -228,6 +231,7 @@ impl Default for AppConfig {
                 BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm"),
             ],
             rigctl: RigctlConfig::default(),
+            midi_learn: std::collections::HashMap::new(),
         }
     }
 }

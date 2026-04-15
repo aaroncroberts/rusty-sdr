@@ -215,6 +215,12 @@ pub struct SharedState {
     pub help_panel_open: bool,
     /// Active recording mode (what to capture when recording starts).
     pub recording_mode: RecordingMode,
+    // ── MIDI Learn ────────────────────────────────────────────────────
+    /// If Some(knob_id), the next incoming MIDI CC will be bound to that knob.
+    pub midi_learn_target: Option<String>,
+    /// Learned CC bindings: MIDI CC number → knob ID string.
+    /// Set by the MIDI controller; read by the MIDI dispatcher and KnobWidget.
+    pub midi_cc_to_knob: std::collections::HashMap<u8, String>,
     /// Scheduled recording: seconds until start (0 = start now, None = not scheduled).
     pub scheduled_record_delay_secs: Option<u64>,
     /// Scheduled recording duration in seconds.

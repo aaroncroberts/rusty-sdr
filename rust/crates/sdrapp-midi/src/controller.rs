@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use sdrapp_core::signal_path::{BookmarkCmd, DisplayCmd, ReceiverCmd, SharedState, SignalPathCommand};
+use sdrapp_core::signal_path::{BookmarkCmd, DisplayCmd, HardwareCommand, ReceiverCmd, SharedState, SignalPathCommand};
 use sdrapp_recorder::RecorderCommand;
 
 use crate::action::MidiAction;
@@ -102,6 +102,25 @@ impl MidiController {
 
             while let Some(raw) = msg_rx.recv().await {
                 if let Some((key, value)) = parse_midi(&raw) {
+                    // ── MIDI Learn: capture next CC into a knob binding ────────
+                    if key.kind == MidiKeyKind::ControlChange {
+                        let learn_target = shared.read().midi_learn_target.clone();
+                        if let Some(knob_id) = learn_target {
+                            let mut s = shared.write();
+                            s.midi_cc_to_knob.insert(key.number, knob_id.clone());
+                            s.midi_learn_target = None;
+                            tracing::info!(cc = key.number, knob = %knob_id, "MIDI Learn: CC bound to knob");
+                            continue;
+                        }
+
+                        // ── Dispatch learned CC bindings ───────────────────────
+                        let learned_knob = shared.read().midi_cc_to_knob.get(&key.number).cloned();
+                        if let Some(knob_id) = learned_knob {
+                            dispatch_learned_cc(&knob_id, value, &signal_cmd_tx);
+                            continue;
+                        }
+                    }
+
                     let action = resolve_action(&config, current_page, &key, value);
 
                     match &action {
@@ -387,6 +406,49 @@ fn open_midi_port(port_name: &str, tx: mpsc::UnboundedSender<Vec<u8>>, shared: A
         }
         Err(e) => {
             tracing::error!("failed to connect to MIDI port '{name}': {e}");
+        }
+    }
+}
+
+/// Dispatch a MIDI CC value (0–127) to the knob it was learned on.
+///
+/// Scales the raw value to the knob's native parameter range.
+fn dispatch_learned_cc(
+    knob_id: &str,
+    value: u8,
+    cmd_tx: &crossbeam_channel::Sender<SignalPathCommand>,
+) {
+    let v = value as f32 / 127.0; // normalized 0..=1
+    match knob_id {
+        "volume" => {
+            let _ = cmd_tx.try_send(ReceiverCmd::SetVolume(v).into());
+        }
+        "squelch" => {
+            let dbfs = -120.0 + v * 120.0;
+            let _ = cmd_tx.try_send(ReceiverCmd::SetSquelchThreshold(dbfs).into());
+        }
+        "zoom" => {
+            let z = (0.005 + v * 0.995).clamp(0.005, 1.0);
+            let _ = cmd_tx.try_send(DisplayCmd::SetZoom(z).into());
+        }
+        "wf_speed" => {
+            let s = 0.1 + v * 7.9;
+            let _ = cmd_tx.try_send(DisplayCmd::SetWaterfallSpeed(s).into());
+        }
+        "lna" => {
+            let state = (v * 9.0).round() as u8;
+            let _ = cmd_tx.try_send(HardwareCommand::SetLnaState(state).into());
+        }
+        "if_gain" => {
+            let gain = (-59.0 + v * 59.0).round() as i32;
+            let _ = cmd_tx.try_send(HardwareCommand::SetIfGain(gain).into());
+        }
+        "agc_setpoint" => {
+            let sp = (-60.0 + v * 60.0).round() as i32;
+            let _ = cmd_tx.try_send(HardwareCommand::SetAgcSetpoint(sp).into());
+        }
+        _ => {
+            tracing::trace!(knob = knob_id, value, "learned CC: knob_id not dispatchable via signal path");
         }
     }
 }

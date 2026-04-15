@@ -56,6 +56,10 @@ fn main() -> anyhow::Result<()> {
             _ => sdrapp_core::dsp::FftWindow::Hann,
         };
         s.fft.fft_magnitudes = vec![-120.0; config.ui.fft_size];
+        // Load persisted MIDI Learn bindings (knob_id → CC becomes CC → knob_id)
+        s.midi_cc_to_knob = config.midi_learn.iter()
+            .map(|(knob_id, &cc)| (cc, knob_id.clone()))
+            .collect();
         // Load persisted bookmarks
         s.bookmarks = config.bookmarks.iter().map(|b| {
             use sdrapp_core::signal_path::{Bookmark, DemodMode};

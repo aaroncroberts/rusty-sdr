@@ -202,6 +202,23 @@ impl SdrApp {
         };
 
         // Knob row: REF · RANGE · WF GAIN · ZOOM · WF SPD
+        // MIDI Learn state (read before closure to avoid split-borrow issues)
+        let (zoom_learn, zoom_cc) = {
+            let s = self.shared.read();
+            (s.midi_learn_target.as_deref() == Some("zoom"),
+             s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "zoom").map(|(&c, _)| c))
+        };
+        let (wfspd_learn, wfspd_cc) = {
+            let s = self.shared.read();
+            (s.midi_learn_target.as_deref() == Some("wf_speed"),
+             s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "wf_speed").map(|(&c, _)| c))
+        };
+        // Action flags: set by context_menu closures, acted on after ui.horizontal returns
+        let mut zoom_learn_req = false;
+        let mut zoom_clear: Option<u8> = None;
+        let mut wfspd_learn_req = false;
+        let mut wfspd_clear: Option<u8> = None;
+
         // Auto toggle + Zoom step buttons flank the knob row.
         ui.horizontal(|ui| {
             // Auto ref toggle (compact)
@@ -224,6 +241,7 @@ impl SdrApp {
                 label: Some("REF"),
                 unit: "dB",
                 midi_cc: None,
+                learn_active: false,
             }.show(ui);
             if ref_resp.changed() {
                 self.ref_level = rl;
@@ -241,6 +259,7 @@ impl SdrApp {
                 label: Some("RANGE"),
                 unit: "dB",
                 midi_cc: None,
+                learn_active: false,
             }.show(ui);
             if range_resp.changed() {
                 self.dyn_range = dr;
@@ -257,6 +276,7 @@ impl SdrApp {
                 label: Some("WF GAIN"),
                 unit: "dB",
                 midi_cc: None,
+                learn_active: false,
             }.show(ui);
             if wfg_resp.changed() {
                 self.wf_gain = wg;
@@ -272,8 +292,15 @@ impl SdrApp {
                 diameter: 40.0,
                 label: Some("ZOOM"),
                 unit: "",
-                midi_cc: None,
+                midi_cc: zoom_cc,
+                learn_active: zoom_learn,
             }.show(ui);
+            zoom_resp.context_menu(|ui| {
+                if ui.button("Assign MIDI CC").clicked() { zoom_learn_req = true; ui.close_menu(); }
+                if let Some(cc) = zoom_cc {
+                    if ui.button(format!("Clear CC {cc} binding")).clicked() { zoom_clear = Some(cc); ui.close_menu(); }
+                }
+            });
             if zoom_resp.changed() {
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(z).into());
                 self.config.ui.zoom_level = z;
@@ -320,14 +347,26 @@ impl SdrApp {
                 diameter: 40.0,
                 label: Some("WF SPD"),
                 unit: "×",
-                midi_cc: None,
+                midi_cc: wfspd_cc,
+                learn_active: wfspd_learn,
             }.show(ui);
+            wfspd_resp.context_menu(|ui| {
+                if ui.button("Assign MIDI CC").clicked() { wfspd_learn_req = true; ui.close_menu(); }
+                if let Some(cc) = wfspd_cc {
+                    if ui.button(format!("Clear CC {cc} binding")).clicked() { wfspd_clear = Some(cc); ui.close_menu(); }
+                }
+            });
             if wfspd_resp.changed() {
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetWaterfallSpeed(ws).into());
                 self.config.ui.waterfall_speed = ws;
                 self.config_dirty = true;
             }
         });
+        // Handle MIDI Learn actions deferred from the horizontal closure
+        if zoom_learn_req { self.shared.write().midi_learn_target = Some("zoom".into()); }
+        if let Some(cc) = zoom_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
+        if wfspd_learn_req { self.shared.write().midi_learn_target = Some("wf_speed".into()); }
+        if let Some(cc) = wfspd_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
 
         // Row 3: FFT size, window, averaging, band plan, SNR
         ui.add_space(1.0);

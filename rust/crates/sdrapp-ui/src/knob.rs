@@ -60,6 +60,8 @@ pub struct KnobWidget<'a> {
     pub unit: &'a str,
     /// Optional bound MIDI CC number shown as `"CC N"` below the arc.
     pub midi_cc: Option<u8>,
+    /// If true, this knob is actively waiting for a MIDI CC assignment (pulsing ring).
+    pub learn_active: bool,
 }
 
 impl<'a> KnobWidget<'a> {
@@ -160,6 +162,17 @@ impl<'a> KnobWidget<'a> {
                     center,
                     radius - 1.0,
                     Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 30)),
+                );
+            }
+
+            // MIDI Learn: pulsing accent ring while waiting for CC assignment
+            if self.learn_active {
+                let t = ui.input(|i| i.time) as f32;
+                let pulse = ((t * 4.0).sin() * 0.5 + 0.5) * 200.0 + 55.0; // 55–255
+                painter.circle_stroke(
+                    center,
+                    radius + 2.0,
+                    Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 180, 50, pulse as u8)),
                 );
             }
 

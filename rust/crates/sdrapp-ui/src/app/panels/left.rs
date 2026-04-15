@@ -244,6 +244,14 @@ impl SdrApp {
             ui.add_space(4.0);
 
             // Squelch threshold knob
+            let (sq_learn, sq_cc) = {
+                let s = self.shared.read();
+                let learn = s.midi_learn_target.as_deref() == Some("squelch");
+                let cc = s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "squelch").map(|(&c, _)| c);
+                (learn, cc)
+            };
+            let mut sq_learn_req = false;
+            let mut sq_clear: Option<u8> = None;
             ui.vertical_centered(|ui| {
                 let mut sq_threshold = self.shared.read().demod.squelch_threshold;
                 let resp = KnobWidget {
@@ -254,12 +262,21 @@ impl SdrApp {
                     diameter: 44.0,
                     label: Some("SQUELCH"),
                     unit: "dBFS",
-                    midi_cc: None,
+                    midi_cc: sq_cc,
+                    learn_active: sq_learn,
                 }.show(ui);
+                resp.context_menu(|ui| {
+                    if ui.button("Assign MIDI CC").clicked() { sq_learn_req = true; ui.close_menu(); }
+                    if let Some(cc) = sq_cc {
+                        if ui.button(format!("Clear CC {cc} binding")).clicked() { sq_clear = Some(cc); ui.close_menu(); }
+                    }
+                });
                 if resp.changed() {
                     let _ = self.cmd_tx.try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
                 }
             });
+            if sq_learn_req { self.shared.write().midi_learn_target = Some("squelch".into()); }
+            if let Some(cc) = sq_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
 
             ui.add_space(4.0);
 
@@ -756,6 +773,20 @@ impl SdrApp {
                 self.config_dirty = true;
             }
             // LNA + IF Gain knobs side by side
+            let (lna_learn, lna_cc) = {
+                let s = self.shared.read();
+                (s.midi_learn_target.as_deref() == Some("lna"),
+                 s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "lna").map(|(&c, _)| c))
+            };
+            let (ifg_learn, ifg_cc) = {
+                let s = self.shared.read();
+                (s.midi_learn_target.as_deref() == Some("if_gain"),
+                 s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "if_gain").map(|(&c, _)| c))
+            };
+            let mut lna_learn_req = false;
+            let mut lna_clear: Option<u8> = None;
+            let mut ifg_learn_req = false;
+            let mut ifg_clear: Option<u8> = None;
             ui.horizontal(|ui| {
                 let knob_w = (ui.available_width() / 2.0).min(60.0);
                 ui.allocate_ui(egui::Vec2::new(knob_w, 72.0), |ui| {
@@ -769,8 +800,15 @@ impl SdrApp {
                             diameter: 40.0,
                             label: Some("LNA"),
                             unit: "",
-                            midi_cc: None,
+                            midi_cc: lna_cc,
+                            learn_active: lna_learn,
                         }.show(ui);
+                        resp.context_menu(|ui| {
+                            if ui.button("Assign MIDI CC").clicked() { lna_learn_req = true; ui.close_menu(); }
+                            if let Some(cc) = lna_cc {
+                                if ui.button(format!("Clear CC {cc} binding")).clicked() { lna_clear = Some(cc); ui.close_menu(); }
+                            }
+                        });
                         if resp.changed() {
                             let new_lna = lna.round() as u8;
                             self.config.source.lna_state = new_lna;
@@ -790,8 +828,15 @@ impl SdrApp {
                             diameter: 40.0,
                             label: Some("IF"),
                             unit: "dBFS",
-                            midi_cc: None,
+                            midi_cc: ifg_cc,
+                            learn_active: ifg_learn,
                         }.show(ui);
+                        resp.context_menu(|ui| {
+                            if ui.button("Assign MIDI CC").clicked() { ifg_learn_req = true; ui.close_menu(); }
+                            if let Some(cc) = ifg_cc {
+                                if ui.button(format!("Clear CC {cc} binding")).clicked() { ifg_clear = Some(cc); ui.close_menu(); }
+                            }
+                        });
                         if resp.changed() {
                             let new_gain = gain.round() as i32;
                             self.config.source.if_gain_dbfs = new_gain;
@@ -801,10 +846,21 @@ impl SdrApp {
                     });
                 });
             });
+            if lna_learn_req { self.shared.write().midi_learn_target = Some("lna".into()); }
+            if let Some(cc) = lna_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
+            if ifg_learn_req { self.shared.write().midi_learn_target = Some("if_gain".into()); }
+            if let Some(cc) = ifg_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
         }
 
         // AGC setpoint knob (only when AGC is on)
         if self.config.source.agc_enabled {
+            let (sp_learn, sp_cc) = {
+                let s = self.shared.read();
+                (s.midi_learn_target.as_deref() == Some("agc_setpoint"),
+                 s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "agc_setpoint").map(|(&c, _)| c))
+            };
+            let mut sp_learn_req = false;
+            let mut sp_clear: Option<u8> = None;
             ui.vertical_centered(|ui| {
                 let mut sp = self.config.source.agc_setpoint_dbfs as f32;
                 let resp = KnobWidget {
@@ -815,8 +871,15 @@ impl SdrApp {
                     diameter: 40.0,
                     label: Some("SETPNT"),
                     unit: "dBFS",
-                    midi_cc: None,
+                    midi_cc: sp_cc,
+                    learn_active: sp_learn,
                 }.show(ui);
+                resp.context_menu(|ui| {
+                    if ui.button("Assign MIDI CC").clicked() { sp_learn_req = true; ui.close_menu(); }
+                    if let Some(cc) = sp_cc {
+                        if ui.button(format!("Clear CC {cc} binding")).clicked() { sp_clear = Some(cc); ui.close_menu(); }
+                    }
+                });
                 if resp.changed() {
                     let new_sp = sp.round() as i32;
                     self.config.source.agc_setpoint_dbfs = new_sp;
@@ -824,6 +887,8 @@ impl SdrApp {
                     let _ = self.cmd_tx.try_send(HardwareCommand::SetAgcSetpoint(new_sp).into());
                 }
             });
+            if sp_learn_req { self.shared.write().midi_learn_target = Some("agc_setpoint".into()); }
+            if let Some(cc) = sp_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
         }
 
         // Hardware-only advanced controls (not shown in demo mode)
