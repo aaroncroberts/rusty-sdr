@@ -45,7 +45,7 @@ impl SdrApp {
             let stereo_badge = if is_stereo { "  ST" } else { "" };
             ui.label(
                 RichText::new(format!(
-                    "◈  {device_label}  ·  {rate_label}  ·  {freq_label}{stereo_badge}"
+                    "{device_label}  |  {rate_label}  |  {freq_label}{stereo_badge}"
                 ))
                 .color(theme::TEXT_MUTED)
                 .small(),

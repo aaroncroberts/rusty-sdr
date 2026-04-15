@@ -20,26 +20,26 @@ impl BandType {
     /// Semi-transparent fill colour for the band region.
     pub fn fill(self) -> Color32 {
         match self {
-            BandType::Broadcast  => Color32::from_rgba_premultiplied(180, 100,   0, 28),
-            BandType::Amateur    => Color32::from_rgba_premultiplied(  0, 180,  70, 28),
-            BandType::Aviation   => Color32::from_rgba_premultiplied(  0, 140, 255, 28),
-            BandType::Marine     => Color32::from_rgba_premultiplied(  0, 210, 200, 28),
-            BandType::Military   => Color32::from_rgba_premultiplied(200,  60, 220, 28),
-            BandType::Satellite  => Color32::from_rgba_premultiplied( 80,  80, 255, 28),
-            BandType::Other      => Color32::from_rgba_premultiplied(150, 150, 150, 20),
+            BandType::Broadcast  => Color32::from_rgba_unmultiplied(180, 100,   0, 10),
+            BandType::Amateur    => Color32::from_rgba_unmultiplied(  0, 180,  70, 10),
+            BandType::Aviation   => Color32::from_rgba_unmultiplied(  0, 140, 255, 10),
+            BandType::Marine     => Color32::from_rgba_unmultiplied(  0, 210, 200, 10),
+            BandType::Military   => Color32::from_rgba_unmultiplied(200,  60, 220, 10),
+            BandType::Satellite  => Color32::from_rgba_unmultiplied( 80,  80, 255, 10),
+            BandType::Other      => Color32::from_rgba_unmultiplied(150, 150, 150,  8),
         }
     }
 
     /// Top edge / label colour — brighter version of fill for contrast.
     pub fn accent(self) -> Color32 {
         match self {
-            BandType::Broadcast  => Color32::from_rgba_premultiplied(255, 160,  40, 200),
-            BandType::Amateur    => Color32::from_rgba_premultiplied( 60, 230, 110, 200),
-            BandType::Aviation   => Color32::from_rgba_premultiplied( 60, 180, 255, 200),
-            BandType::Marine     => Color32::from_rgba_premultiplied( 40, 240, 220, 200),
-            BandType::Military   => Color32::from_rgba_premultiplied(230, 100, 255, 200),
-            BandType::Satellite  => Color32::from_rgba_premultiplied(140, 140, 255, 200),
-            BandType::Other      => Color32::from_rgba_premultiplied(180, 180, 180, 180),
+            BandType::Broadcast  => Color32::from_rgba_unmultiplied(255, 160,  40, 200),
+            BandType::Amateur    => Color32::from_rgba_unmultiplied( 60, 230, 110, 200),
+            BandType::Aviation   => Color32::from_rgba_unmultiplied( 60, 180, 255, 200),
+            BandType::Marine     => Color32::from_rgba_unmultiplied( 40, 240, 220, 200),
+            BandType::Military   => Color32::from_rgba_unmultiplied(230, 100, 255, 200),
+            BandType::Satellite  => Color32::from_rgba_unmultiplied(140, 140, 255, 200),
+            BandType::Other      => Color32::from_rgba_unmultiplied(180, 180, 180, 180),
         }
     }
 }

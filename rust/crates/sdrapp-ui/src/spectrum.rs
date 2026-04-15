@@ -84,9 +84,9 @@ impl<'a> SpectrumWidget<'a> {
                 let y = db_to_y(db, db_min, db_max, plot_rect);
                 let is_major = (db as i32) % 20 == 0;
                 let grid_color = if is_major {
-                    Color32::from_rgba_premultiplied(60, 80, 90, 200)
+                    Color32::from_rgba_unmultiplied(60, 80, 90, 200)
                 } else {
-                    Color32::from_rgba_premultiplied(35, 50, 60, 130)
+                    Color32::from_rgba_unmultiplied(35, 50, 60, 130)
                 };
                 let line_w = if is_major { 1.0 } else { 0.5 };
                 painter.line_segment(
@@ -177,8 +177,8 @@ impl<'a> SpectrumWidget<'a> {
             // Quads rendered as 2 triangles each.
             {
                 let bottom_y = plot_rect.bottom();
-                let fill_top = Color32::from_rgba_premultiplied(15, 160, 120, 100);
-                let fill_bot = Color32::from_rgba_premultiplied(0, 0, 0, 0);
+                let fill_top = Color32::from_rgba_unmultiplied(15, 160, 120, 80);
+                let fill_bot = Color32::TRANSPARENT;
 
                 let mut mesh = Mesh::default();
                 for (i, &pt) in trace_pts.iter().enumerate() {
@@ -205,24 +205,18 @@ impl<'a> SpectrumWidget<'a> {
 
             // ── Neon glow trace ───────────────────────────────────────────────
             // Four stacked passes: wide dim halo → narrow bright edge.
-            // The extra thin white highlight at top gives a crisp "top of signal" line.
             let glow_layers: &[(f32, u8)] = &[
-                (5.0,  8),   // wide halo
-                (2.5, 25),   // inner glow
-                (1.5, 90),   // bright edge
-                (0.8, 240),  // sharp trace
+                (4.0,  12),  // wide halo
+                (2.0, 40),   // inner glow
+                (1.2, 130),  // bright edge
+                (0.6, 255),  // sharp trace
             ];
             for &(width, alpha) in glow_layers {
                 painter.add(egui::Shape::line(
                     trace_pts.clone(),
-                    Stroke::new(width, Color32::from_rgba_premultiplied(30, 215, 170, alpha)),
+                    Stroke::new(width, Color32::from_rgba_unmultiplied(30, 215, 170, alpha)),
                 ));
             }
-            // Crisp white highlight on top edge for definition
-            painter.add(egui::Shape::line(
-                trace_pts.clone(),
-                Stroke::new(0.6, Color32::from_rgba_premultiplied(200, 255, 240, 120)),
-            ));
 
             // ── Peak-hold line ────────────────────────────────────────────────
             if let Some(peak) = self.peak_hold {
@@ -238,14 +232,14 @@ impl<'a> SpectrumWidget<'a> {
                         .collect();
                     painter.add(egui::Shape::line(
                         peak_pts,
-                        Stroke::new(1.0, Color32::from_rgba_premultiplied(200, 255, 230, 80)),
+                        Stroke::new(0.75, Color32::from_rgba_unmultiplied(200, 255, 230, 100)),
                     ));
                 }
             }
         }
 
         // ── Filter passband overlay ───────────────────────────────────────────
-        // Semi-transparent fill showing the demodulator's receive bandwidth.
+        // Very subtle tint showing the demodulator's receive bandwidth.
         if freq_hi > freq_lo && self.filter_hi_hz > self.filter_lo_hz {
             let freq_span = freq_hi - freq_lo;
             let lo_t = ((self.filter_lo_hz as f64 - freq_lo) / freq_span).clamp(0.0, 1.0) as f32;
@@ -259,15 +253,8 @@ impl<'a> SpectrumWidget<'a> {
                         Pos2::new(hi_x, plot_rect.bottom()),
                     ),
                     0.0,
-                    Color32::from_rgba_premultiplied(0, 160, 220, 22),
+                    Color32::from_rgba_unmultiplied(0, 140, 220, 18),
                 );
-                // Passband edge lines
-                for edge_x in [lo_x, hi_x] {
-                    painter.line_segment(
-                        [Pos2::new(edge_x, plot_rect.top()), Pos2::new(edge_x, plot_rect.bottom())],
-                        Stroke::new(0.75, Color32::from_rgba_premultiplied(0, 180, 255, 60)),
-                    );
-                }
             }
         }
 

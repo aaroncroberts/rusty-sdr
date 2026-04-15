@@ -22,7 +22,7 @@ impl SdrApp {
         ui.horizontal(|ui| {
             ui.add_space(2.0);
             ui.label(
-                RichText::new("◉  SDR App")
+                RichText::new("SDR App")
                     .color(theme::ACCENT)
                     .size(15.0)
                     .strong(),
@@ -55,9 +55,9 @@ impl SdrApp {
 
         ui.horizontal(|ui| {
             let (icon, color) = if is_demo {
-                ("⚠", theme::DANGER)
+                ("[!]", theme::DANGER)
             } else {
-                ("◈", theme::ACCENT_DIM)
+                ("[*]", theme::ACCENT_DIM)
             };
             ui.label(RichText::new(icon).color(color));
             ui.label(RichText::new(display_name).color(theme::TEXT_PRIMARY));
@@ -432,7 +432,7 @@ impl SdrApp {
                         recall_idx = Some(i);
                     }
                     // Edit button
-                    if ui.small_button(RichText::new("✎").color(theme::TEXT_MUTED)).on_hover_text("Edit bookmark").clicked() {
+                    if ui.small_button(RichText::new("Ed").color(theme::TEXT_MUTED)).on_hover_text("Edit bookmark").clicked() {
                         edit_start_idx = Some(i);
                     }
                     // Delete button
@@ -662,9 +662,11 @@ impl SdrApp {
             });
         });
 
-        // Sample rate dropdown
+        // Sample rate dropdown — requires restart to take effect.
+        // Disabled while running to avoid confusing partial state.
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Rate").color(theme::TEXT_MUTED).small());
+            let label_color = if is_running { theme::TEXT_MUTED } else { theme::TEXT_MUTED };
+            ui.label(RichText::new("Rate").color(label_color).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let rates: &[(u32, &str)] = &[
                     (200_000, "200k"),
@@ -681,18 +683,20 @@ impl SdrApp {
                     .map(|&(_, label)| label)
                     .unwrap_or("?");
 
-                egui::ComboBox::from_id_salt("sample_rate")
-                    .selected_text(RichText::new(current).small())
-                    .width(60.0)
-                    .show_ui(ui, |ui| {
-                        for &(rate, label) in rates {
-                            let selected = rate == self.config.source.sample_rate_sps;
-                            if ui.selectable_label(selected, label).clicked() {
-                                self.config.source.sample_rate_sps = rate;
-                                self.config_dirty = true;
+                ui.add_enabled_ui(!is_running, |ui| {
+                    egui::ComboBox::from_id_salt("sample_rate")
+                        .selected_text(RichText::new(current).small())
+                        .width(60.0)
+                        .show_ui(ui, |ui| {
+                            for &(rate, label) in rates {
+                                let selected = rate == self.config.source.sample_rate_sps;
+                                if ui.selectable_label(selected, label).clicked() {
+                                    self.config.source.sample_rate_sps = rate;
+                                    self.config_dirty = true;
+                                }
                             }
-                        }
-                    });
+                        });
+                }).response.on_disabled_hover_text("Stop playback before changing the sample rate — the device must reinitialize.");
             });
         });
 
@@ -854,7 +858,7 @@ impl SdrApp {
 
         if center_freq > 0 {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("⟳").color(theme::TEXT_MUTED));
+                ui.label(RichText::new("RDS").color(theme::TEXT_MUTED));
                 ui.label(
                     RichText::new(format_frequency(center_freq))
                         .color(theme::TEXT_MUTED)

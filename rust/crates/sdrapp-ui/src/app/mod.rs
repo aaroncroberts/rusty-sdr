@@ -135,7 +135,7 @@ impl SdrApp {
             ref_level: -30.0,
             dyn_range: 60.0,
             auto_ref: true,
-            wf_gain: 10.0,
+            wf_gain: 0.0,
             noise_floor_ema: -85.0,
             signal_ceil_ema: -40.0,
             waterfall_row_frac: 0.0,

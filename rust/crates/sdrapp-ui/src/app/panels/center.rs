@@ -13,10 +13,10 @@ use super::super::SdrApp;
 
 impl SdrApp {
     pub(in crate::app) fn center_panel(&mut self, ui: &mut Ui) {
-        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz) = {
+        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz, is_running) = {
             let s = self.shared.read();
             (s.fft.fft_magnitudes.clone(), s.fft.band_plan_enabled, s.fft.snr_db,
-             s.demod.demod_mode, s.demod.nfm_bandwidth_hz)
+             s.demod.demod_mode, s.demod.nfm_bandwidth_hz, s.is_running)
         };
 
         let freq = self.config.ui.frequency_hz;
@@ -40,7 +40,7 @@ impl SdrApp {
         if self.peak_hold.len() != n {
             self.peak_hold = vec![-120.0_f32; n];
         }
-        let signal_active = fft_data.iter().any(|&v| v > -119.0);
+        let signal_active = is_running && fft_data.iter().any(|&v| v > -119.0);
         if signal_active {
             for (ph, &v) in self.peak_hold.iter_mut().zip(fft_data.iter()) {
                 if v > *ph {
@@ -69,9 +69,10 @@ impl SdrApp {
             let db_floor = self.ref_level - self.dyn_range;
             let db_ceil = self.ref_level;
 
-            // Waterfall uses a shifted range for independent brightness control.
-            // Positive wf_gain shifts the mapping down, revealing weaker signals.
-            self.waterfall.set_db_range((db_floor - self.wf_gain, db_ceil - self.wf_gain));
+            // Waterfall range: floor is shifted down by wf_gain to reveal weaker signals;
+            // ceiling has 30 dB of fixed headroom above the spectrum ceiling so strong
+            // signals don't saturate to white.
+            self.waterfall.set_db_range((db_floor - self.wf_gain, db_ceil + 30.0));
             // Fractional accumulator: push_row fires once per integer crossed.
             // Speed 1.0 = 1 row/frame, 2.0 = 2 rows/frame, 0.5 = every other frame.
             self.waterfall_row_frac += waterfall_speed.clamp(0.1, 10.0);
@@ -144,7 +145,7 @@ impl SdrApp {
         } else {
             None
         };
-        // Compute filter passband bounds for the bandwidth overlay.
+        // Compute filter passband bounds — only shown when live signal is active.
         // For symmetric modes, the filter spans ±bw/2 around vfo_hz.
         // For SSB, only one sideband is used.
         let (filter_lo_hz, filter_hi_hz) = {
@@ -160,13 +161,19 @@ impl SdrApp {
                 Cw   => (freq.saturating_sub(400), freq + 400),
             }
         };
+        // Only show filter overlay when streaming (suppress when paused/stopped).
+        let (show_filter_lo, show_filter_hi) = if is_running {
+            (filter_lo_hz, filter_hi_hz)
+        } else {
+            (freq, freq) // zero-width → hidden
+        };
         SpectrumWidget {
             fft_data: &fft_data,
             db_range,
             freq_range: (freq.saturating_sub(span), freq + span),
             vfo_hz: freq,
-            filter_lo_hz,
-            filter_hi_hz,
+            filter_lo_hz: show_filter_lo,
+            filter_hi_hz: show_filter_hi,
             peak_hold: peak_ref,
             show_band_plan: band_plan_enabled,
         }
