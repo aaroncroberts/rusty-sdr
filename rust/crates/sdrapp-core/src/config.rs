@@ -143,6 +143,12 @@ pub struct UiConfig {
     /// Show band plan overlay on spectrum.
     #[serde(default)]
     pub band_plan_enabled: bool,
+    /// Waterfall colormap preset: "Thermal", "Grayscale", "Inferno", "Classic".
+    #[serde(default = "default_waterfall_colormap")]
+    pub waterfall_colormap: String,
+    /// UI font scale factor (0.5–3.0, default 1.0).
+    #[serde(default = "default_font_scale")]
+    pub font_scale: f32,
 }
 
 fn default_zoom_level() -> f32 {
@@ -163,6 +169,12 @@ fn default_fft_window() -> String {
 fn default_fft_averaging() -> u8 {
     4
 }
+fn default_waterfall_colormap() -> String {
+    "Thermal".into()
+}
+fn default_font_scale() -> f32 {
+    1.0
+}
 
 impl Default for UiConfig {
     fn default() -> Self {
@@ -180,6 +192,8 @@ impl Default for UiConfig {
             fft_window: "Hann".into(),
             fft_averaging: 4,
             band_plan_enabled: false,
+            waterfall_colormap: "Thermal".into(),
+            font_scale: 1.0,
         }
     }
 }

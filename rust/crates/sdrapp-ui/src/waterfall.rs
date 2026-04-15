@@ -89,6 +89,11 @@ impl WaterfallWidget {
         self.db_range = range;
     }
 
+    /// Replace the colormap LUT (takes effect on the next push_row call).
+    pub fn set_colormap(&mut self, colormap: [egui::Color32; 256]) {
+        self.colormap = colormap;
+    }
+
     /// Render the waterfall into the UI.
     ///
     /// The texture contains `WATERFALL_HEIGHT` rows of history; the display rect

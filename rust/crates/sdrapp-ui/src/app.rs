@@ -133,6 +133,9 @@ pub struct SdrApp {
     scan_dwell_ui: f32,
     /// Category filter for scanner (empty = all bookmarks).
     scan_cat_ui: String,
+    // ── App settings ──────────────────────────────────────────────────────────
+    /// Whether the settings window (Ctrl+,) is open.
+    show_settings: bool,
 }
 
 impl SdrApp {
@@ -147,11 +150,27 @@ impl SdrApp {
         // Apply our beautiful dark theme
         theme::apply(&cc.egui_ctx);
 
+        // Apply persisted font scale
+        if (config.ui.font_scale - 1.0).abs() > 0.01 {
+            cc.egui_ctx.set_pixels_per_point(config.ui.font_scale);
+        }
+
+        // Build initial waterfall colormap from config
+        let wf_colormap: theme::WaterfallColormap = match config.ui.waterfall_colormap.as_str() {
+            "Grayscale" => theme::WaterfallColormap::Grayscale,
+            "Inferno" => theme::WaterfallColormap::Inferno,
+            "Classic" => theme::WaterfallColormap::Classic,
+            _ => theme::WaterfallColormap::Thermal,
+        };
+
         let freq = config.ui.frequency_hz;
+        let mut waterfall_widget = WaterfallWidget::new_with_colormap(1024, (-120.0, 0.0));
+        waterfall_widget.set_colormap(wf_colormap.build());
+
         Self {
             registry: ModuleRegistry::new(),
             frequency_widget: FrequencyWidget::new(freq),
-            waterfall: WaterfallWidget::new_with_colormap(1024, (-120.0, 0.0)),
+            waterfall: waterfall_widget,
             config,
             shared,
             cmd_tx,
@@ -176,6 +195,7 @@ impl SdrApp {
             bookmark_sort_by_freq: false,
             scan_dwell_ui: 2.0,
             scan_cat_ui: String::new(),
+            show_settings: false,
         }
     }
 
@@ -1871,6 +1891,11 @@ impl eframe::App for SdrApp {
             s.help_panel_open = !s.help_panel_open;
         }
 
+        // ── Ctrl+, opens settings ─────────────────────────────────────────────
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma)) {
+            self.show_settings = !self.show_settings;
+        }
+
         // ── Arrow-key frequency tuning ────────────────────────────────────────
         // Up/Down arrows tune by step_hz. Left/Right arrows step by 10×.
         let (up, down, left, right) = ctx.input(|i| (
@@ -1949,6 +1974,11 @@ impl eframe::App for SdrApp {
             self.shared.write().help_panel_open = help_open;
         }
 
+        // ── Settings window (Ctrl+,) ──────────────────────────────────────────
+        if self.show_settings {
+            self.settings_window(ctx);
+        }
+
         // Request continuous repaint while running
         if self.shared.read().is_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(33)); // ~30fps
@@ -1962,6 +1992,108 @@ impl eframe::App for SdrApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let _ = self.cmd_tx.try_send(SignalPathCommand::Stop);
         self.config.save();
+    }
+}
+
+impl SdrApp {
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_settings;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .min_width(360.0)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(theme::PANEL_BG)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER)),
+            )
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+
+                // ── Waterfall colormap ─────────────────────────────────────────
+                ui.label(egui::RichText::new("Waterfall").color(theme::TEXT_MUTED).small());
+                ui.horizontal(|ui| {
+                    ui.label("Colormap");
+                    let presets = [
+                        theme::WaterfallColormap::Thermal,
+                        theme::WaterfallColormap::Grayscale,
+                        theme::WaterfallColormap::Inferno,
+                        theme::WaterfallColormap::Classic,
+                    ];
+                    let current: theme::WaterfallColormap = match self.config.ui.waterfall_colormap.as_str() {
+                        "Grayscale" => theme::WaterfallColormap::Grayscale,
+                        "Inferno"   => theme::WaterfallColormap::Inferno,
+                        "Classic"   => theme::WaterfallColormap::Classic,
+                        _           => theme::WaterfallColormap::Thermal,
+                    };
+                    let mut selected = current;
+                    egui::ComboBox::from_id_salt("wf_colormap")
+                        .selected_text(selected.label())
+                        .show_ui(ui, |ui| {
+                            for preset in presets {
+                                ui.selectable_value(&mut selected, preset, preset.label());
+                            }
+                        });
+                    if selected != current {
+                        self.config.ui.waterfall_colormap = selected.label().to_string();
+                        self.waterfall.set_colormap(selected.build());
+                        self.config_dirty = true;
+                    }
+                });
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── UI scale ──────────────────────────────────────────────────
+                ui.label(egui::RichText::new("Interface").color(theme::TEXT_MUTED).small());
+                ui.horizontal(|ui| {
+                    ui.label("UI Scale");
+                    let mut scale = self.config.ui.font_scale;
+                    let resp = ui.add(
+                        egui::Slider::new(&mut scale, 0.75_f32..=2.5)
+                            .step_by(0.05)
+                            .fixed_decimals(2)
+                            .suffix("×"),
+                    );
+                    if resp.changed() {
+                        self.config.ui.font_scale = scale;
+                        ctx.set_pixels_per_point(scale);
+                        self.config_dirty = true;
+                    }
+                    if ui.button("Reset").clicked() {
+                        self.config.ui.font_scale = 1.0;
+                        ctx.set_pixels_per_point(1.0);
+                        self.config_dirty = true;
+                    }
+                });
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Config file path ──────────────────────────────────────────
+                ui.label(egui::RichText::new("Storage").color(theme::TEXT_MUTED).small());
+                let config_path = sdrapp_core::config::config_path();
+                ui.horizontal(|ui| {
+                    ui.label("Config file");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut config_path.display().to_string().as_str())
+                            .desired_width(220.0)
+                            .interactive(false)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    if ui.button("Reveal").clicked() {
+                        // Open Finder / Explorer to the containing directory
+                        if let Some(parent) = config_path.parent() {
+                            let _ = std::process::Command::new("open").arg(parent).spawn();
+                        }
+                    }
+                });
+            });
+
+        self.show_settings = open;
     }
 }
 

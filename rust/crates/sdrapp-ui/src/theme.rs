@@ -132,6 +132,59 @@ pub const STROKE_ACCENT: Stroke = Stroke {
 
 // ── Waterfall Colormap ───────────────────────────────────────────────────────
 
+/// Available waterfall colormaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum WaterfallColormap {
+    /// SDR thermal: near-black → navy → blue → cyan → green → yellow → white.
+    #[default]
+    Thermal,
+    /// Grayscale: black → white.
+    Grayscale,
+    /// Inferno-inspired: black → purple → red → orange → yellow.
+    Inferno,
+    /// Classic SDR: black → blue → cyan → green → yellow → red → white.
+    Classic,
+}
+
+impl WaterfallColormap {
+    pub fn label(self) -> &'static str {
+        match self {
+            WaterfallColormap::Thermal => "Thermal",
+            WaterfallColormap::Grayscale => "Grayscale",
+            WaterfallColormap::Inferno => "Inferno",
+            WaterfallColormap::Classic => "Classic",
+        }
+    }
+
+    pub fn build(self) -> [Color32; 256] {
+        match self {
+            WaterfallColormap::Thermal => waterfall_colormap(),
+            WaterfallColormap::Grayscale => lerp_colormap(&[
+                (0.0, 0, 0, 0),
+                (1.0, 255, 255, 255),
+            ]),
+            WaterfallColormap::Inferno => lerp_colormap(&[
+                (0.00, 0, 0, 4),
+                (0.20, 40, 11, 84),
+                (0.40, 120, 28, 109),
+                (0.60, 200, 60, 90),
+                (0.75, 238, 130, 40),
+                (0.90, 250, 210, 20),
+                (1.00, 252, 255, 164),
+            ]),
+            WaterfallColormap::Classic => lerp_colormap(&[
+                (0.00, 0, 0, 0),
+                (0.20, 0, 0, 180),
+                (0.35, 0, 180, 220),
+                (0.50, 0, 220, 0),
+                (0.65, 220, 220, 0),
+                (0.80, 220, 40, 0),
+                (1.00, 255, 255, 255),
+            ]),
+        }
+    }
+}
+
 /// Generate the 256-entry SDR thermal colormap.
 ///
 /// Maps normalised power [0.0=noise floor, 1.0=full scale] → RGB.
@@ -181,6 +234,33 @@ pub fn waterfall_colormap() -> [Color32; 256] {
 #[inline]
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
+}
+
+/// Build a 256-entry colormap from a set of `(t, r, g, b)` control points.
+///
+/// `t` values must be in ascending order from 0.0 to 1.0.
+fn lerp_colormap(stops: &[(f32, u8, u8, u8)]) -> [Color32; 256] {
+    let mut lut = [Color32::BLACK; 256];
+    for (i, entry) in lut.iter_mut().enumerate() {
+        let t = i as f32 / 255.0;
+        let mut lower = stops[0];
+        let mut upper = stops[stops.len() - 1];
+        for j in 0..stops.len() - 1 {
+            if t >= stops[j].0 && t <= stops[j + 1].0 {
+                lower = stops[j];
+                upper = stops[j + 1];
+                break;
+            }
+        }
+        let span = (upper.0 - lower.0).max(1e-6);
+        let alpha = (t - lower.0) / span;
+        *entry = Color32::from_rgb(
+            lerp_u8(lower.1, upper.1, alpha),
+            lerp_u8(lower.2, upper.2, alpha),
+            lerp_u8(lower.3, upper.3, alpha),
+        );
+    }
+    lut
 }
 
 // ── Application ──────────────────────────────────────────────────────────────
