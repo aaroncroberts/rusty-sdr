@@ -370,11 +370,23 @@ fn run_sdrplay_thread(
     running.store(true, Ordering::Relaxed);
 
     // ── Initialize streaming ──────────────────────────────────────────────────
-    let err = unsafe { sys::sdrplay_api_Init(dev_handle, &mut callbacks, ctx_ptr) };
-    if err != sys::sdrplay_api_ErrT_sdrplay_api_Success {
+    // Retry up to 3 times with a short delay to recover from a previous session
+    // that exited uncleanly (SIGKILL, crash) without calling sdrplay_api_Uninit.
+    let mut init_err = sys::sdrplay_api_ErrT_sdrplay_api_Success;
+    for attempt in 0..3 {
+        init_err = unsafe { sys::sdrplay_api_Init(dev_handle, &mut callbacks, ctx_ptr) };
+        if init_err == sys::sdrplay_api_ErrT_sdrplay_api_Success {
+            break;
+        }
+        tracing::warn!(attempt, err = init_err, "sdrplay_api_Init failed, retrying in 1s");
+        // Try to uninit in case a previous session left the device initialised
+        unsafe { sys::sdrplay_api_Uninit(dev_handle); }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    if init_err != sys::sdrplay_api_ErrT_sdrplay_api_Success {
         // Reclaim box to avoid leak
         let _ = unsafe { Box::from_raw(ctx_ptr as *mut CallbackContext) };
-        anyhow::bail!("sdrplay_api_Init failed: {err}");
+        anyhow::bail!("sdrplay_api_Init failed after retries: {init_err}");
     }
 
     tracing::info!(
