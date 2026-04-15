@@ -11,6 +11,7 @@
 use rustfft::num_complex::Complex;
 
 use super::bandpass::AudioBandpass;
+use super::resampler::RationalResampler;
 
 /// FM discriminator + de-emphasis + rational resampler.
 ///
@@ -27,10 +28,7 @@ use super::bandpass::AudioBandpass;
 ///      `y[n] = α * y[n-1] + (1 - α) * x[n]`  where α = exp(-1/(τ*fs))
 pub struct FmDemodulator {
     prev: Complex<f32>,
-    /// Fractional output phase accumulator (0..1)
-    phase_acc: f64,
-    /// Increment per input sample = audio_rate / sample_rate
-    phase_step: f64,
+    resampler: RationalResampler,
     /// De-emphasis state
     deemph_y: f32,
     /// De-emphasis coefficient α
@@ -47,8 +45,6 @@ impl FmDemodulator {
     /// * `max_dev_hz`  — FM channel max deviation in Hz (75_000 for broadcast)
     /// * `tau_us`      — de-emphasis time constant in µs (75.0 for NA, 50.0 for EU)
     pub fn new(sample_rate: u32, audio_rate: u32, max_dev_hz: f32, tau_us: f32) -> Self {
-        let phase_step = audio_rate as f64 / sample_rate as f64;
-
         // De-emphasis: α = exp(-1 / (τ * fs_audio))
         let tau = tau_us * 1e-6;
         let deemph_alpha = (-1.0 / (tau * audio_rate as f32)).exp();
@@ -59,8 +55,7 @@ impl FmDemodulator {
 
         Self {
             prev: Complex::new(1.0, 0.0),
-            phase_acc: 0.0,
-            phase_step,
+            resampler: RationalResampler::new(sample_rate, audio_rate),
             deemph_y: 0.0,
             deemph_alpha,
             deviation_scale,
@@ -76,9 +71,7 @@ impl FmDemodulator {
     ///
     /// Output length ≈ `input_len * audio_rate / sample_rate`.
     pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
-        let mut out = Vec::with_capacity(
-            (samples.len() as f64 * self.phase_step).ceil() as usize + 2,
-        );
+        let mut out = Vec::with_capacity(self.resampler.output_len_hint(samples.len()));
 
         for &s in samples {
             // Phase derivative (FM discriminator)
@@ -92,14 +85,14 @@ impl FmDemodulator {
                 Complex::new(1.0, 0.0)
             };
 
-            // Rational resampler: emit when phase crosses integer boundary
-            self.phase_acc += self.phase_step;
-            while self.phase_acc >= 1.0 {
-                // De-emphasis IIR
-                self.deemph_y = self.deemph_alpha * self.deemph_y + (1.0 - self.deemph_alpha) * demod;
-                out.push(self.deemph_y.clamp(-1.0, 1.0));
-                self.phase_acc -= 1.0;
-            }
+            // Split borrows so the closure can mutate deemph_y while resampler is borrowed.
+            let deemph_alpha = self.deemph_alpha;
+            let resampler = &mut self.resampler;
+            let deemph_y = &mut self.deemph_y;
+            resampler.process_with(demod, |v| {
+                *deemph_y = deemph_alpha * *deemph_y + (1.0 - deemph_alpha) * v;
+                out.push((*deemph_y).clamp(-1.0, 1.0));
+            });
         }
 
         out
@@ -108,7 +101,7 @@ impl FmDemodulator {
     /// Reset demodulator state (e.g. after a frequency change).
     pub fn reset(&mut self) {
         self.prev = Complex::new(1.0, 0.0);
-        self.phase_acc = 0.0;
+        self.resampler.reset();
         self.deemph_y = 0.0;
     }
 }
@@ -128,8 +121,7 @@ pub struct AmDemodulator {
     dc_y: f32,
     /// HP filter coefficient (≈ 0.999 for ~20 Hz cutoff at 48 kHz)
     dc_coeff: f32,
-    phase_acc: f64,
-    phase_step: f64,
+    resampler: RationalResampler,
 }
 
 impl AmDemodulator {
@@ -138,15 +130,13 @@ impl AmDemodulator {
     /// * `sample_rate` — IQ input sample rate in Hz
     /// * `audio_rate`  — desired audio output rate in Hz
     pub fn new(sample_rate: u32, audio_rate: u32) -> Self {
-        let phase_step = audio_rate as f64 / sample_rate as f64;
         // HP coefficient: α ≈ exp(-2π * f_cutoff / fs_audio), f_cutoff = 20 Hz
         let dc_coeff = (-2.0 * std::f32::consts::PI * 20.0 / audio_rate as f32).exp();
         Self {
             prev_env: 0.0,
             dc_y: 0.0,
             dc_coeff,
-            phase_acc: 0.0,
-            phase_step,
+            resampler: RationalResampler::new(sample_rate, audio_rate),
         }
     }
 
@@ -157,25 +147,17 @@ impl AmDemodulator {
 
     /// Process a batch of IQ samples and return resampled audio.
     pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
-        let mut out = Vec::with_capacity(
-            (samples.len() as f64 * self.phase_step).ceil() as usize + 2,
-        );
+        let mut out = Vec::with_capacity(self.resampler.output_len_hint(samples.len()));
 
         for &s in samples {
             let env = s.norm(); // envelope = |IQ|
 
             // DC-blocking high-pass filter
-            let dc_filtered =
-                env - self.prev_env + self.dc_coeff * self.dc_y;
+            let dc_filtered = env - self.prev_env + self.dc_coeff * self.dc_y;
             self.prev_env = env;
             self.dc_y = dc_filtered;
 
-            // Rational resampler
-            self.phase_acc += self.phase_step;
-            while self.phase_acc >= 1.0 {
-                out.push(dc_filtered.clamp(-1.0, 1.0));
-                self.phase_acc -= 1.0;
-            }
+            self.resampler.process(dc_filtered, |v| out.push(v.clamp(-1.0, 1.0)));
         }
 
         out
@@ -184,7 +166,7 @@ impl AmDemodulator {
     pub fn reset(&mut self) {
         self.prev_env = 0.0;
         self.dc_y = 0.0;
-        self.phase_acc = 0.0;
+        self.resampler.reset();
     }
 }
 
@@ -281,10 +263,7 @@ pub enum SsbMode {
 /// phase as mix-down, making the two stages coherent.
 pub struct SsbDemodulator {
     mode: SsbMode,
-    /// Fractional output phase accumulator (0..1)
-    phase_acc: f64,
-    /// Increment per input sample = audio_rate / sample_rate
-    phase_step: f64,
+    resampler: RationalResampler,
     /// Weaver oscillator phase (radians), advanced at input rate
     lo_phase: f32,
     /// Weaver oscillator step per input sample = 2π · fc / sample_rate
@@ -311,13 +290,11 @@ impl SsbDemodulator {
     /// * `sample_rate` — IQ input sample rate in Hz
     /// * `audio_rate`  — desired audio output rate in Hz (typically 48 000)
     pub fn new(mode: SsbMode, sample_rate: u32, audio_rate: u32) -> Self {
-        let phase_step = audio_rate as f64 / sample_rate as f64;
         let lo_step = 2.0 * std::f32::consts::PI * Self::WEAVER_FC / sample_rate as f32;
         let fs = sample_rate as f32;
         Self {
             mode,
-            phase_acc: 0.0,
-            phase_step,
+            resampler: RationalResampler::new(sample_rate, audio_rate),
             lo_phase: 0.0,
             lo_step,
             lpf_i1: DspBiquad::lowpass(Self::WEAVER_LPF, fs),
@@ -335,9 +312,7 @@ impl SsbDemodulator {
 
     /// Process a batch of IQ samples and return resampled audio.
     pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
-        let mut out = Vec::with_capacity(
-            (samples.len() as f64 * self.phase_step).ceil() as usize + 2,
-        );
+        let mut out = Vec::with_capacity(self.resampler.output_len_hint(samples.len()));
 
         for &s in samples {
             // Snapshot oscillator phase before advancing (used for both
@@ -372,12 +347,7 @@ impl SsbDemodulator {
                 }
             };
 
-            // Rational resampler: emit when phase crosses integer boundary
-            self.phase_acc += self.phase_step;
-            while self.phase_acc >= 1.0 {
-                out.push(audio_raw);
-                self.phase_acc -= 1.0;
-            }
+            self.resampler.process(audio_raw, |v| out.push(v));
         }
 
         // Voice bandpass at audio rate then clamp
@@ -391,7 +361,7 @@ impl SsbDemodulator {
 
     /// Reset demodulator state (e.g. after a frequency change).
     pub fn reset(&mut self) {
-        self.phase_acc = 0.0;
+        self.resampler.reset();
         self.lo_phase = 0.0;
         self.lpf_i1.reset();
         self.lpf_i2.reset();
@@ -412,8 +382,7 @@ impl SsbDemodulator {
 ///      This centres on the conventional 700 Hz CW sidetone and rejects voice
 ///      and other off-frequency signals.
 pub struct CwDemodulator {
-    phase_acc: f64,
-    phase_step: f64,
+    resampler: RationalResampler,
     /// HP at 400 Hz (audio rate) — removes low-frequency noise and voice
     hp: DspBiquad,
     /// LP at 900 Hz (audio rate) — narrow CW passband centred on 700 Hz sidetone
@@ -426,11 +395,9 @@ impl CwDemodulator {
     /// * `sample_rate` — IQ input sample rate in Hz
     /// * `audio_rate`  — desired audio output rate in Hz (typically 48 000)
     pub fn new(sample_rate: u32, audio_rate: u32) -> Self {
-        let phase_step = audio_rate as f64 / sample_rate as f64;
         let fs = audio_rate as f32;
         Self {
-            phase_acc: 0.0,
-            phase_step,
+            resampler: RationalResampler::new(sample_rate, audio_rate),
             hp: DspBiquad::highpass(400.0, fs),
             lp: DspBiquad::lowpass(900.0, fs),
         }
@@ -443,18 +410,18 @@ impl CwDemodulator {
 
     /// Process a batch of IQ samples and return resampled audio.
     pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
-        let mut out = Vec::with_capacity(
-            (samples.len() as f64 * self.phase_step).ceil() as usize + 2,
-        );
+        let mut out = Vec::with_capacity(self.resampler.output_len_hint(samples.len()));
 
         for &s in samples {
-            self.phase_acc += self.phase_step;
-            while self.phase_acc >= 1.0 {
+            // Split borrows so the closure can mutate hp/lp while resampler is borrowed.
+            let resampler = &mut self.resampler;
+            let hp = &mut self.hp;
+            let lp = &mut self.lp;
+            resampler.process_with(s.re, |v| {
                 // I channel → narrow bandpass (HP 400 Hz, LP 900 Hz)
-                let filtered = self.lp.process(self.hp.process(s.re));
+                let filtered = lp.process(hp.process(v));
                 out.push(filtered.clamp(-1.0, 1.0));
-                self.phase_acc -= 1.0;
-            }
+            });
         }
 
         out
@@ -462,7 +429,7 @@ impl CwDemodulator {
 
     /// Reset demodulator state.
     pub fn reset(&mut self) {
-        self.phase_acc = 0.0;
+        self.resampler.reset();
         self.hp.reset();
         self.lp.reset();
     }

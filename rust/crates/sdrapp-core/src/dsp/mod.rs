@@ -12,11 +12,13 @@ pub mod demod;
 pub mod fft;
 pub mod packer;
 pub mod rds;
+pub mod resampler;
 pub mod squelch;
 pub mod stereo_fm;
 pub mod volume;
 
 pub use bandpass::AudioBandpass;
+pub use resampler::RationalResampler;
 pub use ctcss::CtcssDetector;
 pub use demod::{AmDemodulator, CwDemodulator, FmDemodulator, SsbDemodulator, SsbMode};
 pub use fft::{FftProcessor, FftWindow};
