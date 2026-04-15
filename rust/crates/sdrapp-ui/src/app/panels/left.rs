@@ -668,15 +668,23 @@ impl SdrApp {
             let label_color = if is_running { theme::TEXT_MUTED } else { theme::TEXT_MUTED };
             ui.label(RichText::new("Rate").color(label_color).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let rates: &[(u32, &str)] = &[
-                    (200_000, "200k"),
-                    (500_000, "500k"),
-                    (1_000_000, "1M"),
-                    (2_000_000, "2M"),
-                    (6_000_000, "6M"),
-                    (8_000_000, "8M"),
-                    (10_000_000, "10M"),
-                ];
+                // RSPdx-R2 in ZeroIF mode requires >= 2 MHz sample rate.
+                // Lower rates are only valid in LowIF mode (not exposed here).
+                let rates: &[(u32, &str)] = if is_demo {
+                    &[
+                        (200_000,  "200k"),
+                        (500_000,  "500k"),
+                        (1_000_000, "1M"),
+                        (2_000_000, "2M"),
+                    ]
+                } else {
+                    &[
+                        (2_000_000,  "2M"),
+                        (6_000_000,  "6M"),
+                        (8_000_000,  "8M"),
+                        (10_000_000, "10M"),
+                    ]
+                };
                 let current = rates
                     .iter()
                     .find(|&&(r, _)| r == self.config.source.sample_rate_sps)
@@ -719,12 +727,19 @@ impl SdrApp {
         });
 
         // LNA state (only when AGC is off)
+        // RSPdx-R2: 0–9 normal; 0–3 in HDR mode.
         if !self.config.source.agc_enabled {
+            let lna_max = if self.config.source.hdr_mode { 3_i32 } else { 9_i32 };
+            // Clamp persisted value in case it exceeds the current mode's limit.
+            if self.config.source.lna_state as i32 > lna_max {
+                self.config.source.lna_state = lna_max as u8;
+                self.config_dirty = true;
+            }
             ui.horizontal(|ui| {
                 ui.label(RichText::new("LNA").color(theme::TEXT_MUTED).small());
                 let mut lna = self.config.source.lna_state as i32;
                 if ui
-                    .add(egui::Slider::new(&mut lna, 0..=9).show_value(true))
+                    .add(egui::Slider::new(&mut lna, 0..=lna_max).show_value(true))
                     .changed()
                 {
                     self.config.source.lna_state = lna as u8;
@@ -785,12 +800,25 @@ impl SdrApp {
 
                 ui.add_space(6.0);
 
-                // HDR mode
+                // HDR mode — RSPdx-R2 only supports HDR below 2 MHz
                 let hdr = self.config.source.hdr_mode;
-                let label = RichText::new("HDR").small();
-                let label = if hdr { label.color(theme::ACCENT).strong() } else { label.color(theme::TEXT_MUTED) };
-                if ui.selectable_label(hdr, label)
-                    .on_hover_text("High Dynamic Range mode — improves ADC performance below 2 MHz.")
+                let freq_too_high_for_hdr = self.config.ui.frequency_hz > 2_000_000;
+                let hdr_color = if hdr && !freq_too_high_for_hdr {
+                    theme::ACCENT
+                } else if freq_too_high_for_hdr {
+                    theme::TEXT_DISABLED
+                } else {
+                    theme::TEXT_MUTED
+                };
+                let label = RichText::new("HDR").small().color(hdr_color);
+                let tip = if freq_too_high_for_hdr {
+                    "HDR not available above 2 MHz — tune below 2 MHz first."
+                } else {
+                    "High Dynamic Range mode — improves ADC performance below 2 MHz."
+                };
+                if ui.add_enabled(!freq_too_high_for_hdr, egui::SelectableLabel::new(hdr, label))
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text(tip)
                     .clicked()
                 {
                     self.config.source.hdr_mode = !hdr;
