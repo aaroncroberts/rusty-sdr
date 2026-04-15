@@ -159,9 +159,9 @@ impl SdrApp {
         ui.label(RichText::new("RECORDER").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        let (is_recording, rec_mode, center_freq, iq_sr) = {
+        let (is_recording, rec_mode, center_freq, iq_sr, rec_error) = {
             let s = self.shared.read();
-            (s.is_recording, s.recording_mode, s.center_freq_hz, s.sample_rate_sps)
+            (s.is_recording, s.recording_mode, s.center_freq_hz, s.sample_rate_sps, s.recorder_error.clone())
         };
 
         // Recording mode selector
@@ -222,6 +222,24 @@ impl SdrApp {
                     tracing::error!("failed to send StartRecording to signal path");
                 }
             }
+        }
+
+        // Recorder error banner
+        if let Some(ref err) = rec_error {
+            ui.add_space(4.0);
+            let err_frame = egui::Frame::none()
+                .fill(Color32::from_rgba_premultiplied(80, 10, 10, 200))
+                .stroke(Stroke::new(1.0, theme::DANGER))
+                .inner_margin(egui::Margin::same(4.0));
+            err_frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("⚠").color(theme::DANGER));
+                    ui.label(RichText::new(err).color(theme::DANGER).small());
+                    if ui.small_button("✕").clicked() {
+                        self.shared.write().recorder_error = None;
+                    }
+                });
+            });
         }
 
         // ── Scheduled Recording ───────────────────────────────────────────────

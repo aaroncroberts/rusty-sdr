@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 sdrapp-core = { path = "../sdrapp-core" }
+parking_lot = { workspace = true }
 hound = { workspace = true }
 dirs = { workspace = true }
 tokio = { workspace = true }

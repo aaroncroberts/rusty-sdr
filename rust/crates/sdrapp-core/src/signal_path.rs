@@ -95,7 +95,7 @@ impl Bookmark {
 }
 
 /// Hardware control state (RSPdx-R2).
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct HardwareState {
     /// LNA gain reduction state (0–9). 0 = max gain, 9 = max attenuation.
     pub lna_state: u8,
@@ -215,6 +215,9 @@ pub struct SharedState {
     pub help_panel_open: bool,
     /// Active recording mode (what to capture when recording starts).
     pub recording_mode: RecordingMode,
+    /// Last recorder error message (disk full, permission denied, etc.).
+    /// Cleared when a new recording starts successfully.
+    pub recorder_error: Option<String>,
     // ── MIDI Learn ────────────────────────────────────────────────────
     /// If Some(knob_id), the next incoming MIDI CC will be bound to that knob.
     pub midi_learn_target: Option<String>,
@@ -367,8 +370,15 @@ pub enum SignalPathCommand {
     Stop,
     /// Hot-swap the IQ source.  Sent by the hardware probe task when a device
     /// appears (or reappears) while the app is running.  Clears `source_dead`
-    /// so the signal path resumes reading from the new receiver.
-    ReconnectSource(broadcast::Receiver<Arc<[IqSample]>>),
+    /// and updates the hardware command channel to the new device.
+    ///
+    /// After swapping, the signal path re-applies current frequency, demod mode,
+    /// and hardware settings so the new device comes up in the user's current state.
+    ReconnectSource {
+        iq_rx: broadcast::Receiver<Arc<[IqSample]>>,
+        /// New hardware command channel, or `None` for sources without one.
+        hardware_cmd_tx: Option<crossbeam_channel::Sender<HardwareCommand>>,
+    },
 }
 
 impl From<ReceiverCmd> for SignalPathCommand {
@@ -416,7 +426,7 @@ impl SignalPath {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<SignalPathCommand>(64);
         let shared_clone = Arc::clone(&shared);
         let freq_atomic_clone = freq_atomic;
-        let hw_cmd_tx = hardware_cmd_tx;
+        let mut hw_cmd_tx = hardware_cmd_tx;
         // iq_rx must be mut so ReconnectSource can swap it at runtime.
         let mut iq_rx = iq_rx;
 
@@ -585,6 +595,8 @@ impl SignalPath {
                             // Forward verbatim to the device thread
                             if let Some(ref tx) = hw_cmd_tx {
                                 let _ = tx.try_send(hw);
+                            } else {
+                                tracing::trace!(?hw, "hardware command dropped — no hardware device connected");
                             }
                         }
                         SignalPathCommand::Display(c) => match c {
@@ -694,19 +706,68 @@ impl SignalPath {
                             shared_clone.write().is_recording = false;
                         }
                         SignalPathCommand::Start => {
-                            paused = false;
-                            shared_clone.write().is_running = true;
-                            iq_accumulator.clear();
+                            if paused {
+                                paused = false;
+                                shared_clone.write().is_running = true;
+                                iq_accumulator.clear();
+                                tracing::info!("signal path started");
+                            } else {
+                                tracing::debug!("Start received while already running — ignored");
+                            }
                         }
                         SignalPathCommand::Stop => {
-                            paused = true;
-                            shared_clone.write().is_running = false;
-                            iq_accumulator.clear();
+                            if !paused {
+                                paused = true;
+                                shared_clone.write().is_running = false;
+                                tracing::info!("signal path stopped");
+                            } else {
+                                tracing::debug!("Stop received while already stopped — ignored");
+                            }
                         }
-                        SignalPathCommand::ReconnectSource(new_rx) => {
+                        SignalPathCommand::ReconnectSource { iq_rx: new_rx, hardware_cmd_tx: new_hw_tx } => {
                             iq_rx = new_rx;
+                            hw_cmd_tx = new_hw_tx;
                             source_dead = false;
+                            iq_accumulator.clear();
+                            audio_accumulator.clear();
                             tracing::info!("IQ source hot-swapped — signal path live");
+
+                            // Re-apply current state to the new hardware device so it
+                            // comes up at the user's current frequency and gain settings.
+                            let (freq, hw_snap, demod_mode) = {
+                                let s = shared_clone.read();
+                                (s.center_freq_hz, s.hardware.clone(), s.demod.demod_mode)
+                            };
+                            if let Some(ref atomic) = freq_atomic_clone {
+                                atomic.store(freq, Ordering::Relaxed);
+                            }
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let cmds = [
+                                    HardwareCommand::SetLnaState(hw_snap.lna_state),
+                                    HardwareCommand::SetIfGain(hw_snap.if_gain_dbfs),
+                                    HardwareCommand::SetAgcEnabled(hw_snap.agc_enabled),
+                                    HardwareCommand::SetAgcSetpoint(hw_snap.agc_setpoint_dbfs),
+                                    HardwareCommand::SetBiasT(hw_snap.bias_t_enabled),
+                                    HardwareCommand::SetHdrMode(hw_snap.hdr_mode),
+                                    HardwareCommand::SetAmNotch(hw_snap.am_notch_enabled),
+                                    HardwareCommand::SetFmNotch(hw_snap.fm_notch_enabled),
+                                    HardwareCommand::SetAntenna(hw_snap.antenna_port),
+                                ];
+                                for cmd in cmds {
+                                    let _ = tx.try_send(cmd);
+                                }
+                                tracing::debug!(
+                                    freq_hz = freq,
+                                    ?demod_mode,
+                                    lna = hw_snap.lna_state,
+                                    agc = hw_snap.agc_enabled,
+                                    "hardware state re-applied to new device"
+                                );
+                            }
+                            // Rebuild demodulator for current mode (new device, fresh state)
+                            demod = make_demod(demod_mode, sr, nfm_bw_hz);
+                            demod.reset();
+                            rds.reset();
                         }
                     }
                 }

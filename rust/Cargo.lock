@@ -3405,6 +3405,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "hound",
+ "parking_lot",
  "sdrapp-core",
  "serde",
  "serde_json",

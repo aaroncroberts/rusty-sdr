@@ -204,7 +204,8 @@ fn main() -> anyhow::Result<()> {
     // Give the recorder a second IQ subscriber for raw .iq file recording.
     recorder.set_iq_source(iq_recorder_rx);
     // Recorder::start() needs to run inside the tokio runtime
-    rt.spawn(async move { recorder.start().await });
+    let shared_for_recorder = Arc::clone(&shared);
+    rt.spawn(async move { recorder.start(shared_for_recorder).await });
 
     // ── Signal path ───────────────────────────────────────────────────────────
     let signal_path = SignalPath::start(
@@ -256,11 +257,17 @@ fn main() -> anyhow::Result<()> {
                     tracing::info!("hardware device detected while running — hot-swapping source");
                     let mut src = sdrapp_sdrplay::RspdxSource::new(sdrplay_cfg.clone());
                     let new_rx = src.subscribe();
+                    // Capture the hardware command tx for the new device so the
+                    // signal path can restore frequency and gain after reconnect.
+                    let new_hw_tx = src.hardware_cmd_tx();
                     drop(src.start());
                     *holder.lock() = Some(src);
                     shared_probe.write().source_name = Some("SDRplay RSPdx-R2".to_string());
                     let _ = cmd_tx_probe.try_send(
-                        sdrapp_core::signal_path::SignalPathCommand::ReconnectSource(new_rx)
+                        sdrapp_core::signal_path::SignalPathCommand::ReconnectSource {
+                            iq_rx: new_rx,
+                            hardware_cmd_tx: Some(new_hw_tx),
+                        }
                     );
                     tracing::info!("hot-plug complete — send Start to begin listening");
                     break;

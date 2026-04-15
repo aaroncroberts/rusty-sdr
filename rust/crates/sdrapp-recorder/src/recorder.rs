@@ -2,11 +2,13 @@
 
 use std::io::{BufWriter, Write};
 use std::sync::Arc;
+use parking_lot::RwLock;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use sdrapp_core::sample::{IqSample, StereoFrame};
+use sdrapp_core::signal_path::SharedState;
 pub use sdrapp_core::signal_path::RecordingMode;
 
 use crate::config::RecorderConfig;
@@ -77,7 +79,7 @@ impl Recorder {
         self.iq_source_rx = Some(rx);
     }
 
-    pub fn start(&mut self) -> JoinHandle<()> {
+    pub fn start(&mut self, shared: Arc<RwLock<SharedState>>) -> JoinHandle<()> {
         let mut audio_rx = self.audio_rx.take().expect("Recorder::start called twice");
         let mut cmd_rx = self.cmd_rx.take().unwrap();
         let mut iq_source_rx = self.iq_source_rx.take();
@@ -113,10 +115,12 @@ impl Recorder {
                             &mut iq_writer,
                             &mut stop_at,
                             cmd_tx_clone.clone(),
+                            &shared,
                         ).await;
                         // Reset write-error flag when a new session opens.
                         if !was_recording && wav_writer.is_some() {
                             audio_write_warned = false;
+                            shared.write().recorder_error = None;
                         }
                     }
 
@@ -179,6 +183,7 @@ async fn handle_command(
     iq_writer: &mut Option<BufWriter<std::fs::File>>,
     stop_at: &mut Option<tokio::time::Instant>,
     cmd_tx: mpsc::Sender<RecorderCommand>,
+    shared: &Arc<RwLock<SharedState>>,
 ) {
     match cmd {
         RecorderCommand::Start { freq_hz, iq_sample_rate, mode } => {
@@ -198,7 +203,11 @@ async fn handle_command(
                         tracing::info!(path = %path.display(), "audio recording started");
                         *wav_writer = Some(w);
                     }
-                    Err(e) => tracing::error!("failed to open WAV: {e}"),
+                    Err(e) => {
+                        let msg = format!("WAV open failed: {e}");
+                        tracing::error!("{msg}");
+                        shared.write().recorder_error = Some(msg);
+                    }
                 }
             }
 
@@ -209,7 +218,11 @@ async fn handle_command(
                         tracing::info!(path = %path.display(), "IQ recording started");
                         *iq_writer = Some(w);
                     }
-                    Err(e) => tracing::error!("failed to open IQ file: {e}"),
+                    Err(e) => {
+                        let msg = format!("IQ open failed: {e}");
+                        tracing::error!("{msg}");
+                        shared.write().recorder_error = Some(msg);
+                    }
                 }
             }
         }
