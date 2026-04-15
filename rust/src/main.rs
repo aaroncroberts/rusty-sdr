@@ -37,6 +37,16 @@ fn main() -> anyhow::Result<()> {
         s.volume = config.ui.volume;
         s.zoom_level = config.ui.zoom_level;
         s.waterfall_speed = config.ui.waterfall_speed;
+        // Load persisted bookmarks
+        s.bookmarks = config.bookmarks.iter().map(|b| {
+            use sdrapp_core::signal_path::{Bookmark, DemodMode};
+            let mode = match b.mode.as_str() {
+                "Nfm" => DemodMode::Nfm,
+                "Am" => DemodMode::Am,
+                _ => DemodMode::Wbfm,
+            };
+            Bookmark::new(&b.name, b.freq_hz, mode)
+        }).collect();
     }
 
     // Signal path command channel: UI → signal path

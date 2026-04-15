@@ -19,7 +19,7 @@ use std::sync::Arc;
 use egui::{Color32, RichText, Stroke, Ui, Vec2};
 
 use sdrapp_core::{
-    config::AppConfig,
+    config::{AppConfig, BookmarkConfig},
     registry::ModuleRegistry,
     signal_path::{DemodMode, SharedState, SignalPathCommand},
 };
@@ -232,6 +232,32 @@ impl SdrApp {
             self.config_dirty = true;
         }
 
+        // Step size cycle button
+        let step_hz = self.shared.read().tune_step_hz;
+        let step_label = match step_hz {
+            100 => "Step: 100 Hz",
+            1_000 => "Step: 1 kHz",
+            10_000 => "Step: 10 kHz",
+            100_000 => "Step: 100 kHz",
+            _ => "Step: custom",
+        };
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui
+                .small_button(RichText::new(step_label).color(theme::TEXT_MUTED))
+                .on_hover_text("Click to cycle step size (↑↓ keys, scroll wheel)")
+                .clicked()
+            {
+                let next = match step_hz {
+                    100 => 1_000,
+                    1_000 => 10_000,
+                    10_000 => 100_000,
+                    _ => 100,
+                };
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetTuneStep(next));
+            }
+        });
+
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(6.0);
@@ -280,6 +306,92 @@ impl SdrApp {
                     .cmd_tx
                     .try_send(SignalPathCommand::SetSquelchThreshold(sq_threshold));
             }
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // ── Bookmarks ─────────────────────────────────────────────────────────
+        ui.label(RichText::new("BOOKMARKS").color(theme::TEXT_MUTED).small());
+        ui.add_space(4.0);
+
+        // Collect bookmark data and determine actions
+        let (bookmarks_snapshot, cursor) = {
+            let s = self.shared.read();
+            (s.bookmarks.clone(), s.bookmark_cursor)
+        };
+        let mut remove_idx: Option<usize> = None;
+        let mut recall_idx: Option<usize> = None;
+
+        for (i, bm) in bookmarks_snapshot.iter().enumerate() {
+            let is_active = i == cursor;
+            ui.horizontal(|ui| {
+                // Recall button (star for active, circle for inactive)
+                let icon = if is_active { "★" } else { "☆" };
+                let icon_color = if is_active { theme::ACCENT } else { theme::TEXT_MUTED };
+                if ui.small_button(RichText::new(icon).color(icon_color)).clicked() {
+                    recall_idx = Some(i);
+                }
+                // Bookmark name (click also recalls)
+                let freq_label = format!("{:.3} MHz", bm.freq_hz as f64 / 1_000_000.0);
+                let text = format!("{} — {}", bm.name, freq_label);
+                if ui
+                    .selectable_label(is_active, RichText::new(&text).color(theme::TEXT_PRIMARY).small())
+                    .clicked()
+                {
+                    recall_idx = Some(i);
+                }
+                // Delete button
+                if ui.small_button(RichText::new("×").color(theme::TEXT_MUTED)).clicked() {
+                    remove_idx = Some(i);
+                }
+            });
+        }
+
+        // Apply bookmark actions
+        if let Some(i) = recall_idx {
+            let (bm_freq, bm_mode) = {
+                let mut s = self.shared.write();
+                s.bookmark_cursor = i;
+                let bm = &s.bookmarks[i];
+                (bm.freq_hz, bm.mode)
+            };
+            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(bm_freq));
+            let _ = self.cmd_tx.try_send(SignalPathCommand::SetDemodMode(bm_mode));
+            self.config.ui.frequency_hz = bm_freq;
+            self.frequency_widget = FrequencyWidget::new(bm_freq);
+            self.config_dirty = true;
+        }
+        if let Some(i) = remove_idx {
+            let _ = self.cmd_tx.try_send(SignalPathCommand::RemoveBookmark(i));
+            // Mirror to config
+            if i < self.config.bookmarks.len() {
+                self.config.bookmarks.remove(i);
+                self.config_dirty = true;
+            }
+        }
+
+        // "Save current" button
+        ui.add_space(2.0);
+        if ui
+            .small_button(RichText::new("+ Save current freq").color(theme::ACCENT_DIM))
+            .clicked()
+        {
+            let (freq, mode) = {
+                let s = self.shared.read();
+                (s.center_freq_hz, s.demod_mode)
+            };
+            let name = format!("{:.3} MHz", freq as f64 / 1_000_000.0);
+            let _ = self.cmd_tx.try_send(SignalPathCommand::AddBookmark(name.clone()));
+            // Mirror to config for persistence
+            let mode_str = match mode {
+                DemodMode::Nfm => "Nfm",
+                DemodMode::Am => "Am",
+                _ => "Wbfm",
+            };
+            self.config.bookmarks.push(BookmarkConfig::new(name, freq, mode_str));
+            self.config_dirty = true;
         }
 
         ui.add_space(8.0);
@@ -563,14 +675,29 @@ impl SdrApp {
             }
         }
 
-        // Scroll-to-zoom: adjust zoom_level in SharedState (used for spectrum display span)
-        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+        // Scroll on spectrum: tune frequency (step); Ctrl+scroll: zoom in/out
+        let (scroll_delta, ctrl_held) = ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.ctrl));
         if spectrum_resp.hovered() && scroll_delta.abs() > 0.5 {
-            let factor = if scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
-            let new_zoom = (zoom_level * factor).clamp(0.05, 1.0);
-            let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_zoom));
-            self.config.ui.zoom_level = new_zoom;
-            self.config_dirty = true;
+            if ctrl_held {
+                // Ctrl+scroll → zoom
+                let factor = if scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
+                let new_zoom = (zoom_level * factor).clamp(0.05, 1.0);
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_zoom));
+                self.config.ui.zoom_level = new_zoom;
+                self.config_dirty = true;
+            } else {
+                // Plain scroll → step-tune frequency
+                let step = self.shared.read().tune_step_hz;
+                let new_freq = if scroll_delta > 0.0 {
+                    freq.saturating_add(step)
+                } else {
+                    freq.saturating_sub(step).max(1)
+                };
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                self.config.ui.frequency_hz = new_freq;
+                self.frequency_widget = FrequencyWidget::new(new_freq);
+                self.config_dirty = true;
+            }
         }
 
         let ctx = ui.ctx().clone();
@@ -682,7 +809,22 @@ impl SdrApp {
         });
 
         // ── Waterfall ─────────────────────────────────────────────────────────
-        self.waterfall.show(ui, &ctx);
+        let waterfall_resp = self.waterfall.show(ui, &ctx);
+
+        // Click-to-tune on waterfall (same x→Hz conversion as spectrum)
+        if let Some(click_pos) = waterfall_resp.interact_pointer_pos() {
+            if waterfall_resp.clicked() {
+                let rect = waterfall_resp.rect;
+                let t = ((click_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                let low = freq.saturating_sub(span) as f64;
+                let high = freq as f64 + span as f64;
+                let new_freq = (low + t as f64 * (high - low)).round() as u64;
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                self.config.ui.frequency_hz = new_freq;
+                self.frequency_widget = FrequencyWidget::new(new_freq);
+                self.config_dirty = true;
+            }
+        }
     }
 
     // ── Right Panel ──────────────────────────────────────────────────────────
@@ -995,6 +1137,35 @@ impl eframe::App for SdrApp {
         if self.config_dirty {
             self.config.save();
             self.config_dirty = false;
+        }
+
+        // ── Arrow-key frequency tuning ────────────────────────────────────────
+        // Up/Down arrows tune by step_hz. Left/Right arrows step by 10×.
+        let (up, down, left, right) = ctx.input(|i| (
+            i.key_pressed(egui::Key::ArrowUp),
+            i.key_pressed(egui::Key::ArrowDown),
+            i.key_pressed(egui::Key::ArrowLeft),
+            i.key_pressed(egui::Key::ArrowRight),
+        ));
+        if up || down || left || right {
+            let step = self.shared.read().tune_step_hz;
+            let coarse = step * 10;
+            let delta: i64 = match (up, down, left, right) {
+                (true, _, _, _) => step as i64,
+                (_, true, _, _) => -(step as i64),
+                (_, _, _, true) => coarse as i64,
+                _ => -(coarse as i64),
+            };
+            let freq = self.config.ui.frequency_hz;
+            let new_freq = if delta >= 0 {
+                freq.saturating_add(delta as u64)
+            } else {
+                freq.saturating_sub((-delta) as u64).max(1)
+            };
+            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+            self.config.ui.frequency_hz = new_freq;
+            self.frequency_widget = FrequencyWidget::new(new_freq);
+            self.config_dirty = true;
         }
 
         // Status bar at the bottom

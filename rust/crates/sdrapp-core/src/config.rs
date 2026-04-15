@@ -22,6 +22,13 @@ pub struct AppConfig {
     pub ui: UiConfig,
     #[serde(default)]
     pub source: SourceConfig,
+    /// Saved frequency bookmarks.
+    #[serde(default = "default_bookmarks")]
+    pub bookmarks: Vec<BookmarkConfig>,
+}
+
+fn default_bookmarks() -> Vec<BookmarkConfig> {
+    vec![BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm")]
 }
 
 /// SDR source hardware configuration.
@@ -92,6 +99,21 @@ impl Default for UiConfig {
     }
 }
 
+/// A persisted frequency bookmark.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookmarkConfig {
+    pub name: String,
+    pub freq_hz: u64,
+    /// Demod mode string: "Wbfm", "Nfm", or "Am".
+    pub mode: String,
+}
+
+impl BookmarkConfig {
+    pub fn new(name: impl Into<String>, freq_hz: u64, mode: impl Into<String>) -> Self {
+        Self { name: name.into(), freq_hz, mode: mode.into() }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -100,6 +122,9 @@ impl Default for AppConfig {
             active_sink: ActiveSink::default(),
             ui: UiConfig::default(),
             source: SourceConfig::default(),
+            bookmarks: vec![
+                BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm"),
+            ],
         }
     }
 }
