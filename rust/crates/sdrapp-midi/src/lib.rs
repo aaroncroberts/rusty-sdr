@@ -12,5 +12,5 @@ mod controller;
 mod nanokontrol2;
 
 pub use action::MidiAction;
-pub use config::MidiConfig;
+pub use config::{MidiActionTag, MidiConfig, MidiKeyKind};
 pub use controller::MidiController;

@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod frequency;
+pub mod help;
 pub mod spectrum;
 pub mod theme;
 pub mod waterfall;

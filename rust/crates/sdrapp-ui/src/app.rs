@@ -25,7 +25,11 @@ use sdrapp_core::{
 };
 
 use crate::{
-    frequency::FrequencyWidget, spectrum::SpectrumWidget, theme, waterfall::WaterfallWidget,
+    frequency::FrequencyWidget,
+    help::HelpPanel,
+    spectrum::SpectrumWidget,
+    theme,
+    waterfall::WaterfallWidget,
 };
 
 /// Band preset: name, center frequency in Hz, span in Hz.
@@ -100,6 +104,11 @@ pub struct SdrApp {
     /// Fractional row accumulator for waterfall speed control.
     /// Incremented by waterfall_speed each frame; push_row fires once per integer crossed.
     waterfall_row_frac: f32,
+    /// Help panel widget (tabs state).
+    help_panel: HelpPanel,
+    /// Live MIDI bindings for the help panel MIDI Map tab.
+    /// Populated at construction from the nanoKontrol2 default profile.
+    midi_bindings: Vec<(usize, String, String)>,
 }
 
 impl SdrApp {
@@ -108,6 +117,7 @@ impl SdrApp {
         config: AppConfig,
         shared: Arc<RwLock<SharedState>>,
         cmd_tx: crossbeam_channel::Sender<SignalPathCommand>,
+        midi_bindings: Vec<(usize, String, String)>,
     ) -> Self {
         // Apply our beautiful dark theme
         theme::apply(&cc.egui_ctx);
@@ -129,6 +139,8 @@ impl SdrApp {
             noise_floor_ema: -90.0,
             signal_ceil_ema: -30.0,
             waterfall_row_frac: 0.0,
+            help_panel: HelpPanel::default(),
+            midi_bindings,
         }
     }
 
@@ -268,10 +280,10 @@ impl SdrApp {
 
         let current_mode = self.shared.read().demod_mode;
         ui.horizontal(|ui| {
-            for (mode, label) in [
-                (DemodMode::Wbfm, "WBFM"),
-                (DemodMode::Nfm, "NFM"),
-                (DemodMode::Am, "AM"),
+            for (mode, label, tooltip) in [
+                (DemodMode::Wbfm, "WBFM", "Wideband FM — FM broadcast stations (88–108 MHz). 75 kHz deviation, stereo, RDS."),
+                (DemodMode::Nfm, "NFM", "Narrow FM — voice comms (aviation, marine, amateur, PMR). 12.5–25 kHz channels. Enable squelch."),
+                (DemodMode::Am, "AM", "Amplitude Modulation — AM broadcast (530 kHz–1.7 MHz), shortwave, aviation voice."),
             ] {
                 let selected = current_mode == mode;
                 let text = RichText::new(label).small();
@@ -280,7 +292,7 @@ impl SdrApp {
                 } else {
                     text.color(theme::TEXT_MUTED)
                 };
-                if ui.selectable_label(selected, text).clicked() && !selected {
+                if ui.selectable_label(selected, text).on_hover_text(tooltip).clicked() && !selected {
                     let _ = self.cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
                 }
             }
@@ -301,7 +313,15 @@ impl SdrApp {
             let sq_slider = egui::Slider::new(&mut sq_threshold, -120.0_f32..=0.0_f32)
                 .show_value(false)
                 .trailing_fill(true);
-            if ui.add(sq_slider).changed() {
+            if ui
+                .add(sq_slider)
+                .on_hover_text(
+                    "Squelch gates audio below this signal level (dBFS).\n\
+                     Typical NFM voice: -70 to -40 dBFS.\n\
+                     Set lower to hear weaker signals; higher to cut noise.",
+                )
+                .changed()
+            {
                 let _ = self
                     .cmd_tx
                     .try_send(SignalPathCommand::SetSquelchThreshold(sq_threshold));
@@ -840,7 +860,11 @@ impl SdrApp {
         let slider = egui::Slider::new(&mut vol, 0.0..=1.0)
             .show_value(false)
             .trailing_fill(true);
-        if ui.add(slider).changed() {
+        if ui
+            .add(slider)
+            .on_hover_text("Audio output volume (0–100%). Also controllable with nanoKontrol2 Fader 0.")
+            .changed()
+        {
             self.config.ui.volume = vol;
             let _ = self.cmd_tx.try_send(SignalPathCommand::SetVolume(vol));
             self.config_dirty = true;
@@ -1139,6 +1163,12 @@ impl eframe::App for SdrApp {
             self.config_dirty = false;
         }
 
+        // ── '?' key toggles help panel ────────────────────────────────────────
+        if ctx.input(|i| i.key_pressed(egui::Key::Questionmark)) {
+            let mut s = self.shared.write();
+            s.help_panel_open = !s.help_panel_open;
+        }
+
         // ── Arrow-key frequency tuning ────────────────────────────────────────
         // Up/Down arrows tune by step_hz. Left/Right arrows step by 10×.
         let (up, down, left, right) = ctx.input(|i| (
@@ -1208,6 +1238,14 @@ impl eframe::App for SdrApp {
                     .inner_margin(egui::Margin::same(0.0)),
             )
             .show(ctx, |ui| self.center_panel(ui));
+
+        // ── Help panel (floating window) ──────────────────────────────────────
+        let mut help_open = self.shared.read().help_panel_open;
+        let before = help_open;
+        self.help_panel.show(ctx, &mut help_open, &self.midi_bindings);
+        if help_open != before {
+            self.shared.write().help_panel_open = help_open;
+        }
 
         // Request continuous repaint while running
         if self.shared.read().is_running {

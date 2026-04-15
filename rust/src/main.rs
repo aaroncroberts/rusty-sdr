@@ -167,11 +167,26 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
+    // Build MIDI binding descriptions for the help panel.
+    // Converts nanoKontrol2 default bindings to (page, key_name, action_name) tuples.
+    let midi_bindings: Vec<(usize, String, String)> = {
+        use sdrapp_midi::{MidiConfig, MidiKeyKind};
+        let cfg = MidiConfig::with_nanokontrol2_defaults();
+        cfg.bindings.iter().map(|b| {
+            let key_name = match b.key.kind {
+                MidiKeyKind::ControlChange => format!("CC {}", b.key.number),
+                MidiKeyKind::NoteOn => format!("Note {}", b.key.number),
+            };
+            let action_name = format!("{:?}", b.action);
+            (b.page, key_name, action_name)
+        }).collect()
+    };
+
     let shared_for_app = Arc::clone(&shared);
     eframe::run_native(
         "SDR App",
         native_options,
-        Box::new(move |cc| Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx)))),
+        Box::new(move |cc| Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx, midi_bindings)))),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
