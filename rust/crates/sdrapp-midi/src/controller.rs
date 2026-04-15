@@ -109,53 +109,140 @@ impl MidiController {
                             shared.write().midi_page = current_page;
                             tracing::debug!(page = current_page, "MIDI page advanced");
                         }
+
+                        // ── Tuning ────────────────────────────────────────────
                         MidiAction::TuneCoarseUp => {
-                            let freq = {
-                                let s = shared.read();
-                                s.center_freq_hz.saturating_add(1_000_000)
-                            };
+                            let freq = shared.read().center_freq_hz.saturating_add(1_000_000);
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
                         }
                         MidiAction::TuneCoarseDown => {
-                            let freq = {
-                                let s = shared.read();
-                                s.center_freq_hz.saturating_sub(1_000_000).max(1)
-                            };
+                            let freq = shared.read().center_freq_hz.saturating_sub(1_000_000).max(1);
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
                         }
                         MidiAction::TuneMediumUp => {
-                            let freq = {
-                                let s = shared.read();
-                                s.center_freq_hz.saturating_add(100_000)
-                            };
+                            let freq = shared.read().center_freq_hz.saturating_add(100_000);
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
                         }
                         MidiAction::TuneMediumDown => {
-                            let freq = {
-                                let s = shared.read();
-                                s.center_freq_hz.saturating_sub(100_000).max(1)
-                            };
+                            let freq = shared.read().center_freq_hz.saturating_sub(100_000).max(1);
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
                         }
                         MidiAction::TuneFineUp => {
-                            let freq = {
-                                let s = shared.read();
-                                s.center_freq_hz.saturating_add(10_000)
-                            };
+                            let freq = shared.read().center_freq_hz.saturating_add(10_000);
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
                         }
                         MidiAction::TuneFineDown => {
-                            let freq = {
-                                let s = shared.read();
-                                s.center_freq_hz.saturating_sub(10_000).max(1)
-                            };
+                            let freq = shared.read().center_freq_hz.saturating_sub(10_000).max(1);
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
                         }
+                        MidiAction::TuneUltraFineUp => {
+                            let freq = shared.read().center_freq_hz.saturating_add(1_000);
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
+                        }
+                        MidiAction::TuneUltraFineDown => {
+                            let freq = shared.read().center_freq_hz.saturating_sub(1_000).max(1);
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
+                        }
+
+                        // ── Demod & step size cycling ─────────────────────────
+                        MidiAction::DemodModeCycle => {
+                            use sdrapp_core::signal_path::DemodMode;
+                            let next = match shared.read().demod_mode {
+                                DemodMode::Wbfm => DemodMode::Nfm,
+                                DemodMode::Nfm => DemodMode::Am,
+                                DemodMode::Am => DemodMode::Wbfm,
+                            };
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetDemodMode(next));
+                        }
+                        MidiAction::StepSizeCycle => {
+                            let next_step = match shared.read().tune_step_hz {
+                                100 => 1_000,
+                                1_000 => 10_000,
+                                10_000 => 100_000,
+                                _ => 100,
+                            };
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetTuneStep(next_step));
+                        }
+
+                        // ── Volume & squelch (absolute from fader 0–127) ──────
                         MidiAction::VolumeSet(_) => {
-                            // value is 0–127; map to 0.0–1.0
                             let linear = value as f32 / 127.0;
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetVolume(linear));
                         }
+                        MidiAction::SquelchSet(_) => {
+                            // 0–127 → -80.0 dBFS to 0.0 dBFS
+                            let dbfs = -80.0 + (value as f32 / 127.0) * 80.0;
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetSquelchThreshold(dbfs));
+                        }
+
+                        // ── Display (zoom & waterfall) ────────────────────────
+                        MidiAction::ZoomIn => {
+                            let z = (shared.read().zoom_level * 0.9).max(0.05);
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetZoom(z));
+                        }
+                        MidiAction::ZoomOut => {
+                            let z = (shared.read().zoom_level * 1.1).min(1.0);
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetZoom(z));
+                        }
+                        MidiAction::ZoomSet(_) => {
+                            // 0–127 → 0.05 (zoomed in) to 1.0 (full bandwidth)
+                            let z = 0.05 + (value as f32 / 127.0) * 0.95;
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetZoom(z));
+                        }
+                        MidiAction::WaterfallSpeedUp => {
+                            let s = (shared.read().waterfall_speed + 0.5).min(10.0);
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(s));
+                        }
+                        MidiAction::WaterfallSpeedDown => {
+                            let s = (shared.read().waterfall_speed - 0.5).max(0.1);
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(s));
+                        }
+                        MidiAction::WaterfallSpeedSet(_) => {
+                            // 0–127 → 0.1 to 5.0
+                            let s = 0.1 + (value as f32 / 127.0) * 4.9;
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(s));
+                        }
+
+                        // ── Bookmarks ─────────────────────────────────────────
+                        MidiAction::BookmarkNext => {
+                            let (freq, mode) = {
+                                let mut s = shared.write();
+                                let len = s.bookmarks.len();
+                                if len > 0 {
+                                    s.bookmark_cursor = (s.bookmark_cursor + 1) % len;
+                                    let bm = &s.bookmarks[s.bookmark_cursor];
+                                    (bm.freq_hz, bm.mode)
+                                } else {
+                                    continue;
+                                }
+                            };
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
+                        }
+                        MidiAction::BookmarkPrev => {
+                            let (freq, mode) = {
+                                let mut s = shared.write();
+                                let len = s.bookmarks.len();
+                                if len > 0 {
+                                    s.bookmark_cursor = s.bookmark_cursor.checked_sub(1).unwrap_or(len - 1);
+                                    let bm = &s.bookmarks[s.bookmark_cursor];
+                                    (bm.freq_hz, bm.mode)
+                                } else {
+                                    continue;
+                                }
+                            };
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
+                        }
+                        MidiAction::BookmarkSave => {
+                            let freq_label = {
+                                let s = shared.read();
+                                format!("{:.3} MHz", s.center_freq_hz as f64 / 1_000_000.0)
+                            };
+                            let _ = signal_cmd_tx.try_send(SignalPathCommand::AddBookmark(freq_label));
+                        }
+
+                        // ── Recording ─────────────────────────────────────────
                         MidiAction::RecordStart => {
                             let _ = recorder_tx.send(RecorderCommand::Start).await;
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::StartRecording);
@@ -164,16 +251,29 @@ impl MidiController {
                             let _ = recorder_tx.send(RecorderCommand::Stop).await;
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::StopRecording);
                         }
+                        MidiAction::RecordingToggle => {
+                            let is_recording = shared.read().is_recording;
+                            if is_recording {
+                                let _ = recorder_tx.send(RecorderCommand::Stop).await;
+                                let _ = signal_cmd_tx.try_send(SignalPathCommand::StopRecording);
+                            } else {
+                                let _ = recorder_tx.send(RecorderCommand::Start).await;
+                                let _ = signal_cmd_tx.try_send(SignalPathCommand::StartRecording);
+                            }
+                        }
+
+                        // ── Transport / system ────────────────────────────────
                         MidiAction::PlayToggle => {
                             // Future: toggle signal path start/stop
                         }
                         MidiAction::Stop => {
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::Stop);
                         }
-                        MidiAction::ZoomIn => {
-                            // UI zoom is handled by UI directly; signal path has no span concept yet
+                        MidiAction::HelpPanelToggle => {
+                            let mut s = shared.write();
+                            s.help_panel_open = !s.help_panel_open;
                         }
-                        MidiAction::ZoomOut => {}
+
                         MidiAction::Unmapped => {
                             tracing::trace!(?key, value, "unmapped MIDI input");
                         }
@@ -279,14 +379,28 @@ fn tag_to_action(tag: &MidiActionTag) -> MidiAction {
         MidiActionTag::TuneMediumDown => MidiAction::TuneMediumDown,
         MidiActionTag::TuneFineUp => MidiAction::TuneFineUp,
         MidiActionTag::TuneFineDown => MidiAction::TuneFineDown,
-        MidiActionTag::PlayToggle => MidiAction::PlayToggle,
-        MidiActionTag::Stop => MidiAction::Stop,
-        MidiActionTag::RecordStart => MidiAction::RecordStart,
-        MidiActionTag::RecordStop => MidiAction::RecordStop,
+        MidiActionTag::TuneUltraFineUp => MidiAction::TuneUltraFineUp,
+        MidiActionTag::TuneUltraFineDown => MidiAction::TuneUltraFineDown,
+        MidiActionTag::DemodModeCycle => MidiAction::DemodModeCycle,
+        MidiActionTag::StepSizeCycle => MidiAction::StepSizeCycle,
+        MidiActionTag::VolumeSet => MidiAction::VolumeSet(0.0),
+        MidiActionTag::SquelchSet => MidiAction::SquelchSet(0.0),
         MidiActionTag::ZoomIn => MidiAction::ZoomIn,
         MidiActionTag::ZoomOut => MidiAction::ZoomOut,
+        MidiActionTag::ZoomSet => MidiAction::ZoomSet(0.0),
+        MidiActionTag::WaterfallSpeedUp => MidiAction::WaterfallSpeedUp,
+        MidiActionTag::WaterfallSpeedDown => MidiAction::WaterfallSpeedDown,
+        MidiActionTag::WaterfallSpeedSet => MidiAction::WaterfallSpeedSet(0.0),
+        MidiActionTag::BookmarkNext => MidiAction::BookmarkNext,
+        MidiActionTag::BookmarkPrev => MidiAction::BookmarkPrev,
+        MidiActionTag::BookmarkSave => MidiAction::BookmarkSave,
+        MidiActionTag::RecordStart => MidiAction::RecordStart,
+        MidiActionTag::RecordStop => MidiAction::RecordStop,
+        MidiActionTag::RecordingToggle => MidiAction::RecordingToggle,
+        MidiActionTag::PlayToggle => MidiAction::PlayToggle,
+        MidiActionTag::Stop => MidiAction::Stop,
+        MidiActionTag::HelpPanelToggle => MidiAction::HelpPanelToggle,
         MidiActionTag::PageNext => MidiAction::PageNext,
-        MidiActionTag::VolumeSet => MidiAction::VolumeSet(0.0),
         MidiActionTag::Unmapped => MidiAction::Unmapped,
     }
 }
@@ -366,9 +480,8 @@ mod tests {
         let ctrl = MidiController::new(config, rec_tx);
         let (_handle, msg_tx) = ctrl.start(Arc::clone(&shared), cmd_tx);
 
-        // TuneCoarseUp is on page 0 — look up what key it maps to
-        // From the nanoKontrol2 default bindings, page 0: fader 0 (CC 0) = TuneCoarseUp
-        msg_tx.send(vec![0xB0, 0, 100]).unwrap(); // CC ch=0 num=0 val=100
+        // TuneCoarseUp is on page 0, S button 0 = Note 32
+        msg_tx.send(vec![0x90, 32, 127]).unwrap(); // NoteOn ch=0 note=32 vel=127
         tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
 
         let cmd = cmd_rx.try_recv();

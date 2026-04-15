@@ -97,6 +97,9 @@ pub struct SdrApp {
     noise_floor_ema: f32,
     /// Slow EMA of 99th-percentile FFT bin — signal ceiling estimate
     signal_ceil_ema: f32,
+    /// Fractional row accumulator for waterfall speed control.
+    /// Incremented by waterfall_speed each frame; push_row fires once per integer crossed.
+    waterfall_row_frac: f32,
 }
 
 impl SdrApp {
@@ -125,6 +128,7 @@ impl SdrApp {
             auto_range: true,
             noise_floor_ema: -90.0,
             signal_ceil_ema: -30.0,
+            waterfall_row_frac: 0.0,
         }
     }
 
@@ -471,7 +475,19 @@ impl SdrApp {
         };
 
         let freq = self.config.ui.frequency_hz;
-        let span = self.config.ui.span_hz;
+        let (span, zoom_level, waterfall_speed) = {
+            let s = self.shared.read();
+            let sr_half = s.sample_rate_sps as u64 / 2;
+            // Apply zoom: zoom_level 1.0 = full hardware bandwidth, 0.05 = tightest zoom.
+            // Prefer SharedState zoom when sample rate is known; fall back to config span_hz.
+            let effective_span = if sr_half > 0 {
+                let z = s.zoom_level.clamp(0.05, 1.0);
+                (sr_half as f64 * z as f64) as u64
+            } else {
+                self.config.ui.span_hz
+            };
+            (effective_span, s.zoom_level, s.waterfall_speed)
+        };
 
         // Update peak-hold: expand/shrink buffer with FFT size, then take max
         // per bin with a slow decay (≈ -0.5 dB/frame at 30fps = ~15 dB/s)
@@ -509,7 +525,13 @@ impl SdrApp {
 
             let db_range = (self.db_floor, self.db_ceil);
             self.waterfall.set_db_range(db_range);
-            self.waterfall.push_row(&fft_data);
+            // Fractional accumulator: push_row fires once per integer crossed.
+            // Speed 1.0 = 1 row/frame, 2.0 = 2 rows/frame, 0.5 = every other frame.
+            self.waterfall_row_frac += waterfall_speed.clamp(0.1, 10.0);
+            while self.waterfall_row_frac >= 1.0 {
+                self.waterfall.push_row(&fft_data);
+                self.waterfall_row_frac -= 1.0;
+            }
         }
 
         let db_range = (self.db_floor, self.db_ceil);
@@ -541,16 +563,13 @@ impl SdrApp {
             }
         }
 
-        // Scroll-to-zoom span on spectrum
+        // Scroll-to-zoom: adjust zoom_level in SharedState (used for spectrum display span)
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
         if spectrum_resp.hovered() && scroll_delta.abs() > 0.5 {
-            let factor = if scroll_delta > 0.0 {
-                0.8_f64
-            } else {
-                1.25_f64
-            };
-            let new_span = ((span as f64 * factor) as u64).clamp(50_000, 20_000_000);
-            self.config.ui.span_hz = new_span;
+            let factor = if scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
+            let new_zoom = (zoom_level * factor).clamp(0.05, 1.0);
+            let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_zoom));
+            self.config.ui.zoom_level = new_zoom;
             self.config_dirty = true;
         }
 
@@ -628,6 +647,40 @@ impl SdrApp {
             }
         });
 
+        // ── Zoom & waterfall speed toolbar ────────────────────────────────────
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Zoom").color(theme::TEXT_MUTED).small());
+            let mut z = zoom_level;
+            if ui
+                .add(
+                    egui::Slider::new(&mut z, 0.05_f32..=1.0_f32)
+                        .show_value(true)
+                        .logarithmic(true),
+                )
+                .changed()
+            {
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(z));
+                self.config.ui.zoom_level = z;
+                self.config_dirty = true;
+            }
+
+            ui.add_space(8.0);
+            ui.label(RichText::new("WF Speed").color(theme::TEXT_MUTED).small());
+            let mut ws = waterfall_speed;
+            if ui
+                .add(
+                    egui::Slider::new(&mut ws, 0.1_f32..=5.0_f32)
+                        .show_value(true),
+                )
+                .changed()
+            {
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(ws));
+                self.config.ui.waterfall_speed = ws;
+                self.config_dirty = true;
+            }
+        });
+
         // ── Waterfall ─────────────────────────────────────────────────────────
         self.waterfall.show(ui, &ctx);
     }
@@ -691,6 +744,13 @@ impl SdrApp {
             self.config.ui.frequency_hz = hz;
             self.config.ui.span_hz = span;
             self.frequency_widget = FrequencyWidget::new(hz);
+            // Convert preset span to zoom_level relative to hardware bandwidth
+            let sr_half = self.shared.read().sample_rate_sps as u64 / 2;
+            if sr_half > 0 {
+                let z = (span as f32 / sr_half as f32).clamp(0.05, 1.0);
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(z));
+                self.config.ui.zoom_level = z;
+            }
             self.config_dirty = true;
         }
 

@@ -35,6 +35,8 @@ fn main() -> anyhow::Result<()> {
         s.center_freq_hz = config.ui.frequency_hz;
         s.sample_rate_sps = config.source.sample_rate_sps;
         s.volume = config.ui.volume;
+        s.zoom_level = config.ui.zoom_level;
+        s.waterfall_speed = config.ui.waterfall_speed;
     }
 
     // Signal path command channel: UI → signal path

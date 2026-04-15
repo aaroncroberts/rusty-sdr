@@ -63,6 +63,19 @@ pub struct UiConfig {
     pub window_width: f32,
     /// Window height in pixels.
     pub window_height: f32,
+    /// Spectrum zoom level: 1.0 = full hardware bandwidth, 0.05 = tightest zoom.
+    #[serde(default = "default_zoom_level")]
+    pub zoom_level: f32,
+    /// Waterfall scroll speed multiplier (1.0 = normal, 2.0 = 2× faster).
+    #[serde(default = "default_waterfall_speed")]
+    pub waterfall_speed: f32,
+}
+
+fn default_zoom_level() -> f32 {
+    1.0
+}
+fn default_waterfall_speed() -> f32 {
+    1.0
 }
 
 impl Default for UiConfig {
@@ -73,6 +86,8 @@ impl Default for UiConfig {
             volume: 0.8,
             window_width: 1280.0,
             window_height: 800.0,
+            zoom_level: 1.0,
+            waterfall_speed: 1.0,
         }
     }
 }

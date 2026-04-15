@@ -106,6 +106,8 @@ pub struct SharedState {
     pub bookmarks: Vec<Bookmark>,
     /// Index of the currently selected bookmark (for MIDI navigation).
     pub bookmark_cursor: usize,
+    /// Whether the help panel is open.
+    pub help_panel_open: bool,
 }
 
 impl SharedState {

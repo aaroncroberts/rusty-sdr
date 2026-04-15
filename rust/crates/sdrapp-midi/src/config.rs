@@ -20,20 +20,51 @@ pub enum MidiKeyKind {
 /// Mirrors MidiAction but is serde-friendly as a string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MidiActionTag {
+    // ── Tuning ────────────────────────────────────────────────────────────────
     TuneCoarseUp,
     TuneCoarseDown,
     TuneMediumUp,
     TuneMediumDown,
     TuneFineUp,
     TuneFineDown,
-    PlayToggle,
-    Stop,
-    RecordStart,
-    RecordStop,
+    TuneUltraFineUp,
+    TuneUltraFineDown,
+
+    // ── Demod & signal ────────────────────────────────────────────────────────
+    DemodModeCycle,
+    StepSizeCycle,
+
+    // ── Volume & squelch (absolute, value 0-127) ──────────────────────────────
+    VolumeSet,
+    SquelchSet,
+
+    // ── Display ───────────────────────────────────────────────────────────────
     ZoomIn,
     ZoomOut,
+    ZoomSet,
+    WaterfallSpeedUp,
+    WaterfallSpeedDown,
+    WaterfallSpeedSet,
+
+    // ── Bookmarks ─────────────────────────────────────────────────────────────
+    BookmarkNext,
+    BookmarkPrev,
+    BookmarkSave,
+
+    // ── Recording ─────────────────────────────────────────────────────────────
+    RecordStart,
+    RecordStop,
+    RecordingToggle,
+
+    // ── Transport / system ────────────────────────────────────────────────────
+    PlayToggle,
+    Stop,
+    HelpPanelToggle,
+
+    // ── Page cycling ──────────────────────────────────────────────────────────
     PageNext,
-    VolumeSet,
+
+    // ── Passthrough ───────────────────────────────────────────────────────────
     Unmapped,
 }
 
