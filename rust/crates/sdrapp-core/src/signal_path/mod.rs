@@ -303,6 +303,13 @@ impl SignalPath {
                             DisplayCmd::SetBandPlanEnabled(en) => {
                                 shared_clone.write().fft.band_plan_enabled = en;
                             }
+                            DisplayCmd::SetPeakHoldEnabled(en) => {
+                                shared_clone.write().fft.peak_hold_enabled = en;
+                            }
+                            DisplayCmd::SetPeakHoldDecay(db) => {
+                                shared_clone.write().fft.peak_hold_decay_db =
+                                    db.clamp(0.1, 2.0);
+                            }
                         },
                         SignalPathCommand::Bookmark(c) => match c {
                             BookmarkCmd::Add(name) => {
@@ -518,12 +525,14 @@ impl SignalPath {
                             *avg = alpha * new + (1.0 - alpha) * *avg;
                         }
                         // SNR: peak in center ±bw_bins vs median of remaining bins.
+                        // For WBFM the window is widened by 1.5× to capture
+                        // stereo-subcarrier sidebands that sit outside a narrow window.
                         let snr = {
                             let n = fft_avg_buf.len();
                             let center = n / 2;
-                            let bw_hz = {
+                            let (bw_hz, is_wbfm) = {
                                 let s = shared_clone.read();
-                                match s.demod.demod_mode {
+                                let bw = match s.demod.demod_mode {
                                     DemodMode::Wbfm => 200_000_u32,
                                     DemodMode::Nfm => s.demod.nfm_bandwidth_hz,
                                     DemodMode::Am
@@ -531,36 +540,27 @@ impl SignalPath {
                                     | DemodMode::Lsb
                                     | DemodMode::Dsb => 10_000,
                                     DemodMode::Cw => 1_000,
-                                }
+                                };
+                                let wbfm = s.demod.demod_mode == DemodMode::Wbfm;
+                                (bw, wbfm)
                             };
                             let sr_hz = shared_clone.read().sample_rate_sps.max(1) as f32;
-                            let half_bw_bins = ((bw_hz as f32 / sr_hz * n as f32) as usize)
-                                .max(2)
-                                .min(n / 4);
-                            let sig_lo = center.saturating_sub(half_bw_bins);
-                            let sig_hi = (center + half_bw_bins).min(n - 1);
-                            let peak = fft_avg_buf[sig_lo..=sig_hi]
-                                .iter()
-                                .cloned()
-                                .fold(f32::NEG_INFINITY, f32::max);
-                            // Noise: collect all bins outside signal window, take median.
-                            let mut noise_bins: Vec<f32> = fft_avg_buf[..sig_lo]
-                                .iter()
-                                .chain(fft_avg_buf[sig_hi + 1..].iter())
-                                .cloned()
-                                .collect();
-                            let noise_floor = if noise_bins.is_empty() {
-                                -120.0_f32
-                            } else {
-                                noise_bins.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                                noise_bins[noise_bins.len() / 2]
-                            };
-                            peak - noise_floor
+                            let mut half_bw_bins =
+                                ((bw_hz as f32 / sr_hz * n as f32) as usize)
+                                    .max(2)
+                                    .min(n / 4);
+                            if is_wbfm {
+                                // Widen by 1.5× for WBFM to include stereo sidebands.
+                                half_bw_bins = (half_bw_bins * 3 / 2).min(n / 4);
+                            }
+                            compute_snr_db(&fft_avg_buf, center, half_bw_bins)
                         };
+                        let clipping = any_bin_clipping(&fft_avg_buf);
                         {
                             let mut s = shared_clone.write();
                             s.fft.fft_magnitudes = fft_avg_buf.clone();
                             s.fft.snr_db = Some(snr);
+                            s.fft.fft_clipping_detected = clipping;
                         }
                         if let Some(ref ctx) = egui_ctx {
                             ctx.request_repaint();
@@ -699,8 +699,10 @@ impl SignalPath {
                     audio_accumulator.drain(..AUDIO_FRAME_SIZE);
 
                     if let Some(ref tx) = audio_tx {
-                        // try_send: drop frame on backpressure rather than blocking
-                        let _ = tx.try_send(Arc::clone(&frame));
+                        // try_send: drop frame on backpressure rather than blocking.
+                        if tx.try_send(Arc::clone(&frame)).is_err() {
+                            shared_clone.write().audio_frames_dropped += 1;
+                        }
                     }
                     if shared_clone.read().is_recording {
                         if let Some(ref tx) = recorder_tx {
@@ -756,9 +758,211 @@ pub mod egui_repaint {
     }
 }
 
+// ── Zoom helpers ─────────────────────────────────────────────────────────────
+
+/// Returns the minimum allowed zoom level for the given demodulation mode.
+///
+/// Prevents the user from zooming so tight that the active signal becomes
+/// invisible in the spectrum panel:
+/// * WBFM needs ≥ 5 % of hardware bandwidth (≥ 100 kHz on a 2 MHz SDR)
+/// * CW is a very narrow mode but still needs context — keep at 5 %
+/// * Narrowband modes (NFM, AM, SSB) can zoom tighter but stop at 2 %
+pub fn min_zoom_for_mode(mode: DemodMode) -> f32 {
+    match mode {
+        DemodMode::Wbfm | DemodMode::Cw => 0.05,
+        DemodMode::Nfm
+        | DemodMode::Am
+        | DemodMode::Usb
+        | DemodMode::Lsb
+        | DemodMode::Dsb => 0.02,
+    }
+}
+
+// ── FFT analysis helpers ──────────────────────────────────────────────────────
+
+/// Compute SNR (dB) for a signal centred at `center` bin with half-width
+/// `half_bw_bins`.
+///
+/// * Signal power  = max bin in `[center−half_bw, center+half_bw]`
+/// * Noise floor   = median of all bins **outside** that window
+///
+/// Extracted from the signal-path loop so it is unit-testable without spinning
+/// up the full async machinery.
+pub(crate) fn compute_snr_db(bins: &[f32], center: usize, half_bw_bins: usize) -> f32 {
+    let n = bins.len();
+    let sig_lo = center.saturating_sub(half_bw_bins);
+    let sig_hi = (center + half_bw_bins).min(n - 1);
+    let peak = bins[sig_lo..=sig_hi]
+        .iter()
+        .cloned()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut noise: Vec<f32> = bins[..sig_lo]
+        .iter()
+        .chain(bins[sig_hi + 1..].iter())
+        .cloned()
+        .collect();
+    let noise_floor = if noise.is_empty() {
+        -120.0_f32
+    } else {
+        noise.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        noise[noise.len() / 2]
+    };
+    peak - noise_floor
+}
+
+/// Returns `true` when any bin in `bins` has reached or exceeded 0 dBFS —
+/// a reliable indicator of ADC saturation.
+#[inline]
+pub(crate) fn any_bin_clipping(bins: &[f32]) -> bool {
+    bins.iter().any(|&v| v >= 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── audio_frames_dropped ─────────────────────────────────────────────────
+
+    #[test]
+    fn audio_frames_dropped_defaults_to_zero() {
+        let state = SharedState::new();
+        assert_eq!(state.audio_frames_dropped, 0);
+    }
+
+    #[tokio::test]
+    async fn audio_frames_dropped_increments_when_channel_full() {
+        // Create a bounded channel with capacity 1, then send two frames so the
+        // second is dropped.  The signal path increments the counter on each
+        // try_send failure.
+        use crossbeam_channel::bounded;
+        use crate::sample::StereoFrame;
+
+        let (audio_tx_cap1, _audio_rx) = bounded::<Arc<[StereoFrame]>>(1);
+
+        // Manually fill the channel so the next try_send fails.
+        let dummy: Arc<[StereoFrame]> = vec![StereoFrame::mono(0.0); 1].into();
+        audio_tx_cap1.try_send(Arc::clone(&dummy)).unwrap(); // fills slot
+
+        let shared = Arc::new(RwLock::new(SharedState::new()));
+
+        // try_send fails → increment counter
+        if audio_tx_cap1.try_send(Arc::clone(&dummy)).is_err() {
+            shared.write().audio_frames_dropped += 1;
+        }
+
+        assert_eq!(shared.read().audio_frames_dropped, 1);
+    }
+
+    // ── min_zoom_for_mode ─────────────────────────────────────────────────────
+
+    #[test]
+    fn min_zoom_wbfm_is_0_05() {
+        assert_eq!(min_zoom_for_mode(DemodMode::Wbfm), 0.05);
+    }
+
+    #[test]
+    fn min_zoom_cw_is_0_05() {
+        assert_eq!(min_zoom_for_mode(DemodMode::Cw), 0.05);
+    }
+
+    #[test]
+    fn min_zoom_nfm_is_0_02() {
+        assert_eq!(min_zoom_for_mode(DemodMode::Nfm), 0.02);
+    }
+
+    #[test]
+    fn min_zoom_am_usb_lsb_dsb_are_0_02() {
+        for mode in [DemodMode::Am, DemodMode::Usb, DemodMode::Lsb, DemodMode::Dsb] {
+            assert_eq!(
+                min_zoom_for_mode(mode), 0.02,
+                "{mode:?} should have 0.02 min zoom"
+            );
+        }
+    }
+
+    #[test]
+    fn min_zoom_is_never_below_0() {
+        for mode in [
+            DemodMode::Wbfm, DemodMode::Nfm, DemodMode::Am,
+            DemodMode::Usb, DemodMode::Lsb, DemodMode::Dsb, DemodMode::Cw,
+        ] {
+            assert!(min_zoom_for_mode(mode) > 0.0);
+        }
+    }
+
+    // ── SNR helper + clipping detection ──────────────────────────────────────
+
+    /// Build a flat noise floor (noise_floor_db) with a peak (peak_db) at
+    /// `center ± peak_half_bins`.
+    fn make_fft_buf(n: usize, center: usize, peak_half_bins: usize, peak_db: f32, noise_db: f32) -> Vec<f32> {
+        let mut buf = vec![noise_db; n];
+        let lo = center.saturating_sub(peak_half_bins);
+        let hi = (center + peak_half_bins).min(n - 1);
+        for v in buf[lo..=hi].iter_mut() {
+            *v = peak_db;
+        }
+        buf
+    }
+
+    #[test]
+    fn snr_helper_detects_peak_over_noise() {
+        // 2048-bin FFT, signal at center ±50 bins at -10 dBFS, noise at -80 dBFS.
+        let buf = make_fft_buf(2048, 1024, 50, -10.0, -80.0);
+        let snr = compute_snr_db(&buf, 1024, 50);
+        // SNR should be close to 70 dB (peak − noise floor = -10 − -80).
+        assert!(snr > 60.0 && snr < 80.0, "snr = {snr}");
+    }
+
+    #[test]
+    fn snr_wide_window_captures_wbfm_signal_better_than_narrow() {
+        // Model a WBFM spectrum where the stereo subcarrier sidebands sit at ±70
+        // bins from centre (stronger than the carrier at 0 bins).
+        // Noise floor at -80 dBFS.
+        //
+        // narrow window (half = 50): misses the ±70-bin sidebands → peak = -30
+        // wide window   (half = 75): captures the ±70-bin sidebands → peak = -10
+        let n = 2048;
+        let center = n / 2;
+        let mut buf = vec![-80.0f32; n];
+        // Weak carrier at centre
+        buf[center] = -30.0;
+        // Strong sidebands at ±70 bins
+        buf[center - 70] = -10.0;
+        buf[center + 70] = -10.0;
+
+        let snr_narrow = compute_snr_db(&buf, center, 50); // misses sidebands
+        let snr_wide   = compute_snr_db(&buf, center, 75); // captures sidebands
+        assert!(
+            snr_wide > snr_narrow,
+            "wide window should report higher SNR: wide={snr_wide} narrow={snr_narrow}"
+        );
+    }
+
+    #[test]
+    fn clipping_detected_at_zero_dbfs() {
+        let mut bins = vec![-10.0f32; 512];
+        bins[100] = 0.0; // exactly 0 dBFS
+        assert!(any_bin_clipping(&bins), "0.0 dBFS should trigger clipping");
+    }
+
+    #[test]
+    fn clipping_not_detected_below_zero_dbfs() {
+        let bins = vec![-0.1f32; 512];
+        assert!(!any_bin_clipping(&bins), "-0.1 dBFS should not trigger clipping");
+    }
+
+    #[test]
+    fn clipping_detected_when_bin_positive() {
+        let mut bins = vec![-50.0f32; 512];
+        bins[200] = 1.5; // clipped signal can exceed 0 dBFS in normalised FFT
+        assert!(any_bin_clipping(&bins));
+    }
+
+    #[test]
+    fn fft_display_state_clipping_defaults_false() {
+        let state = SharedState::new();
+        assert!(!state.fft.fft_clipping_detected, "clipping should default to false");
+    }
 
     #[test]
     fn shared_state_default_has_fft_buffer() {
@@ -1048,5 +1252,58 @@ mod tests {
             "scanner should not be running when no bookmarks match the category filter"
         );
         let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    // ── Peak-hold dispatch ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn set_peak_hold_enabled_updates_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        assert!(!shared.read().fft.peak_hold_enabled, "default should be false");
+        tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetPeakHoldEnabled(true)).await;
+        assert!(shared.read().fft.peak_hold_enabled, "should be enabled after command");
+        tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetPeakHoldEnabled(false)).await;
+        assert!(!shared.read().fft.peak_hold_enabled, "should disable after second command");
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn set_peak_hold_decay_updates_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetPeakHoldDecay(1.0)).await;
+        let decay = shared.read().fft.peak_hold_decay_db;
+        assert!((decay - 1.0).abs() < 1e-6, "decay should be 1.0 dB/frame, got {decay}");
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn set_peak_hold_decay_clamps_to_valid_range() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetPeakHoldDecay(0.001)).await;
+        assert!(
+            shared.read().fft.peak_hold_decay_db >= 0.1,
+            "decay below 0.1 should be clamped"
+        );
+        tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetPeakHoldDecay(99.0)).await;
+        assert!(
+            shared.read().fft.peak_hold_decay_db <= 2.0,
+            "decay above 2.0 should be clamped"
+        );
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[test]
+    fn peak_hold_enabled_defaults_false() {
+        let state = SharedState::new();
+        assert!(!state.fft.peak_hold_enabled, "peak_hold_enabled defaults to false");
+    }
+
+    #[test]
+    fn peak_hold_decay_defaults_to_half_db() {
+        let state = SharedState::new();
+        assert!(
+            (state.fft.peak_hold_decay_db - 0.5).abs() < 1e-6,
+            "default decay should be 0.5 dB/frame"
+        );
     }
 }

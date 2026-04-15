@@ -66,6 +66,10 @@ pub enum DisplayCmd {
     SetFftAveraging(u8),
     /// Toggle band plan overlay.
     SetBandPlanEnabled(bool),
+    /// Enable or disable the spectrum peak-hold line.
+    SetPeakHoldEnabled(bool),
+    /// Set peak-hold decay rate in dB per display frame (0.1–2.0).
+    SetPeakHoldDecay(f32),
 }
 
 /// Bookmark management commands.

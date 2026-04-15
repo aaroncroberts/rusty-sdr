@@ -126,6 +126,9 @@ impl Recorder {
 
                     Some(frames) = audio_rx.recv() => {
                         if let Some(ref mut w) = wav_writer {
+                            let mut peak_abs = 0.0_f32;
+                            let mut sum_sq = 0.0_f32;
+                            let count = frames.len() as f32;
                             for frame in frames.iter() {
                                 let ok = w.write_sample(frame.left).is_ok()
                                     && w.write_sample(frame.right).is_ok();
@@ -133,6 +136,25 @@ impl Recorder {
                                     tracing::warn!("WAV write failed — disk may be full or file closed");
                                     audio_write_warned = true;
                                 }
+                                peak_abs = peak_abs.max(frame.left.abs()).max(frame.right.abs());
+                                sum_sq += frame.left * frame.left + frame.right * frame.right;
+                            }
+                            if count > 0.0 {
+                                const FLOOR: f32 = -60.0;
+                                let peak_db = if peak_abs > 0.0 {
+                                    (20.0 * peak_abs.log10()).max(FLOOR)
+                                } else {
+                                    FLOOR
+                                };
+                                let rms_power = sum_sq / (2.0 * count);
+                                let rms_db = if rms_power > 0.0 {
+                                    (10.0 * rms_power.log10()).max(FLOOR)
+                                } else {
+                                    FLOOR
+                                };
+                                let mut s = shared.write();
+                                s.recording_peak_dbfs = peak_db;
+                                s.recording_rms_dbfs = rms_db;
                             }
                         }
                     }
@@ -164,6 +186,7 @@ impl Recorder {
                     _ = stop_fut => {
                         stop_at = None;
                         finalize(&mut wav_writer, &mut iq_writer);
+                        reset_recording_levels(&shared);
                     }
 
                     else => break,
@@ -238,6 +261,7 @@ async fn handle_command(
         RecorderCommand::Stop => {
             *stop_at = None;
             finalize(wav_writer, iq_writer);
+            reset_recording_levels(shared);
         }
 
         RecorderCommand::Schedule {
@@ -270,6 +294,12 @@ async fn handle_command(
             });
         }
     }
+}
+
+fn reset_recording_levels(shared: &Arc<RwLock<SharedState>>) {
+    let mut s = shared.write();
+    s.recording_peak_dbfs = -60.0;
+    s.recording_rms_dbfs = -60.0;
 }
 
 fn finalize(
@@ -544,6 +574,110 @@ mod tests {
         assert!(
             stem.starts_with("sdrapp_93.500MHz_19700101_000000"),
             "stem: {stem}"
+        );
+    }
+
+    // ── Recording level meter tests ───────────────────────────────────────
+
+    #[test]
+    fn recording_level_fields_default_to_neg60() {
+        let shared = make_shared();
+        let s = shared.read();
+        assert!(
+            (s.recording_peak_dbfs - (-60.0)).abs() < 1e-6,
+            "peak should default to -60.0, got {}",
+            s.recording_peak_dbfs
+        );
+        assert!(
+            (s.recording_rms_dbfs - (-60.0)).abs() < 1e-6,
+            "rms should default to -60.0, got {}",
+            s.recording_rms_dbfs
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_frames_update_recording_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rec = make_recorder(dir.path().to_path_buf());
+        let shared = make_shared();
+        let cmd_tx = rec.cmd_tx.clone();
+        let audio_tx = rec.audio_tx.clone();
+        rec.start(Arc::clone(&shared));
+        tokio::task::yield_now().await;
+
+        // Start recording.
+        cmd_tx
+            .send(RecorderCommand::Start {
+                freq_hz: 98_100_000,
+                iq_sample_rate: 2_000_000,
+                mode: RecordingMode::AudioOnly,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        // Send a batch of audio frames at a known amplitude.
+        // 0.5 linear → -6 dBFS peak; RMS of constant 0.5 signal = -6 dBFS.
+        let frames: Arc<[StereoFrame]> = (0..480)
+            .map(|_| StereoFrame { left: 0.5, right: 0.5 })
+            .collect::<Vec<_>>()
+            .into();
+        audio_tx.send(frames).await.unwrap();
+        tokio::task::yield_now().await;
+
+        let s = shared.read();
+        // Peak should be 20*log10(0.5) ≈ -6.02 dBFS
+        assert!(
+            s.recording_peak_dbfs > -7.0 && s.recording_peak_dbfs < -5.0,
+            "peak should be ≈ -6 dBFS for 0.5 amplitude, got {}",
+            s.recording_peak_dbfs
+        );
+        // RMS of constant 0.5 = 20*log10(0.5) ≈ -6.02 dBFS
+        assert!(
+            s.recording_rms_dbfs > -7.0 && s.recording_rms_dbfs < -5.0,
+            "rms should be ≈ -6 dBFS for constant 0.5, got {}",
+            s.recording_rms_dbfs
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_recording_resets_levels_to_neg60() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rec = make_recorder(dir.path().to_path_buf());
+        let shared = make_shared();
+        let cmd_tx = rec.cmd_tx.clone();
+        let audio_tx = rec.audio_tx.clone();
+        rec.start(Arc::clone(&shared));
+        tokio::task::yield_now().await;
+
+        // Start, send audio, then stop.
+        cmd_tx
+            .send(RecorderCommand::Start {
+                freq_hz: 98_100_000,
+                iq_sample_rate: 2_000_000,
+                mode: RecordingMode::AudioOnly,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        let frames: Arc<[StereoFrame]> = vec![StereoFrame { left: 0.8, right: 0.8 }].into();
+        audio_tx.send(frames).await.unwrap();
+        tokio::task::yield_now().await;
+
+        cmd_tx.send(RecorderCommand::Stop).await.unwrap();
+        tokio::task::yield_now().await;
+
+        let s = shared.read();
+        assert!(
+            (s.recording_peak_dbfs - (-60.0)).abs() < 1e-6,
+            "peak should reset to -60.0 after Stop, got {}",
+            s.recording_peak_dbfs
+        );
+        assert!(
+            (s.recording_rms_dbfs - (-60.0)).abs() < 1e-6,
+            "rms should reset to -60.0 after Stop, got {}",
+            s.recording_rms_dbfs
         );
     }
 

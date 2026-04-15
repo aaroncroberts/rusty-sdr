@@ -148,6 +148,13 @@ pub struct FftDisplayState {
     pub band_plan_enabled: bool,
     /// Estimated SNR in the active demod channel (dB). None until computed.
     pub snr_db: Option<f32>,
+    /// True when any FFT bin reached ≥ 0 dBFS in the most recent frame —
+    /// indicates ADC saturation. Cleared by the UI after a 2-second hold.
+    pub fft_clipping_detected: bool,
+    /// Whether the spectrum peak-hold line is enabled.
+    pub peak_hold_enabled: bool,
+    /// Peak-hold decay rate in dB per display frame (default 0.5).
+    pub peak_hold_decay_db: f32,
 }
 
 /// RDS (Radio Data System) decoded state (WBFM only).
@@ -187,6 +194,9 @@ pub struct SharedState {
     pub midi_page: usize,
     /// Audio buffer fill fraction [0.0, 1.0] — written by audio sink.
     pub audio_buffer_fill: f32,
+    /// Cumulative count of audio frames dropped due to try_send backpressure.
+    /// Reset by the UI via a direct write.
+    pub audio_frames_dropped: u64,
     /// Spectrum zoom level: 1.0 = full bandwidth, 0.1 = 10× zoom.
     pub zoom_level: f32,
     /// Waterfall scroll speed multiplier (1.0 = normal).
@@ -202,6 +212,12 @@ pub struct SharedState {
     /// Last recorder error message (disk full, permission denied, etc.).
     /// Cleared when a new recording starts successfully.
     pub recorder_error: Option<String>,
+    /// Peak audio level in dBFS (≤ 0) from the most recent WAV frame batch.
+    /// Updated ≈10×/s while recording; reset to -60.0 when recording stops.
+    pub recording_peak_dbfs: f32,
+    /// RMS audio level in dBFS (≤ 0) from the most recent WAV frame batch.
+    /// Updated ≈10×/s while recording; reset to -60.0 when recording stops.
+    pub recording_rms_dbfs: f32,
     // ── MIDI Learn ────────────────────────────────────────────────────
     /// If Some(knob_id), the next incoming MIDI CC will be bound to that knob.
     pub midi_learn_target: Option<String>,
@@ -244,8 +260,11 @@ impl SharedState {
                 fft_size: FFT_SIZE,
                 fft_window: FftWindow::Hann,
                 fft_averaging: 4,
+                peak_hold_decay_db: 0.5,
                 ..Default::default()
             },
+            recording_peak_dbfs: -60.0,
+            recording_rms_dbfs: -60.0,
             ..Default::default()
         }
     }

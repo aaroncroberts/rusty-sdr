@@ -2,14 +2,14 @@
 
 use egui::{RichText, Ui, Vec2};
 
-use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd};
+use sdrapp_core::signal_path::{min_zoom_for_mode, DemodMode, DisplayCmd, ReceiverCmd};
 
 use super::super::SdrApp;
 use crate::{frequency::FrequencyWidget, knob::KnobWidget, spectrum::SpectrumWidget, theme};
 
 impl SdrApp {
     pub(in crate::app) fn center_panel(&mut self, ui: &mut Ui) {
-        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz, is_running) = {
+        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz, is_running, fft_clipping, peak_hold_enabled, peak_hold_decay_db) = {
             let s = self.shared.read();
             (
                 s.fft.fft_magnitudes.clone(),
@@ -18,6 +18,9 @@ impl SdrApp {
                 s.demod.demod_mode,
                 s.demod.nfm_bandwidth_hz,
                 s.is_running,
+                s.fft.fft_clipping_detected,
+                s.fft.peak_hold_enabled,
+                s.fft.peak_hold_decay_db,
             )
         };
 
@@ -25,10 +28,10 @@ impl SdrApp {
         let (span, zoom_level, waterfall_speed) = {
             let s = self.shared.read();
             let sr_half = s.sample_rate_sps as u64 / 2;
-            // Apply zoom: zoom_level 1.0 = full hardware bandwidth, 0.05 = tightest zoom.
+            // Apply zoom: zoom_level 1.0 = full hardware bandwidth, min per mode.
             // Prefer SharedState zoom when sample rate is known; fall back to config span_hz.
             let effective_span = if sr_half > 0 {
-                let z = s.zoom_level.clamp(0.005, 1.0);
+                let z = s.zoom_level.clamp(min_zoom_for_mode(s.demod.demod_mode), 1.0);
                 (sr_half as f64 * z as f64) as u64
             } else {
                 self.config.ui.span_hz
@@ -36,19 +39,26 @@ impl SdrApp {
             (effective_span, s.zoom_level, s.waterfall_speed)
         };
 
-        // Update peak-hold: expand/shrink buffer with FFT size, then take max
-        // per bin with a slow decay (≈ -0.5 dB/frame at 30fps = ~15 dB/s)
+        // Update peak-hold buffer (size-tracks fft_magnitudes).
+        // Only updates when peak_hold_enabled; uses decay rate from SharedState.
         let n = fft_data.len();
         if self.peak_hold.len() != n {
             self.peak_hold = vec![-120.0_f32; n];
         }
         let signal_active = is_running && fft_data.iter().any(|&v| v > -119.0);
         if signal_active {
-            for (ph, &v) in self.peak_hold.iter_mut().zip(fft_data.iter()) {
-                if v > *ph {
+            if peak_hold_enabled {
+                for (ph, &v) in self.peak_hold.iter_mut().zip(fft_data.iter()) {
+                    if v > *ph {
+                        *ph = v;
+                    } else {
+                        *ph -= peak_hold_decay_db;
+                    }
+                }
+            } else {
+                // When disabled, keep buffer in sync so it starts fresh if re-enabled.
+                for (ph, &v) in self.peak_hold.iter_mut().zip(fft_data.iter()) {
                     *ph = v;
-                } else {
-                    *ph -= 0.5; // decay per frame
                 }
             }
 
@@ -136,7 +146,7 @@ impl SdrApp {
                 } else {
                     1.25_f32
                 };
-                let new_zoom = (zoom_level * factor).clamp(0.005, 1.0);
+                let new_zoom = (zoom_level * factor).clamp(min_zoom_for_mode(demod_mode), 1.0);
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_zoom).into());
                 self.config.ui.zoom_level = new_zoom;
                 self.config_dirty = true;
@@ -163,11 +173,12 @@ impl SdrApp {
             .pointer_hover_pos()
             .filter(|p| spectrum_rect.contains(*p));
         let mut spectrum_ui = ui.new_child(egui::UiBuilder::new().max_rect(spectrum_rect));
-        let peak_ref: Option<&[f32]> = if self.peak_hold.len() == fft_data.len() {
-            Some(&self.peak_hold)
-        } else {
-            None
-        };
+        let peak_ref: Option<&[f32]> =
+            if peak_hold_enabled && self.peak_hold.len() == fft_data.len() {
+                Some(&self.peak_hold)
+            } else {
+                None
+            };
         // Compute filter passband bounds — only shown when live signal is active.
         // For symmetric modes, the filter spans ±bw/2 around vfo_hz.
         // For SSB, only one sideband is used.
@@ -202,6 +213,46 @@ impl SdrApp {
             hover_pos: spectrum_hover,
         }
         .show(&mut spectrum_ui);
+
+        // ── ADC saturation badge ──────────────────────────────────────────────
+        // Track the last time clipping was detected and hold the badge for 2 s.
+        let now = ui.ctx().input(|i| i.time);
+        if fft_clipping {
+            self.last_clipping_time = Some(now);
+        }
+        if let Some(t) = self.last_clipping_time {
+            if now - t < 2.0 {
+                // Overlay "ADC SAT" in the top-right corner of the spectrum rect.
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("adc_sat_badge"),
+                ));
+                let badge_w = 62.0_f32;
+                let badge_h = 16.0_f32;
+                let badge_rect = egui::Rect::from_min_size(
+                    egui::Pos2::new(
+                        spectrum_rect.right() - badge_w - 4.0,
+                        spectrum_rect.top() + 4.0,
+                    ),
+                    egui::Vec2::new(badge_w, badge_h),
+                );
+                painter.rect_filled(
+                    badge_rect,
+                    2.0,
+                    egui::Color32::from_rgb(200, 40, 40),
+                );
+                painter.text(
+                    badge_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "ADC SAT",
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::WHITE,
+                );
+                ui.ctx().request_repaint();
+            } else {
+                self.last_clipping_time = None;
+            }
+        }
 
         // ── Display controls toolbar ──────────────────────────────────────────
         ui.add_space(3.0);
@@ -308,10 +359,11 @@ impl SdrApp {
             }
 
             // Zoom knob + In/Out/Full step buttons
+            let min_zoom = min_zoom_for_mode(demod_mode);
             let mut z = zoom_level;
             let zoom_resp = KnobWidget {
                 value: &mut z,
-                range: 0.005_f32..=1.0_f32,
+                range: min_zoom..=1.0_f32,
                 default_value: 1.0,
                 step: 0.05,
                 diameter: 40.0,
@@ -347,7 +399,7 @@ impl SdrApp {
                     .on_hover_text("Zoom in (Ctrl+scroll up)")
                     .clicked()
                 {
-                    let new_z = (zoom_level / 1.5).clamp(0.005, 1.0);
+                    let new_z = (zoom_level / 1.5).clamp(min_zoom, 1.0);
                     let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
                     self.config.ui.zoom_level = new_z;
                     self.config_dirty = true;
@@ -364,7 +416,7 @@ impl SdrApp {
                     .on_hover_text("Zoom out (Ctrl+scroll down)")
                     .clicked()
                 {
-                    let new_z = (zoom_level * 1.5).clamp(0.005, 1.0);
+                    let new_z = (zoom_level * 1.5).clamp(min_zoom, 1.0);
                     let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
                     self.config.ui.zoom_level = new_z;
                     self.config_dirty = true;
@@ -511,6 +563,40 @@ impl SdrApp {
                     .try_send(DisplayCmd::SetBandPlanEnabled(new_val).into());
                 self.config.ui.band_plan_enabled = new_val;
                 self.config_dirty = true;
+            }
+
+            // Peak-hold toggle + decay slider
+            let ph_color = if peak_hold_enabled {
+                theme::ACCENT
+            } else {
+                theme::TEXT_MUTED
+            };
+            if ui
+                .small_button(RichText::new("PH").color(ph_color))
+                .on_hover_text("Toggle spectrum peak-hold line")
+                .clicked()
+            {
+                let new_val = !peak_hold_enabled;
+                let _ = self
+                    .cmd_tx
+                    .try_send(DisplayCmd::SetPeakHoldEnabled(new_val).into());
+                self.config_dirty = true;
+            }
+            if peak_hold_enabled {
+                let mut decay = peak_hold_decay_db;
+                let resp = ui
+                    .add(
+                        egui::Slider::new(&mut decay, 0.1_f32..=2.0_f32)
+                            .step_by(0.1)
+                            .text(RichText::new("dB/fr").small())
+                            .clamp_to_range(true),
+                    )
+                    .on_hover_text("Peak-hold decay rate in dB per display frame");
+                if resp.changed() {
+                    let _ = self
+                        .cmd_tx
+                        .try_send(DisplayCmd::SetPeakHoldDecay(decay).into());
+                }
             }
 
             // SNR display

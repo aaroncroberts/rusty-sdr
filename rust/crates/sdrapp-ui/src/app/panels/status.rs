@@ -16,6 +16,7 @@ impl SdrApp {
             buf_fill,
             source_name,
             is_stereo,
+            frames_dropped,
         ) = {
             let s = self.shared.read();
             (
@@ -28,6 +29,7 @@ impl SdrApp {
                 s.audio_buffer_fill,
                 s.source_name.clone(),
                 s.rds.is_stereo,
+                s.audio_frames_dropped,
             )
         };
 
@@ -61,6 +63,20 @@ impl SdrApp {
                 if is_recording {
                     ui.label(RichText::new("● REC").color(theme::DANGER).small().strong());
                     ui.add_space(8.0);
+                }
+
+                // Audio frame drop counter — shown and clickable to reset when > 0.
+                if frames_dropped > 0 {
+                    let label = RichText::new(format!("▼{frames_dropped} drops"))
+                        .color(theme::DANGER)
+                        .small();
+                    if ui.small_button(label)
+                        .on_hover_text("Audio frames dropped due to backpressure. Click to reset.")
+                        .clicked()
+                    {
+                        self.shared.write().audio_frames_dropped = 0;
+                    }
+                    ui.add_space(4.0);
                 }
 
                 // Audio buffer health (tiny bar)

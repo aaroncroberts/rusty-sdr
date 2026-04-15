@@ -87,6 +87,9 @@ pub struct SdrApp {
     show_settings: bool,
     /// When true, send Start command on the very first frame (--auto-start flag).
     auto_start_pending: bool,
+    /// egui time (seconds since app start) of the last frame where ADC clipping
+    /// was detected.  Used to hold the "ADC SAT" badge visible for 2 s.
+    last_clipping_time: Option<f64>,
 }
 
 impl SdrApp {
@@ -154,6 +157,7 @@ impl SdrApp {
             scan_cat_ui: String::new(),
             show_settings: false,
             auto_start_pending: auto_start,
+            last_clipping_time: None,
         }
     }
 }

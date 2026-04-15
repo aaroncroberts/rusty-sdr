@@ -180,7 +180,7 @@ impl SdrApp {
         ui.label(RichText::new("RECORDER").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        let (is_recording, rec_mode, center_freq, iq_sr, rec_error) = {
+        let (is_recording, rec_mode, center_freq, iq_sr, rec_error, rec_peak_db, rec_rms_db) = {
             let s = self.shared.read();
             (
                 s.is_recording,
@@ -188,6 +188,8 @@ impl SdrApp {
                 s.center_freq_hz,
                 s.sample_rate_sps,
                 s.recorder_error.clone(),
+                s.recording_peak_dbfs,
+                s.recording_rms_dbfs,
             )
         };
 
@@ -246,6 +248,10 @@ impl SdrApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("●").color(theme::DANGER));
                 ui.label(RichText::new("REC").color(theme::AMBER).strong());
+                ui.add_space(6.0);
+                // Two small vertical dBFS bars: peak (left) and RMS (right).
+                // Range: -60 to 0 dBFS, mapped to bar height.
+                self.draw_recording_level_bars(ui, rec_peak_db, rec_rms_db);
             });
         } else {
             let rec_btn =
@@ -491,5 +497,53 @@ impl SdrApp {
 
         // Decay the peak
         self.vu_peak = (self.vu_peak - 0.02).max(0.0);
+    }
+
+    /// Draw two small vertical dBFS bars (peak + RMS) for the recording level meter.
+    /// Range: -60..0 dBFS; bars grow upward from a baseline.
+    fn draw_recording_level_bars(&self, ui: &mut Ui, peak_db: f32, rms_db: f32) {
+        const BAR_W: f32 = 6.0;
+        const BAR_H: f32 = 20.0;
+        const GAP: f32 = 2.0;
+        const DB_FLOOR: f32 = -60.0;
+
+        let total_w = BAR_W * 2.0 + GAP;
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(total_w, BAR_H), egui::Sense::hover());
+        let painter = ui.painter();
+
+        for (i, db) in [peak_db, rms_db].iter().enumerate() {
+            let x_off = i as f32 * (BAR_W + GAP);
+            let bar_rect = egui::Rect::from_min_size(
+                rect.min + Vec2::new(x_off, 0.0),
+                Vec2::new(BAR_W, BAR_H),
+            );
+            // Background
+            painter.rect_filled(bar_rect, 1.0, theme::WIDGET_BG);
+
+            // Fill from bottom: fraction of range
+            let frac = ((*db - DB_FLOOR) / -DB_FLOOR).clamp(0.0, 1.0);
+            let fill_h = BAR_H * frac;
+            if fill_h > 0.5 {
+                let fill_rect = egui::Rect::from_min_size(
+                    rect.min + Vec2::new(x_off, BAR_H - fill_h),
+                    Vec2::new(BAR_W, fill_h),
+                );
+                let color = if *db > -6.0 {
+                    theme::VU_HIGH
+                } else if *db > -20.0 {
+                    theme::VU_MID
+                } else {
+                    theme::VU_LOW
+                };
+                painter.rect_filled(fill_rect, 1.0, color);
+            }
+        }
+
+        // Hover tooltip
+        ui.interact(rect, ui.id().with("rec_level_bars"), egui::Sense::hover())
+            .on_hover_text(format!(
+                "Peak: {peak_db:.1} dBFS\nRMS: {rms_db:.1} dBFS"
+            ));
     }
 }
