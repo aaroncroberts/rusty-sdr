@@ -57,12 +57,12 @@ pub fn default_bindings() -> Vec<((usize, MidiKey), MidiActionTag)> {
     // Transport — same on every page
     // ══════════════════════════════════════════════════════════════════════════
     for page in 0..3 {
-        bind!(page, note(41), MidiActionTag::PlayToggle);      // ▶ Play
-        bind!(page, note(42), MidiActionTag::Stop);            // ■ Stop
+        bind!(page, note(41), MidiActionTag::PlayToggle); // ▶ Play
+        bind!(page, note(42), MidiActionTag::Stop); // ■ Stop
         bind!(page, note(45), MidiActionTag::RecordingToggle); // ● Record
-        bind!(page, note(46), MidiActionTag::PageNext);        // ↺ Cycle → advance page
-        bind!(page, note(58), MidiActionTag::BookmarkPrev);    // |◄ Prev Track
-        bind!(page, note(59), MidiActionTag::BookmarkNext);    // ►| Next Track
+        bind!(page, note(46), MidiActionTag::PageNext); // ↺ Cycle → advance page
+        bind!(page, note(58), MidiActionTag::BookmarkPrev); // |◄ Prev Track
+        bind!(page, note(59), MidiActionTag::BookmarkNext); // ►| Next Track
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -73,19 +73,19 @@ pub fn default_bindings() -> Vec<((usize, MidiKey), MidiActionTag)> {
     bind!(0, cc(0), MidiActionTag::VolumeSet);
 
     // S buttons (Note 32–39): tune UP in various step sizes
-    bind!(0, note(32), MidiActionTag::TuneCoarseUp);    // +1 MHz
-    bind!(0, note(33), MidiActionTag::TuneMediumUp);    // +100 kHz
-    bind!(0, note(34), MidiActionTag::TuneFineUp);      // +10 kHz
+    bind!(0, note(32), MidiActionTag::TuneCoarseUp); // +1 MHz
+    bind!(0, note(33), MidiActionTag::TuneMediumUp); // +100 kHz
+    bind!(0, note(34), MidiActionTag::TuneFineUp); // +10 kHz
     bind!(0, note(35), MidiActionTag::TuneUltraFineUp); // +1 kHz
-    bind!(0, note(36), MidiActionTag::DemodModeCycle);  // cycle demod mode
-    bind!(0, note(37), MidiActionTag::StepSizeCycle);   // cycle step size
+    bind!(0, note(36), MidiActionTag::DemodModeCycle); // cycle demod mode
+    bind!(0, note(37), MidiActionTag::StepSizeCycle); // cycle step size
     bind!(0, note(38), MidiActionTag::HelpPanelToggle); // toggle help
-    bind!(0, note(39), MidiActionTag::BookmarkSave);    // save bookmark
+    bind!(0, note(39), MidiActionTag::BookmarkSave); // save bookmark
 
     // M buttons (Note 48–55): tune DOWN in various step sizes
-    bind!(0, note(48), MidiActionTag::TuneCoarseDown);    // -1 MHz
-    bind!(0, note(49), MidiActionTag::TuneMediumDown);    // -100 kHz
-    bind!(0, note(50), MidiActionTag::TuneFineDown);      // -10 kHz
+    bind!(0, note(48), MidiActionTag::TuneCoarseDown); // -1 MHz
+    bind!(0, note(49), MidiActionTag::TuneMediumDown); // -100 kHz
+    bind!(0, note(50), MidiActionTag::TuneFineDown); // -10 kHz
     bind!(0, note(51), MidiActionTag::TuneUltraFineDown); // -1 kHz
     bind!(0, note(52), MidiActionTag::BookmarkNext);
     bind!(0, note(53), MidiActionTag::BookmarkPrev);
@@ -105,16 +105,16 @@ pub fn default_bindings() -> Vec<((usize, MidiKey), MidiActionTag)> {
     // ══════════════════════════════════════════════════════════════════════════
 
     // Faders (absolute controls)
-    bind!(1, cc(0), MidiActionTag::VolumeSet);         // Fader 0: volume
-    bind!(1, cc(1), MidiActionTag::ZoomSet);           // Fader 1: zoom
+    bind!(1, cc(0), MidiActionTag::VolumeSet); // Fader 0: volume
+    bind!(1, cc(1), MidiActionTag::ZoomSet); // Fader 1: zoom
     bind!(1, cc(2), MidiActionTag::WaterfallSpeedSet); // Fader 2: waterfall speed
-    bind!(1, cc(7), MidiActionTag::SquelchSet);        // Fader 7: squelch threshold
+    bind!(1, cc(7), MidiActionTag::SquelchSet); // Fader 7: squelch threshold
 
     // Knobs (absolute controls — same mapping as faders for reach)
-    bind!(1, cc(16), MidiActionTag::VolumeSet);         // Knob 0: volume
-    bind!(1, cc(17), MidiActionTag::ZoomSet);           // Knob 1: zoom
+    bind!(1, cc(16), MidiActionTag::VolumeSet); // Knob 0: volume
+    bind!(1, cc(17), MidiActionTag::ZoomSet); // Knob 1: zoom
     bind!(1, cc(18), MidiActionTag::WaterfallSpeedSet); // Knob 2: waterfall speed
-    bind!(1, cc(23), MidiActionTag::SquelchSet);        // Knob 7: squelch
+    bind!(1, cc(23), MidiActionTag::SquelchSet); // Knob 7: squelch
 
     // S buttons: zoom and waterfall incremental control
     bind!(1, note(32), MidiActionTag::ZoomIn);
@@ -248,17 +248,35 @@ mod tests {
     #[test]
     fn page1_faders_cover_display_controls() {
         let bindings = default_bindings();
-        assert_eq!(find_action(&bindings, 1, cc(0)), Some(&MidiActionTag::VolumeSet));
-        assert_eq!(find_action(&bindings, 1, cc(1)), Some(&MidiActionTag::ZoomSet));
-        assert_eq!(find_action(&bindings, 1, cc(2)), Some(&MidiActionTag::WaterfallSpeedSet));
-        assert_eq!(find_action(&bindings, 1, cc(7)), Some(&MidiActionTag::SquelchSet));
+        assert_eq!(
+            find_action(&bindings, 1, cc(0)),
+            Some(&MidiActionTag::VolumeSet)
+        );
+        assert_eq!(
+            find_action(&bindings, 1, cc(1)),
+            Some(&MidiActionTag::ZoomSet)
+        );
+        assert_eq!(
+            find_action(&bindings, 1, cc(2)),
+            Some(&MidiActionTag::WaterfallSpeedSet)
+        );
+        assert_eq!(
+            find_action(&bindings, 1, cc(7)),
+            Some(&MidiActionTag::SquelchSet)
+        );
     }
 
     #[test]
     fn page2_has_record_start_and_stop() {
         let bindings = default_bindings();
-        assert_eq!(find_action(&bindings, 2, note(32)), Some(&MidiActionTag::RecordStart));
-        assert_eq!(find_action(&bindings, 2, note(33)), Some(&MidiActionTag::RecordStop));
+        assert_eq!(
+            find_action(&bindings, 2, note(32)),
+            Some(&MidiActionTag::RecordStart)
+        );
+        assert_eq!(
+            find_action(&bindings, 2, note(33)),
+            Some(&MidiActionTag::RecordStop)
+        );
     }
 
     #[test]

@@ -15,10 +15,9 @@
 
 /// The 50 standard CTCSS tone frequencies (Hz), EIA RS-220.
 pub const CTCSS_TONES: &[f32] = &[
-    67.0, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4, 100.0,
-    103.5, 107.2, 110.9, 114.8, 118.8, 123.0, 127.3, 131.8, 136.5, 141.3,
-    146.2, 151.4, 156.7, 162.2, 167.9, 173.8, 179.9, 186.2, 192.8, 203.5,
-    210.7, 218.1, 225.7, 233.6, 241.8, 250.3,
+    67.0, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4, 100.0, 103.5, 107.2, 110.9,
+    114.8, 118.8, 123.0, 127.3, 131.8, 136.5, 141.3, 146.2, 151.4, 156.7, 162.2, 167.9, 173.8,
+    179.9, 186.2, 192.8, 203.5, 210.7, 218.1, 225.7, 233.6, 241.8, 250.3,
 ];
 
 /// Goertzel coefficients for a single tone frequency.
@@ -153,7 +152,10 @@ mod tests {
         // 100.0 Hz is a standard CTCSS tone — send 200 ms of it
         let samples = generate_tone(100.0, fs, (fs * 0.2) as usize);
         det.process_batch(&samples);
-        assert!(det.is_tone_present(), "100.0 Hz CTCSS tone should be detected");
+        assert!(
+            det.is_tone_present(),
+            "100.0 Hz CTCSS tone should be detected"
+        );
     }
 
     #[test]
@@ -163,7 +165,10 @@ mod tests {
         // 440 Hz is NOT a CTCSS tone (it's voice band) — send 200 ms
         let samples = generate_tone(440.0, fs, (fs * 0.2) as usize);
         det.process_batch(&samples);
-        assert!(!det.is_tone_present(), "440 Hz should NOT be detected as CTCSS");
+        assert!(
+            !det.is_tone_present(),
+            "440 Hz should NOT be detected as CTCSS"
+        );
     }
 
     #[test]
@@ -172,7 +177,10 @@ mod tests {
         let mut det = CtcssDetector::with_default_threshold(fs);
         let samples = generate_tone(250.3, fs, (fs * 0.2) as usize);
         det.process_batch(&samples);
-        assert!(det.is_tone_present(), "250.3 Hz CTCSS tone should be detected");
+        assert!(
+            det.is_tone_present(),
+            "250.3 Hz CTCSS tone should be detected"
+        );
     }
 
     #[test]
@@ -181,7 +189,10 @@ mod tests {
         let mut det = CtcssDetector::with_default_threshold(fs);
         let samples = vec![0.0f32; (fs * 0.2) as usize];
         det.process_batch(&samples);
-        assert!(!det.is_tone_present(), "Silence should not trigger CTCSS detection");
+        assert!(
+            !det.is_tone_present(),
+            "Silence should not trigger CTCSS detection"
+        );
     }
 
     #[test]

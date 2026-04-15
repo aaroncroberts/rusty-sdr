@@ -60,7 +60,12 @@ pub struct Bookmark {
 impl Bookmark {
     /// Create a new bookmark with no category.
     pub fn new(name: impl Into<String>, freq_hz: u64, mode: DemodMode) -> Self {
-        Self { name: name.into(), freq_hz, mode, category: String::new() }
+        Self {
+            name: name.into(),
+            freq_hz,
+            mode,
+            category: String::new(),
+        }
     }
 
     /// Builder method to attach a category.
@@ -110,6 +115,9 @@ pub struct DemodState {
     pub ctcss_tone_detected: bool,
     /// Frequency step size for keyboard/scroll tuning (Hz).
     pub tune_step_hz: u64,
+    /// Live NFM signal level in dBFS (updated every audio block when in NFM mode).
+    /// Used to render the squelch meter in the UI. Range ≈ -120 to 0.
+    pub nfm_signal_level_dbfs: f32,
 }
 
 /// Frequency scanner state.
@@ -219,9 +227,7 @@ impl SharedState {
         Self {
             zoom_level: 1.0,
             waterfall_speed: 1.0,
-            bookmarks: vec![
-                Bookmark::new("BBC Radio 4", 93_500_000, DemodMode::Wbfm),
-            ],
+            bookmarks: vec![Bookmark::new("BBC Radio 4", 93_500_000, DemodMode::Wbfm)],
             demod: DemodState {
                 volume: 0.8,
                 squelch_threshold: -50.0,

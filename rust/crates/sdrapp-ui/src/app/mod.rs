@@ -23,12 +23,7 @@ use sdrapp_core::{
 };
 use sdrapp_recorder::RecorderCommand;
 
-use crate::{
-    frequency::FrequencyWidget,
-    help::HelpPanel,
-    theme,
-    waterfall::WaterfallWidget,
-};
+use crate::{frequency::FrequencyWidget, help::HelpPanel, theme, waterfall::WaterfallWidget};
 
 mod panels;
 
@@ -147,7 +142,12 @@ impl SdrApp {
             sched_delay_secs: 0,
             sched_duration_secs: 60,
             bookmark_edit_idx: None,
-            bookmark_edit_buf: (String::new(), String::new(), sdrapp_core::signal_path::DemodMode::Wbfm, String::new()),
+            bookmark_edit_buf: (
+                String::new(),
+                String::new(),
+                sdrapp_core::signal_path::DemodMode::Wbfm,
+                String::new(),
+            ),
             bookmark_cat_filter: String::new(),
             bookmark_sort_by_freq: false,
             scan_dwell_ui: 2.0,
@@ -174,7 +174,10 @@ impl eframe::App for SdrApp {
         {
             let shared_len = self.shared.read().midi_cc_to_knob.len();
             if shared_len != self.config.midi_learn.len() {
-                self.config.midi_learn = self.shared.read().midi_cc_to_knob
+                self.config.midi_learn = self
+                    .shared
+                    .read()
+                    .midi_cc_to_knob
                     .iter()
                     .map(|(&cc, knob_id)| (knob_id.clone(), cc))
                     .collect();
@@ -184,7 +187,10 @@ impl eframe::App for SdrApp {
 
         if self.config_dirty {
             // Snapshot learned MIDI bindings (CC → knob_id becomes knob_id → CC)
-            self.config.midi_learn = self.shared.read().midi_cc_to_knob
+            self.config.midi_learn = self
+                .shared
+                .read()
+                .midi_cc_to_knob
                 .iter()
                 .map(|(&cc, knob_id)| (knob_id.clone(), cc))
                 .collect();
@@ -205,12 +211,14 @@ impl eframe::App for SdrApp {
 
         // ── Arrow-key frequency tuning ────────────────────────────────────────
         // Up/Down arrows tune by step_hz. Left/Right arrows step by 10×.
-        let (up, down, left, right) = ctx.input(|i| (
-            i.key_pressed(egui::Key::ArrowUp),
-            i.key_pressed(egui::Key::ArrowDown),
-            i.key_pressed(egui::Key::ArrowLeft),
-            i.key_pressed(egui::Key::ArrowRight),
-        ));
+        let (up, down, left, right) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::ArrowLeft),
+                i.key_pressed(egui::Key::ArrowRight),
+            )
+        });
         if up || down || left || right {
             let step = self.shared.read().demod.tune_step_hz;
             let coarse = step * 10;
@@ -226,7 +234,9 @@ impl eframe::App for SdrApp {
             } else {
                 freq.saturating_sub((-delta) as u64).max(1)
             };
-            let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
+            let _ = self
+                .cmd_tx
+                .try_send(ReceiverCmd::SetFrequency(new_freq).into());
             self.config.ui.frequency_hz = new_freq;
             self.frequency_widget = FrequencyWidget::new(new_freq);
             self.config_dirty = true;
@@ -276,7 +286,8 @@ impl eframe::App for SdrApp {
         // ── Help panel (floating window) ──────────────────────────────────────
         let mut help_open = self.shared.read().help_panel_open;
         let before = help_open;
-        self.help_panel.show(ctx, &mut help_open, &self.midi_bindings);
+        self.help_panel
+            .show(ctx, &mut help_open, &self.midi_bindings);
         if help_open != before {
             self.shared.write().help_panel_open = help_open;
         }

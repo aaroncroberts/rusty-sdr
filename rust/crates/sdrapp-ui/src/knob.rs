@@ -77,10 +77,8 @@ impl<'a> KnobWidget<'a> {
         let cc_h = if self.midi_cc.is_some() { 12.0 } else { 0.0 };
         let total_h = self.diameter + label_h + cc_h + 4.0; // 4px padding
 
-        let (rect, mut response) = ui.allocate_exact_size(
-            Vec2::new(self.diameter, total_h),
-            Sense::click_and_drag(),
-        );
+        let (rect, mut response) =
+            ui.allocate_exact_size(Vec2::new(self.diameter, total_h), Sense::click_and_drag());
 
         // ── Value mutations ───────────────────────────────────────────────────
 
@@ -127,7 +125,13 @@ impl<'a> KnobWidget<'a> {
             let inner_r = radius - stroke_w * 0.5 - 1.0;
 
             // Background arc (full range): dim colour
-            let bg_pts = arc_points(center, inner_r, START_ANGLE, START_ANGLE + SWEEP, ARC_SEGMENTS);
+            let bg_pts = arc_points(
+                center,
+                inner_r,
+                START_ANGLE,
+                START_ANGLE + SWEEP,
+                ARC_SEGMENTS,
+            );
             painter.add(Shape::line(
                 bg_pts,
                 Stroke::new(stroke_w, theme::WIDGET_BG_STRONG),
@@ -135,11 +139,14 @@ impl<'a> KnobWidget<'a> {
 
             // Value arc: accent colour
             if t > 0.001 {
-                let val_pts = arc_points(center, inner_r, START_ANGLE, START_ANGLE + t * SWEEP, ARC_SEGMENTS);
-                painter.add(Shape::line(
-                    val_pts,
-                    Stroke::new(stroke_w, theme::ACCENT),
-                ));
+                let val_pts = arc_points(
+                    center,
+                    inner_r,
+                    START_ANGLE,
+                    START_ANGLE + t * SWEEP,
+                    ARC_SEGMENTS,
+                );
+                painter.add(Shape::line(val_pts, Stroke::new(stroke_w, theme::ACCENT)));
             }
 
             // Indicator dot at current angle
@@ -153,7 +160,7 @@ impl<'a> KnobWidget<'a> {
             let ptr_inner = inner_r * 0.35;
             let ptr_outer = inner_r - stroke_w;
             let ptr_start = center + Vec2::new(cur_angle.cos(), cur_angle.sin()) * ptr_inner;
-            let ptr_end   = center + Vec2::new(cur_angle.cos(), cur_angle.sin()) * ptr_outer;
+            let ptr_end = center + Vec2::new(cur_angle.cos(), cur_angle.sin()) * ptr_outer;
             painter.line_segment([ptr_start, ptr_end], Stroke::new(1.5, Color32::WHITE));
 
             // Highlight ring when hovered or dragged
@@ -172,7 +179,10 @@ impl<'a> KnobWidget<'a> {
                 painter.circle_stroke(
                     center,
                     radius + 2.0,
-                    Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 180, 50, pulse as u8)),
+                    Stroke::new(
+                        2.0,
+                        Color32::from_rgba_unmultiplied(255, 180, 50, pulse as u8),
+                    ),
                 );
             }
 
@@ -222,7 +232,13 @@ impl<'a> KnobWidget<'a> {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Generate `segments+1` points along a clockwise arc from `start_rad` to `end_rad`.
-fn arc_points(center: Pos2, radius: f32, start_rad: f32, end_rad: f32, segments: usize) -> Vec<Pos2> {
+fn arc_points(
+    center: Pos2,
+    radius: f32,
+    start_rad: f32,
+    end_rad: f32,
+    segments: usize,
+) -> Vec<Pos2> {
     (0..=segments)
         .map(|i| {
             let t = i as f32 / segments as f32;
@@ -246,7 +262,13 @@ mod tests {
 
     #[test]
     fn arc_start_and_end_angles() {
-        let pts = arc_points(Pos2::new(50.0, 50.0), 10.0, 0.0, std::f32::consts::FRAC_PI_2, 4);
+        let pts = arc_points(
+            Pos2::new(50.0, 50.0),
+            10.0,
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+            4,
+        );
         // First point should be at angle 0 (right of center)
         let first = pts[0];
         assert!((first.x - 60.0).abs() < 0.01, "start x = {}", first.x);

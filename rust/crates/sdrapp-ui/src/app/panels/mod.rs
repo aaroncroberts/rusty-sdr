@@ -20,6 +20,7 @@ use crate::theme;
 ///
 /// Used by every panel sub-section to avoid repeating the same
 /// `RichText::new(...).color(TEXT_MUTED).small()` pattern.
+#[allow(dead_code)]
 pub(super) fn section_header(ui: &mut Ui, title: &str) {
     ui.label(RichText::new(title).color(theme::TEXT_MUTED).small());
     ui.add_space(4.0);

@@ -2,12 +2,8 @@ use egui::{RichText, Stroke, Ui, Vec2};
 
 use sdrapp_core::signal_path::{DemodMode, ReceiverCmd, ScanCmd, SignalPathCommand};
 
-use crate::{
-    frequency::FrequencyWidget,
-    knob::KnobWidget,
-    theme,
-};
 use super::super::SdrApp;
+use crate::{frequency::FrequencyWidget, knob::KnobWidget, theme};
 
 impl SdrApp {
     pub(in crate::app) fn left_panel(&mut self, ui: &mut Ui) {
@@ -40,12 +36,7 @@ impl SdrApp {
 
         let display_name = source_name
             .as_deref()
-            .or_else(|| {
-                self.registry
-                    .sources
-                    .first()
-                    .map(|s| s.display_name)
-            })
+            .or_else(|| self.registry.sources.first().map(|s| s.display_name))
             .unwrap_or("No device");
 
         ui.horizontal(|ui| {
@@ -125,16 +116,20 @@ impl SdrApp {
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
             for (hz, label) in [
-                (100_u64,       "100 Hz"),
-                (1_000,         "1 kHz"),
-                (10_000,        "10 kHz"),
-                (100_000,       "100 kHz"),
-                (1_000_000,     "1 MHz"),
-                (10_000_000,    "10 MHz"),
+                (100_u64, "100 Hz"),
+                (1_000, "1 kHz"),
+                (10_000, "10 kHz"),
+                (100_000, "100 kHz"),
+                (1_000_000, "1 MHz"),
+                (10_000_000, "10 MHz"),
             ] {
                 let selected = step_hz == hz;
                 let text = RichText::new(label).small();
-                let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
+                let text = if selected {
+                    text.color(theme::ACCENT).strong()
+                } else {
+                    text.color(theme::TEXT_MUTED)
+                };
                 if ui.selectable_label(selected, text).clicked() {
                     let _ = self.cmd_tx.try_send(ReceiverCmd::SetTuneStep(hz).into());
                 }
@@ -148,17 +143,23 @@ impl SdrApp {
             let btn_w = (ui.available_width() - 16.0) / 4.0;
             for (label, delta, tip) in [
                 ("<<", -(step_hz as i64 * 10), "-10x step"),
-                ("<",  -(step_hz as i64),       "-1x step  (or Down arrow key)"),
-                (">",   step_hz as i64,          "+1x step  (or Up arrow key)"),
-                (">>",  step_hz as i64 * 10,    "+10x step"),
+                ("<", -(step_hz as i64), "-1x step  (or Down arrow key)"),
+                (">", step_hz as i64, "+1x step  (or Up arrow key)"),
+                (">>", step_hz as i64 * 10, "+10x step"),
             ] {
-                if ui.add_sized(
-                    Vec2::new(btn_w, 22.0),
-                    egui::Button::new(RichText::new(label).color(theme::TEXT_PRIMARY))
-                        .fill(theme::WIDGET_BG),
-                ).on_hover_text(tip).clicked() {
+                if ui
+                    .add_sized(
+                        Vec2::new(btn_w, 22.0),
+                        egui::Button::new(RichText::new(label).color(theme::TEXT_PRIMARY))
+                            .fill(theme::WIDGET_BG),
+                    )
+                    .on_hover_text(tip)
+                    .clicked()
+                {
                     let new_freq = (freq as i64 + delta).max(1) as u64;
-                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(ReceiverCmd::SetFrequency(new_freq).into());
                     self.config.ui.frequency_hz = new_freq;
                     self.frequency_widget = FrequencyWidget::new(new_freq);
                     self.config_dirty = true;
@@ -213,7 +214,11 @@ impl SdrApp {
             ui.separator();
             ui.add_space(6.0);
 
-            ui.label(RichText::new("NFM SETTINGS").color(theme::TEXT_MUTED).small());
+            ui.label(
+                RichText::new("NFM SETTINGS")
+                    .color(theme::TEXT_MUTED)
+                    .small(),
+            );
             ui.add_space(4.0);
 
             // Channel bandwidth selector (12.5 / 25 kHz)
@@ -241,10 +246,15 @@ impl SdrApp {
             let (sq_learn, sq_cc) = {
                 let s = self.shared.read();
                 let learn = s.midi_learn_target.as_deref() == Some("squelch");
-                let cc = s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "squelch").map(|(&c, _)| c);
+                let cc = s
+                    .midi_cc_to_knob
+                    .iter()
+                    .find(|(_, v)| v.as_str() == "squelch")
+                    .map(|(&c, _)| c);
                 (learn, cc)
             };
             let mut sq_learn_req = false;
+            let mut sq_learn_cancel = false;
             let mut sq_clear: Option<u8> = None;
             ui.vertical_centered(|ui| {
                 let mut sq_threshold = self.shared.read().demod.squelch_threshold;
@@ -258,19 +268,90 @@ impl SdrApp {
                     unit: "dBFS",
                     midi_cc: sq_cc,
                     learn_active: sq_learn,
-                }.show(ui);
+                }
+                .show(ui);
                 resp.context_menu(|ui| {
-                    if ui.button("Assign MIDI CC").clicked() { sq_learn_req = true; ui.close_menu(); }
+                    if sq_learn {
+                        if ui.button("Cancel MIDI Learn").clicked() {
+                            sq_learn_cancel = true;
+                            ui.close_menu();
+                        }
+                    } else if ui.button("Assign MIDI CC").clicked() {
+                        sq_learn_req = true;
+                        ui.close_menu();
+                    }
                     if let Some(cc) = sq_cc {
-                        if ui.button(format!("Clear CC {cc} binding")).clicked() { sq_clear = Some(cc); ui.close_menu(); }
+                        if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                            sq_clear = Some(cc);
+                            ui.close_menu();
+                        }
                     }
                 });
                 if resp.changed() {
-                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
                 }
             });
-            if sq_learn_req { self.shared.write().midi_learn_target = Some("squelch".into()); }
-            if let Some(cc) = sq_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
+            if sq_learn_req {
+                self.shared.write().midi_learn_target = Some("squelch".into());
+            }
+            if sq_learn_cancel {
+                self.shared.write().midi_learn_target = None;
+            }
+            if let Some(cc) = sq_clear {
+                self.shared.write().midi_cc_to_knob.remove(&cc);
+                self.config_dirty = true;
+            }
+
+            // Inline signal level meter: shows live dBFS vs threshold
+            {
+                let (sig_level, sq_threshold) = {
+                    let s = self.shared.read();
+                    (s.demod.nfm_signal_level_dbfs, s.demod.squelch_threshold)
+                };
+                let range = -120.0_f32..=0.0_f32;
+                let fill = ((sig_level - *range.start()) / (*range.end() - *range.start()))
+                    .clamp(0.0, 1.0);
+                let thresh_frac = ((sq_threshold - *range.start())
+                    / (*range.end() - *range.start()))
+                .clamp(0.0, 1.0);
+                let bar_color = if sig_level >= sq_threshold {
+                    theme::STATUS_OK
+                } else {
+                    theme::TEXT_MUTED
+                };
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("SIG").color(theme::TEXT_MUTED).small());
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::new(ui.available_width(), 8.0),
+                        egui::Sense::hover(),
+                    );
+                    if ui.is_rect_visible(rect) {
+                        let painter = ui.painter_at(rect);
+                        // Background
+                        painter.rect_filled(rect, 2.0, theme::WIDGET_BG);
+                        // Signal fill
+                        let filled = egui::Rect::from_min_max(
+                            rect.left_top(),
+                            egui::pos2(rect.left() + rect.width() * fill, rect.bottom()),
+                        );
+                        painter.rect_filled(filled, 2.0, bar_color);
+                        // Threshold marker line
+                        let tx = rect.left() + rect.width() * thresh_frac;
+                        painter.line_segment(
+                            [egui::pos2(tx, rect.top()), egui::pos2(tx, rect.bottom())],
+                            egui::Stroke::new(1.5, theme::DANGER),
+                        );
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(format!("{sig_level:.0} dBFS"))
+                        .color(bar_color)
+                        .small(),
+                );
+            }
 
             ui.add_space(4.0);
 
@@ -324,38 +405,59 @@ impl SdrApp {
         // Category filter
         ui.horizontal(|ui| {
             ui.label(RichText::new("Cat").color(theme::TEXT_MUTED).small());
-            ui.text_edit_singleline(&mut self.scan_cat_ui).on_hover_text("Scan only this category (empty = all bookmarks)");
+            ui.text_edit_singleline(&mut self.scan_cat_ui)
+                .on_hover_text("Scan only this category (empty = all bookmarks)");
         });
 
         // Dwell time
         ui.horizontal(|ui| {
             ui.label(RichText::new("Dwell").color(theme::TEXT_MUTED).small());
-            if ui.add(egui::Slider::new(&mut self.scan_dwell_ui, 0.5_f32..=15.0_f32)
-                .suffix(" s").show_value(true))
+            if ui
+                .add(
+                    egui::Slider::new(&mut self.scan_dwell_ui, 0.5_f32..=15.0_f32)
+                        .suffix(" s")
+                        .show_value(true),
+                )
                 .changed()
             {
-                let _ = self.cmd_tx.try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
+                let _ = self
+                    .cmd_tx
+                    .try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
             }
         });
 
         // Start / Stop / Next
         ui.horizontal(|ui| {
             if scan_running {
-                let stop_btn = egui::Button::new(RichText::new("■  Stop").color(theme::DANGER).strong())
-                    .fill(theme::WIDGET_BG);
+                let stop_btn =
+                    egui::Button::new(RichText::new("■  Stop").color(theme::DANGER).strong())
+                        .fill(theme::WIDGET_BG);
                 if ui.add_sized(Vec2::new(70.0, 22.0), stop_btn).clicked() {
                     let _ = self.cmd_tx.try_send(ScanCmd::Stop.into());
                 }
-                if ui.small_button(RichText::new("▶▶ Next").color(theme::TEXT_MUTED)).clicked() {
+                if ui
+                    .small_button(RichText::new("▶▶ Next").color(theme::TEXT_MUTED))
+                    .clicked()
+                {
                     let _ = self.cmd_tx.try_send(ScanCmd::Next.into());
                 }
-                ui.label(RichText::new("SCAN").color(theme::STATUS_OK).small().strong());
+                ui.label(
+                    RichText::new("SCAN")
+                        .color(theme::STATUS_OK)
+                        .small()
+                        .strong(),
+                );
             } else {
-                let start_btn = egui::Button::new(RichText::new("▶  Scan").color(theme::STATUS_OK).strong())
-                    .fill(theme::WIDGET_BG);
+                let start_btn =
+                    egui::Button::new(RichText::new("▶  Scan").color(theme::STATUS_OK).strong())
+                        .fill(theme::WIDGET_BG);
                 if ui.add_sized(Vec2::new(70.0, 22.0), start_btn).clicked() {
-                    let _ = self.cmd_tx.try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
-                    let _ = self.cmd_tx.try_send(ScanCmd::Start(self.scan_cat_ui.clone()).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(ScanCmd::Start(self.scan_cat_ui.clone()).into());
                 }
             }
         });

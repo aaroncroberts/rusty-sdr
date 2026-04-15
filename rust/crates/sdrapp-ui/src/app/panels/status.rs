@@ -1,12 +1,22 @@
 use egui::{RichText, Ui};
 
-use crate::theme;
 use super::super::SdrApp;
 use super::format_frequency;
+use crate::theme;
 
 impl SdrApp {
     pub(in crate::app) fn status_bar(&self, ui: &mut Ui) {
-        let (is_running, is_recording, center_freq, sample_rate, midi_device, midi_page, buf_fill, source_name, is_stereo) = {
+        let (
+            is_running,
+            is_recording,
+            center_freq,
+            sample_rate,
+            midi_device,
+            midi_page,
+            buf_fill,
+            source_name,
+            is_stereo,
+        ) = {
             let s = self.shared.read();
             (
                 s.is_running,
@@ -25,12 +35,7 @@ impl SdrApp {
             // Left: device + sample rate + frequency
             let device_label = source_name
                 .as_deref()
-                .or_else(|| {
-                    self.registry
-                        .sources
-                        .first()
-                        .map(|s| s.display_name)
-                })
+                .or_else(|| self.registry.sources.first().map(|s| s.display_name))
                 .unwrap_or("No device");
 
             let rate_label = if sample_rate >= 1_000_000 {

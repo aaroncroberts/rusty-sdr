@@ -18,11 +18,11 @@
 //! - [`shared_state`]: All shared data structures read by the UI
 //! - [`commands`]: Command enums sent from UI/MIDI to the signal path
 
-mod shared_state;
 mod commands;
+mod shared_state;
 
-pub use shared_state::*;
 pub use commands::*;
+pub use shared_state::*;
 
 use parking_lot::RwLock;
 use std::sync::{
@@ -34,7 +34,10 @@ use tokio::task::JoinHandle;
 
 use rustfft::num_complex::Complex;
 
-use crate::dsp::{AmDemodulator, AudioBandpass, CtcssDetector, CwDemodulator, FmDemodulator, FftProcessor, RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder, Volume};
+use crate::dsp::{
+    AmDemodulator, AudioBandpass, CtcssDetector, CwDemodulator, FftProcessor, FmDemodulator,
+    RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder, Volume,
+};
 use crate::sample::{IqSample, StereoFrame};
 
 pub(super) const FFT_SIZE: usize = 2048;
@@ -114,6 +117,7 @@ impl SignalPath {
             let mut ctcss = CtcssDetector::with_default_threshold(48_000.0);
             let mut nfm_bw_hz: u32 = 12_500;
             let mut ctcss_enabled: bool = false;
+            let mut ctcss_was_detected: bool = false;
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
             // Scanner state
@@ -128,7 +132,9 @@ impl SignalPath {
             fn make_demod(mode: DemodMode, sr: u32, nfm_bw_hz: u32) -> Demod {
                 match mode {
                     DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(sr)),
-                    DemodMode::Nfm => Demod::Nfm(FmDemodulator::new(sr, 48_000, nfm_bw_hz as f32, 0.0)),
+                    DemodMode::Nfm => {
+                        Demod::Nfm(FmDemodulator::new(sr, 48_000, nfm_bw_hz as f32, 0.0))
+                    }
                     DemodMode::Am => Demod::Am(AmDemodulator::new(sr, 48_000)),
                     DemodMode::Usb => Demod::Ssb(SsbDemodulator::standard(SsbMode::Usb, sr)),
                     DemodMode::Lsb => Demod::Ssb(SsbDemodulator::standard(SsbMode::Lsb, sr)),
@@ -206,7 +212,8 @@ impl SignalPath {
                             ReceiverCmd::SetNfmBandwidth(bw) => {
                                 nfm_bw_hz = bw;
                                 if matches!(demod, Demod::Nfm(_)) {
-                                    demod = Demod::Nfm(FmDemodulator::new(sr, 48_000, bw as f32, 0.0));
+                                    demod =
+                                        Demod::Nfm(FmDemodulator::new(sr, 48_000, bw as f32, 0.0));
                                     audio_bp.reset();
                                     ctcss.reset();
                                 }
@@ -214,32 +221,55 @@ impl SignalPath {
                             }
                             ReceiverCmd::SetCtcssEnabled(enabled) => {
                                 ctcss_enabled = enabled;
+                                ctcss_was_detected = false;
                                 ctcss.reset();
                                 shared_clone.write().demod.ctcss_squelch_enabled = enabled;
                                 shared_clone.write().demod.ctcss_tone_detected = false;
                             }
-                        }
+                        },
                         SignalPathCommand::Hardware(hw) => {
                             // Update SharedState to mirror the hardware change
                             {
                                 let mut s = shared_clone.write();
                                 match &hw {
-                                    HardwareCommand::SetLnaState(n)    => s.hardware.lna_state = *n,
-                                    HardwareCommand::SetIfGain(g)      => s.hardware.if_gain_dbfs = *g,
-                                    HardwareCommand::SetAgcEnabled(en) => s.hardware.agc_enabled = *en,
-                                    HardwareCommand::SetAgcSetpoint(sp)=> s.hardware.agc_setpoint_dbfs = *sp,
-                                    HardwareCommand::SetBiasT(en)      => s.hardware.bias_t_enabled = *en,
-                                    HardwareCommand::SetHdrMode(en)    => s.hardware.hdr_mode = *en,
-                                    HardwareCommand::SetAmNotch(en)    => s.hardware.am_notch_enabled = *en,
-                                    HardwareCommand::SetFmNotch(en)    => s.hardware.fm_notch_enabled = *en,
-                                    HardwareCommand::SetAntenna(port)  => s.hardware.antenna_port = *port,
+                                    HardwareCommand::SetLnaState(n) => s.hardware.lna_state = *n,
+                                    HardwareCommand::SetIfGain(g) => s.hardware.if_gain_dbfs = *g,
+                                    HardwareCommand::SetAgcEnabled(en) => {
+                                        s.hardware.agc_enabled = *en
+                                    }
+                                    HardwareCommand::SetAgcSetpoint(sp) => {
+                                        s.hardware.agc_setpoint_dbfs = *sp
+                                    }
+                                    HardwareCommand::SetBiasT(en) => {
+                                        s.hardware.bias_t_enabled = *en
+                                    }
+                                    HardwareCommand::SetHdrMode(en) => s.hardware.hdr_mode = *en,
+                                    HardwareCommand::SetAmNotch(en) => {
+                                        s.hardware.am_notch_enabled = *en
+                                    }
+                                    HardwareCommand::SetFmNotch(en) => {
+                                        s.hardware.fm_notch_enabled = *en
+                                    }
+                                    HardwareCommand::SetAntenna(port) => {
+                                        s.hardware.antenna_port = *port
+                                    }
                                 }
                             }
                             // Forward verbatim to the device thread
                             if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(hw);
+                                if let Err(crossbeam_channel::TrySendError::Full(dropped)) =
+                                    tx.try_send(hw)
+                                {
+                                    tracing::warn!(
+                                        ?dropped,
+                                        "hardware command channel full — command dropped"
+                                    );
+                                }
                             } else {
-                                tracing::trace!(?hw, "hardware command dropped — no hardware device connected");
+                                tracing::trace!(
+                                    ?hw,
+                                    "hardware command dropped — no hardware device connected"
+                                );
                             }
                         }
                         SignalPathCommand::Display(c) => match c {
@@ -250,7 +280,7 @@ impl SignalPath {
                                 shared_clone.write().waterfall_speed = spd.clamp(0.1, 10.0);
                             }
                             DisplayCmd::SetFftSize(sz) => {
-                                if sz.is_power_of_two() && sz >= 512 && sz <= 8192 {
+                                if sz.is_power_of_two() && (512..=8192).contains(&sz) {
                                     fft_size = sz;
                                     fft = FftProcessor::new(fft_size, fft_window);
                                     fft_avg_buf = vec![-120.0; fft_size];
@@ -265,27 +295,32 @@ impl SignalPath {
                                 shared_clone.write().fft.fft_window = wf;
                             }
                             DisplayCmd::SetFftAveraging(n) => {
-                                fft_averaging = n.max(1).min(16);
+                                fft_averaging = n.clamp(1, 16);
                                 fft_avg_buf = vec![-120.0; fft_size];
                                 shared_clone.write().fft.fft_averaging = fft_averaging;
                             }
                             DisplayCmd::SetBandPlanEnabled(en) => {
                                 shared_clone.write().fft.band_plan_enabled = en;
                             }
-                        }
+                        },
                         SignalPathCommand::Bookmark(c) => match c {
                             BookmarkCmd::Add(name) => {
                                 let (freq, mode) = {
                                     let s = shared_clone.read();
                                     (s.center_freq_hz, s.demod.demod_mode)
                                 };
-                                shared_clone.write().bookmarks.push(Bookmark::new(name, freq, mode));
+                                shared_clone
+                                    .write()
+                                    .bookmarks
+                                    .push(Bookmark::new(name, freq, mode));
                             }
                             BookmarkCmd::Remove(idx) => {
                                 let mut s = shared_clone.write();
                                 if idx < s.bookmarks.len() {
                                     s.bookmarks.remove(idx);
-                                    if s.bookmark_cursor >= s.bookmarks.len() && !s.bookmarks.is_empty() {
+                                    if s.bookmark_cursor >= s.bookmarks.len()
+                                        && !s.bookmarks.is_empty()
+                                    {
                                         s.bookmark_cursor = s.bookmarks.len() - 1;
                                     }
                                 }
@@ -293,10 +328,15 @@ impl SignalPath {
                             BookmarkCmd::Edit(idx, name, freq, mode, cat) => {
                                 let mut s = shared_clone.write();
                                 if idx < s.bookmarks.len() {
-                                    s.bookmarks[idx] = Bookmark { name, freq_hz: freq, mode, category: cat };
+                                    s.bookmarks[idx] = Bookmark {
+                                        name,
+                                        freq_hz: freq,
+                                        mode,
+                                        category: cat,
+                                    };
                                 }
                             }
-                        }
+                        },
                         SignalPathCommand::Scan(c) => match c {
                             ScanCmd::Start(cat) => {
                                 scan_category = cat.clone();
@@ -326,14 +366,29 @@ impl SignalPath {
                                     rds.reset();
                                     audio_accumulator.clear();
                                     iq_accumulator.clear();
+                                    tracing::debug!(
+                                        category = %scan_category,
+                                        first_freq_hz = bm_freq,
+                                        dwell_secs = scan_dwell_secs,
+                                        "scanner started"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        category = %scan_category,
+                                        "scanner started but no matching bookmarks found — stopping"
+                                    );
+                                    scan_running = false;
+                                    shared_clone.write().scanner.scan_running = false;
                                 }
                             }
                             ScanCmd::Stop => {
+                                tracing::debug!("scanner stopped");
                                 scan_running = false;
                                 shared_clone.write().scanner.scan_running = false;
                             }
                             ScanCmd::Next => {
                                 if scan_running {
+                                    tracing::debug!("scanner: manual next requested");
                                     scan_dwell_samples = u64::MAX;
                                 }
                             }
@@ -341,7 +396,7 @@ impl SignalPath {
                                 scan_dwell_secs = secs.clamp(0.5, 30.0);
                                 shared_clone.write().scanner.scan_dwell_secs = scan_dwell_secs;
                             }
-                        }
+                        },
                         SignalPathCommand::StartRecording => {
                             shared_clone.write().is_recording = true;
                         }
@@ -367,7 +422,10 @@ impl SignalPath {
                                 tracing::debug!("Stop received while already stopped — ignored");
                             }
                         }
-                        SignalPathCommand::ReconnectSource { iq_rx: new_rx, hardware_cmd_tx: new_hw_tx } => {
+                        SignalPathCommand::ReconnectSource {
+                            iq_rx: new_rx,
+                            hardware_cmd_tx: new_hw_tx,
+                        } => {
                             iq_rx = new_rx;
                             hw_cmd_tx = new_hw_tx;
                             source_dead = false;
@@ -467,12 +525,17 @@ impl SignalPath {
                                 match s.demod.demod_mode {
                                     DemodMode::Wbfm => 200_000_u32,
                                     DemodMode::Nfm => s.demod.nfm_bandwidth_hz,
-                                    DemodMode::Am | DemodMode::Usb | DemodMode::Lsb | DemodMode::Dsb => 10_000,
+                                    DemodMode::Am
+                                    | DemodMode::Usb
+                                    | DemodMode::Lsb
+                                    | DemodMode::Dsb => 10_000,
                                     DemodMode::Cw => 1_000,
                                 }
                             };
                             let sr_hz = shared_clone.read().sample_rate_sps.max(1) as f32;
-                            let half_bw_bins = ((bw_hz as f32 / sr_hz * n as f32) as usize).max(2).min(n / 4);
+                            let half_bw_bins = ((bw_hz as f32 / sr_hz * n as f32) as usize)
+                                .max(2)
+                                .min(n / 4);
                             let sig_lo = center.saturating_sub(half_bw_bins);
                             let sig_hi = (center + half_bw_bins).min(n - 1);
                             let peak = fft_avg_buf[sig_lo..=sig_hi]
@@ -480,7 +543,8 @@ impl SignalPath {
                                 .cloned()
                                 .fold(f32::NEG_INFINITY, f32::max);
                             // Noise: collect all bins outside signal window, take median.
-                            let mut noise_bins: Vec<f32> = fft_avg_buf[..sig_lo].iter()
+                            let mut noise_bins: Vec<f32> = fft_avg_buf[..sig_lo]
+                                .iter()
                                 .chain(fft_avg_buf[sig_hi + 1..].iter())
                                 .cloned()
                                 .collect();
@@ -514,9 +578,13 @@ impl SignalPath {
                         let next_idx = scan_cursor + 1;
                         let (bm_freq, bm_mode, new_idx) = {
                             let s = shared_clone.read();
-                            if let Some((idx, freq, mode)) = scan_next_bookmark(&s.bookmarks, &scan_category, next_idx) {
+                            if let Some((idx, freq, mode)) =
+                                scan_next_bookmark(&s.bookmarks, &scan_category, next_idx)
+                            {
                                 (freq, mode, idx)
-                            } else if let Some((idx, freq, mode)) = scan_next_bookmark(&s.bookmarks, &scan_category, 0) {
+                            } else if let Some((idx, freq, mode)) =
+                                scan_next_bookmark(&s.bookmarks, &scan_category, 0)
+                            {
                                 (freq, mode, idx) // wrap around
                             } else {
                                 // No bookmarks → stop scan
@@ -524,9 +592,16 @@ impl SignalPath {
                             }
                         };
                         if new_idx == usize::MAX {
+                            tracing::warn!(category = %scan_category, "scanner: no bookmarks to advance to — stopping");
                             scan_running = false;
                             shared_clone.write().scanner.scan_running = false;
                         } else {
+                            tracing::debug!(
+                                new_freq_hz = bm_freq,
+                                cursor = new_idx,
+                                dwell_secs = scan_dwell_secs,
+                                "scanner: dwell expired, advancing to next bookmark"
+                            );
                             scan_cursor = new_idx;
                             shared_clone.write().scanner.scan_cursor = new_idx;
                             shared_clone.write().center_freq_hz = bm_freq;
@@ -545,15 +620,12 @@ impl SignalPath {
                 }
 
                 // Demodulate IQ → StereoFrame batches at 48 kHz.
-                let iq_complex: Vec<Complex<f32>> = batch
-                    .iter()
-                    .map(|s| Complex::new(s.re, s.im))
-                    .collect();
+                let iq_complex: Vec<Complex<f32>> =
+                    batch.iter().map(|s| Complex::new(s.re, s.im)).collect();
 
                 let stereo: Vec<StereoFrame> = match &mut demod {
                     Demod::Wbfm(d) => {
-                        let (frames, is_stereo, composite) =
-                            d.process_with_composite(&iq_complex);
+                        let (frames, is_stereo, composite) = d.process_with_composite(&iq_complex);
                         shared_clone.write().rds.is_stereo = is_stereo;
                         if rds.process(&composite) {
                             let mut s = shared_clone.write();
@@ -571,10 +643,19 @@ impl SignalPath {
                         if ctcss_enabled {
                             ctcss.process_batch(&mono);
                             let detected = ctcss.is_tone_present();
+                            if detected != ctcss_was_detected {
+                                if detected {
+                                    tracing::debug!("CTCSS: tone detected — squelch open");
+                                } else {
+                                    tracing::debug!("CTCSS: tone lost — squelch closed");
+                                }
+                                ctcss_was_detected = detected;
+                            }
                             shared_clone.write().demod.ctcss_tone_detected = detected;
                         }
                         // Apply squelch (dBFS threshold gate)
                         let gated = squelch.process(&mono);
+                        shared_clone.write().demod.nfm_signal_level_dbfs = squelch.level_dbfs();
                         // CTCSS gate: mute if enabled and no tone detected
                         let ctcss_gated: Vec<f32> = if ctcss_enabled && !ctcss.is_tone_present() {
                             vec![0.0; gated.len()]
@@ -695,11 +776,7 @@ mod tests {
     ) {
         let (iq_tx, iq_rx) = broadcast::channel(8);
         let shared = Arc::new(RwLock::new(SharedState::new()));
-        let path = SignalPath::start(
-            Arc::clone(&shared),
-            iq_rx,
-            None, None, None, None, None,
-        );
+        let path = SignalPath::start(Arc::clone(&shared), iq_rx, None, None, None, None, None);
         (path, iq_tx, shared)
     }
 
@@ -733,7 +810,12 @@ mod tests {
     #[tokio::test]
     async fn set_demod_mode_switches_demod() {
         let (path, iq_tx, shared) = make_signal_path();
-        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetDemodMode(DemodMode::Am)).await;
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            ReceiverCmd::SetDemodMode(DemodMode::Am),
+        )
+        .await;
         assert_eq!(shared.read().demod.demod_mode, DemodMode::Am);
         let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
     }
@@ -741,7 +823,12 @@ mod tests {
     #[tokio::test]
     async fn set_squelch_threshold_updates_demod_state() {
         let (path, iq_tx, shared) = make_signal_path();
-        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetSquelchThreshold(-45.0)).await;
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            ReceiverCmd::SetSquelchThreshold(-45.0),
+        )
+        .await;
         assert!((shared.read().demod.squelch_threshold - (-45.0)).abs() < 1e-6);
         let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
     }
@@ -751,12 +838,25 @@ mod tests {
         let (path, iq_tx, shared) = make_signal_path();
         // SharedState::new() starts with 1 pre-loaded bookmark (BBC Radio 4).
         let initial = shared.read().bookmarks.len();
-        tick(&path.cmd_tx, &iq_tx, BookmarkCmd::Add("NOAA Weather".to_string())).await;
-        assert_eq!(shared.read().bookmarks.len(), initial + 1, "one bookmark added");
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            BookmarkCmd::Add("NOAA Weather".to_string()),
+        )
+        .await;
+        assert_eq!(
+            shared.read().bookmarks.len(),
+            initial + 1,
+            "one bookmark added"
+        );
         let last_idx = shared.read().bookmarks.len() - 1;
         assert_eq!(shared.read().bookmarks[last_idx].name, "NOAA Weather");
         tick(&path.cmd_tx, &iq_tx, BookmarkCmd::Remove(last_idx)).await;
-        assert_eq!(shared.read().bookmarks.len(), initial, "back to initial count after Remove");
+        assert_eq!(
+            shared.read().bookmarks.len(),
+            initial,
+            "back to initial count after Remove"
+        );
         let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
     }
 
@@ -774,7 +874,11 @@ mod tests {
         let (path, iq_tx, shared) = make_signal_path();
         // 3000 is not a power-of-two — should be silently ignored
         tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetFftSize(3000)).await;
-        assert_eq!(shared.read().fft.fft_size, FFT_SIZE, "non-power-of-two FFT size should be ignored");
+        assert_eq!(
+            shared.read().fft.fft_size,
+            FFT_SIZE,
+            "non-power-of-two FFT size should be ignored"
+        );
         let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
     }
 
@@ -783,6 +887,158 @@ mod tests {
         let (path, iq_tx, shared) = make_signal_path();
         tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetBandPlanEnabled(true)).await;
         assert!(shared.read().fft.band_plan_enabled);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn demod_mode_switch_clears_rds_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        // Seed some RDS data directly into SharedState.
+        {
+            let mut s = shared.write();
+            s.rds.ps_name = Some("TEST FM".to_string());
+            s.rds.pty = Some(3);
+            s.rds.rt = Some("Radio Text Here".to_string());
+        }
+        // Switch from WBFM to AM — signal path must clear RDS on mode change.
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            ReceiverCmd::SetDemodMode(DemodMode::Am),
+        )
+        .await;
+        let s = shared.read();
+        assert_eq!(s.demod.demod_mode, DemodMode::Am);
+        assert!(s.rds.ps_name.is_none(), "ps_name must be cleared on mode switch");
+        assert!(s.rds.pty.is_none(), "pty must be cleared on mode switch");
+        assert!(s.rds.rt.is_none(), "rt must be cleared on mode switch");
+        drop(s);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn frequency_change_clears_rds_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        // Seed RDS data.
+        {
+            let mut s = shared.write();
+            s.rds.ps_name = Some("STATION".to_string());
+            s.rds.ta = true;
+        }
+        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetFrequency(98_100_000)).await;
+        let s = shared.read();
+        assert_eq!(s.center_freq_hz, 98_100_000);
+        assert!(s.rds.ps_name.is_none(), "ps_name must be cleared on freq change");
+        assert!(!s.rds.ta, "ta must be cleared on freq change");
+        drop(s);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn nfm_bandwidth_change_updates_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        // Switch to NFM first.
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            ReceiverCmd::SetDemodMode(DemodMode::Nfm),
+        )
+        .await;
+        // Change bandwidth from default 12.5k to 25k.
+        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetNfmBandwidth(25_000)).await;
+        assert_eq!(shared.read().demod.nfm_bandwidth_hz, 25_000);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn ctcss_enable_disable_round_trip() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            ReceiverCmd::SetCtcssEnabled(true),
+        )
+        .await;
+        assert!(shared.read().demod.ctcss_squelch_enabled);
+        assert!(!shared.read().demod.ctcss_tone_detected, "tone must be false after enable");
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            ReceiverCmd::SetCtcssEnabled(false),
+        )
+        .await;
+        assert!(!shared.read().demod.ctcss_squelch_enabled);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn set_tune_step_updates_demod_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetTuneStep(10_000)).await;
+        assert_eq!(shared.read().demod.tune_step_hz, 10_000);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    // ── Scanner ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn scanner_start_stop_transitions() {
+        let (path, iq_tx, shared) = make_signal_path();
+        // Add a second bookmark so the scanner has something to work with.
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            BookmarkCmd::Add("Test Station".to_string()),
+        )
+        .await;
+        // Start scanner.
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            ScanCmd::Start(String::new()),
+        )
+        .await;
+        assert!(shared.read().scanner.scan_running, "scanner should be running after Start");
+        // Stop scanner.
+        tick(&path.cmd_tx, &iq_tx, ScanCmd::Stop).await;
+        assert!(!shared.read().scanner.scan_running, "scanner should stop after Stop");
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn scanner_set_dwell_updates_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, ScanCmd::SetDwell(5.0)).await;
+        let dwell = shared.read().scanner.scan_dwell_secs;
+        assert!((dwell - 5.0).abs() < 1e-6, "dwell should be 5.0 s");
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn scanner_set_dwell_clamps_minimum() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, ScanCmd::SetDwell(0.1)).await;
+        let dwell = shared.read().scanner.scan_dwell_secs;
+        assert!(dwell >= 0.5, "dwell must be clamped to minimum 0.5 s");
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn scanner_start_with_no_matching_bookmarks_stops_immediately() {
+        let (path, iq_tx, shared) = make_signal_path();
+        // Only default bookmark (BBC R4, category ""). Start with a category
+        // filter that matches nothing.
+        tick(
+            &path.cmd_tx,
+            &iq_tx,
+            ScanCmd::Start("NONEXISTENT_CATEGORY_XYZ".to_string()),
+        )
+        .await;
+        // The scanner code detects no matching bookmarks and stops immediately.
+        assert!(
+            !shared.read().scanner.scan_running,
+            "scanner should not be running when no bookmarks match the category filter"
+        );
         let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
     }
 }

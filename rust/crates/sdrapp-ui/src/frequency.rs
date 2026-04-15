@@ -10,6 +10,7 @@ use egui::{Color32, FontId, Pos2, Response, Sense, Ui, Vec2};
 
 const FREQ_COLOR: Color32 = Color32::from_rgb(180, 230, 255);
 const FREQ_BG: Color32 = Color32::from_rgb(20, 28, 38);
+const FREQ_BG_CLAMPED: Color32 = Color32::from_rgb(60, 20, 20);
 
 /// Step sizes per scroll tick for each digit group.
 #[derive(Debug, Clone, Copy)]
@@ -37,6 +38,8 @@ pub struct FrequencyWidget {
     pub frequency_hz: u64,
     /// Highlight color for the active step.
     pub step_hz: i64,
+    /// Counts down frames after a clamp-at-minimum event for a brief red tint.
+    clamped_ticks: u8,
 }
 
 impl FrequencyWidget {
@@ -44,6 +47,7 @@ impl FrequencyWidget {
         Self {
             frequency_hz,
             step_hz: TuneStep::default_for_scroll(),
+            clamped_ticks: 0,
         }
     }
 
@@ -58,27 +62,42 @@ impl FrequencyWidget {
 
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
+        // Handle scroll to tune
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+        let new_freq = if scroll_delta.abs() > 0.5 {
+            let ticks = scroll_delta.signum() as i64;
+            let delta = ticks * self.step_hz;
+            let raw = self.frequency_hz as i64 + delta;
+            let clamped = raw.max(1) as u64;
+            if raw < 1 {
+                self.clamped_ticks = 45; // ~¾ s at 60 fps
+            }
+            self.frequency_hz = clamped;
+            Some(clamped)
+        } else {
+            None
+        };
+
+        if self.clamped_ticks > 0 {
+            self.clamped_ticks -= 1;
+            ui.ctx().request_repaint();
+        }
+
+        let bg = if self.clamped_ticks > 0 {
+            FREQ_BG_CLAMPED
+        } else {
+            FREQ_BG
+        };
+
         if ui.is_rect_visible(rect) {
             let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 4.0, FREQ_BG);
+            painter.rect_filled(rect, 4.0, bg);
             painter.galley(
                 Pos2::new(rect.left() + 8.0, rect.top() + 4.0),
                 galley,
                 FREQ_COLOR,
             );
         }
-
-        // Handle scroll to tune
-        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-        let new_freq = if scroll_delta.abs() > 0.5 {
-            let ticks = scroll_delta.signum() as i64;
-            let delta = ticks * self.step_hz;
-            let new = (self.frequency_hz as i64 + delta).max(1) as u64;
-            self.frequency_hz = new;
-            Some(new)
-        } else {
-            None
-        };
 
         (response, new_freq)
     }

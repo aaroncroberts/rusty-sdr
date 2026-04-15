@@ -19,7 +19,12 @@ use num_complex::Complex;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::{block::Block, error::SourceError, sample::IqSample, source::{Source, SourceCapabilities}};
+use crate::{
+    block::Block,
+    error::SourceError,
+    sample::IqSample,
+    source::{Source, SourceCapabilities},
+};
 
 /// IQ samples per broadcast batch — matches the SDRplay source's batch size.
 const BATCH_SIZE: usize = 1024;
@@ -73,8 +78,7 @@ impl Block for TestSignalSource {
         let sr = self.sample_rate_sps as f32;
 
         // Duration of one batch in real time — used to pace output to real-time rate.
-        let batch_duration =
-            std::time::Duration::from_secs_f64(BATCH_SIZE as f64 / sr as f64);
+        let batch_duration = std::time::Duration::from_secs_f64(BATCH_SIZE as f64 / sr as f64);
 
         tokio::spawn(async move {
             let tau = 2.0 * std::f32::consts::PI;
@@ -166,13 +170,10 @@ mod tests {
         let mut rx = src.subscribe();
         let _handle = src.start();
 
-        let batch = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            rx.recv(),
-        )
-        .await
-        .expect("timeout waiting for first batch")
-        .expect("recv error");
+        let batch = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("timeout waiting for first batch")
+            .expect("recv error");
 
         assert_eq!(batch.len(), BATCH_SIZE, "batch size mismatch");
 

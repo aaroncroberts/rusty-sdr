@@ -48,7 +48,10 @@ pub struct RigctlConfig {
 
 impl Default for RigctlConfig {
     fn default() -> Self {
-        Self { enabled: false, port: 4532 }
+        Self {
+            enabled: false,
+            port: 4532,
+        }
     }
 }
 
@@ -215,7 +218,12 @@ pub struct BookmarkConfig {
 
 impl BookmarkConfig {
     pub fn new(name: impl Into<String>, freq_hz: u64, mode: impl Into<String>) -> Self {
-        Self { name: name.into(), freq_hz, mode: mode.into(), category: String::new() }
+        Self {
+            name: name.into(),
+            freq_hz,
+            mode: mode.into(),
+            category: String::new(),
+        }
     }
 }
 
@@ -227,9 +235,7 @@ impl Default for AppConfig {
             active_sink: ActiveSink::default(),
             ui: UiConfig::default(),
             source: SourceConfig::default(),
-            bookmarks: vec![
-                BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm"),
-            ],
+            bookmarks: vec![BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm")],
             rigctl: RigctlConfig::default(),
             midi_learn: std::collections::HashMap::new(),
         }
@@ -242,10 +248,23 @@ impl AppConfig {
         let path = config_path();
         match std::fs::read_to_string(&path) {
             Ok(json) => serde_json::from_str(&json).unwrap_or_else(|e| {
-                tracing::warn!(path = %path.display(), error = %e, "config parse failed, using defaults");
+                tracing::warn!(
+                    path = %path.display(),
+                    line = e.line(),
+                    column = e.column(),
+                    error = %e,
+                    "config JSON parse failed — using defaults"
+                );
                 Self::default()
             }),
-            Err(_) => Self::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(path = %path.display(), "config file not found — using defaults");
+                Self::default()
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "config read failed — using defaults");
+                Self::default()
+            }
         }
     }
 
@@ -262,6 +281,8 @@ impl AppConfig {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&path, json) {
                     tracing::error!(path = %path.display(), error = %e, "failed to write config");
+                } else {
+                    tracing::debug!(path = %path.display(), "config saved");
                 }
             }
             Err(e) => tracing::error!(error = %e, "failed to serialize config"),

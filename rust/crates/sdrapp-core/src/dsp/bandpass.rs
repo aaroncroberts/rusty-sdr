@@ -140,7 +140,10 @@ mod tests {
         // After settling, RMS should be close to 1/√2 (passband gain ≈ 0 dB)
         let rms: f32 = buf[2400..].iter().map(|&x| x * x).sum::<f32>() / 2400.0;
         let rms = rms.sqrt();
-        assert!(rms > 0.6, "1 kHz should pass through voice bandpass (rms={rms:.3})");
+        assert!(
+            rms > 0.6,
+            "1 kHz should pass through voice bandpass (rms={rms:.3})"
+        );
     }
 
     #[test]

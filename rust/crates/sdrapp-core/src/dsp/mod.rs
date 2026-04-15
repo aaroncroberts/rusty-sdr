@@ -18,12 +18,12 @@ pub mod stereo_fm;
 pub mod volume;
 
 pub use bandpass::AudioBandpass;
-pub use resampler::RationalResampler;
 pub use ctcss::CtcssDetector;
 pub use demod::{AmDemodulator, CwDemodulator, FmDemodulator, SsbDemodulator, SsbMode};
 pub use fft::{FftProcessor, FftWindow};
 pub use packer::Packer;
 pub use rds::RdsDecoder;
+pub use resampler::RationalResampler;
 pub use squelch::Squelch;
 pub use stereo_fm::StereoFmDecoder;
 pub use volume::Volume;

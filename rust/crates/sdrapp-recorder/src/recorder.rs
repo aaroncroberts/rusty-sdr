@@ -1,15 +1,15 @@
 #![forbid(unsafe_code)]
 
+use parking_lot::RwLock;
 use std::io::{BufWriter, Write};
 use std::sync::Arc;
-use parking_lot::RwLock;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use sdrapp_core::sample::{IqSample, StereoFrame};
-use sdrapp_core::signal_path::SharedState;
 pub use sdrapp_core::signal_path::RecordingMode;
+use sdrapp_core::signal_path::SharedState;
 
 use crate::config::RecorderConfig;
 
@@ -186,11 +186,17 @@ async fn handle_command(
     shared: &Arc<RwLock<SharedState>>,
 ) {
     match cmd {
-        RecorderCommand::Start { freq_hz, iq_sample_rate, mode } => {
+        RecorderCommand::Start {
+            freq_hz,
+            iq_sample_rate,
+            mode,
+        } => {
             if wav_writer.is_some() || iq_writer.is_some() {
                 tracing::warn!("recording already in progress — ignoring Start");
                 return;
             }
+            // Clear any previous error before attempting to open new files.
+            shared.write().recorder_error = None;
             let ts = unix_now_secs();
             let ts_str = format_unix_as_datetime(ts);
             let freq_mhz = freq_hz as f64 / 1_000_000.0;
@@ -212,7 +218,9 @@ async fn handle_command(
             }
 
             if matches!(mode, RecordingMode::IqOnly | RecordingMode::Both) {
-                let path = config.output_dir.join(format!("{stem}_{iq_sample_rate}sps.iq"));
+                let path = config
+                    .output_dir
+                    .join(format!("{stem}_{iq_sample_rate}sps.iq"));
                 match open_iq_writer(&path) {
                     Ok(w) => {
                         tracing::info!(path = %path.display(), "IQ recording started");
@@ -232,16 +240,17 @@ async fn handle_command(
             finalize(wav_writer, iq_writer);
         }
 
-        RecorderCommand::Schedule { start_unix_secs, duration_secs, freq_hz, iq_sample_rate, mode } => {
+        RecorderCommand::Schedule {
+            start_unix_secs,
+            duration_secs,
+            freq_hz,
+            iq_sample_rate,
+            mode,
+        } => {
             let now = unix_now_secs();
             let delay_secs = start_unix_secs.saturating_sub(now);
 
-            tracing::info!(
-                delay_secs,
-                duration_secs,
-                freq_hz,
-                "recording scheduled"
-            );
+            tracing::info!(delay_secs, duration_secs, freq_hz, "recording scheduled");
 
             // Spawn a task that fires Start after the delay, then Stop after duration.
             let cmd_tx2 = cmd_tx.clone();
@@ -249,7 +258,13 @@ async fn handle_command(
                 if delay_secs > 0 {
                     tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
                 }
-                let _ = cmd_tx2.send(RecorderCommand::Start { freq_hz, iq_sample_rate, mode }).await;
+                let _ = cmd_tx2
+                    .send(RecorderCommand::Start {
+                        freq_hz,
+                        iq_sample_rate,
+                        mode,
+                    })
+                    .await;
                 tokio::time::sleep(std::time::Duration::from_secs(duration_secs as u64)).await;
                 let _ = cmd_tx2.send(RecorderCommand::Stop).await;
             });
@@ -343,7 +358,144 @@ fn recording_stem(freq_hz: u64, unix_secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sdrapp_core::signal_path::SharedState;
     use std::io::Cursor;
+    use std::path::PathBuf;
+
+    fn make_shared() -> Arc<RwLock<SharedState>> {
+        Arc::new(RwLock::new(SharedState::new()))
+    }
+
+    fn make_recorder(output_dir: PathBuf) -> Recorder {
+        let config = RecorderConfig {
+            output_dir,
+            sample_rate: 48_000,
+        };
+        Recorder::new(config)
+    }
+
+    // ── Integration tests ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn concurrent_start_is_ignored_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rec = make_recorder(dir.path().to_path_buf());
+        let shared = make_shared();
+        let cmd_tx = rec.cmd_tx.clone();
+        rec.start(Arc::clone(&shared));
+        tokio::task::yield_now().await;
+
+        // First Start should succeed.
+        cmd_tx
+            .send(RecorderCommand::Start {
+                freq_hz: 98_100_000,
+                iq_sample_rate: 2_000_000,
+                mode: RecordingMode::AudioOnly,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(shared.read().recorder_error.is_none(), "first Start should succeed");
+
+        // Second Start while already recording should be silently ignored (no error set).
+        cmd_tx
+            .send(RecorderCommand::Start {
+                freq_hz: 101_700_000,
+                iq_sample_rate: 2_000_000,
+                mode: RecordingMode::AudioOnly,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            shared.read().recorder_error.is_none(),
+            "second Start while recording should be ignored, not set an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_clears_previous_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rec = make_recorder(dir.path().to_path_buf());
+        let shared = make_shared();
+        // Seed an error in SharedState.
+        shared.write().recorder_error = Some("previous error".to_string());
+        let cmd_tx = rec.cmd_tx.clone();
+        rec.start(Arc::clone(&shared));
+        tokio::task::yield_now().await;
+
+        // Start recording — the recorder should clear the error before opening files.
+        cmd_tx
+            .send(RecorderCommand::Start {
+                freq_hz: 98_100_000,
+                iq_sample_rate: 2_000_000,
+                mode: RecordingMode::AudioOnly,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            shared.read().recorder_error.is_none(),
+            "Start should clear the previous recorder_error"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_scheduled_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rec = make_recorder(dir.path().to_path_buf());
+        let shared = make_shared();
+        let cmd_tx = rec.cmd_tx.clone();
+        rec.start(Arc::clone(&shared));
+        tokio::task::yield_now().await;
+
+        // Schedule a recording 3600 seconds in the future (it will never fire in tests).
+        let future_start = unix_now_secs() + 3600;
+        cmd_tx
+            .send(RecorderCommand::Schedule {
+                start_unix_secs: future_start,
+                duration_secs: 60,
+                freq_hz: 98_100_000,
+                iq_sample_rate: 2_000_000,
+                mode: RecordingMode::AudioOnly,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        // Stop before it fires — should not panic or produce an error.
+        cmd_tx.send(RecorderCommand::Stop).await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            shared.read().recorder_error.is_none(),
+            "Stop on a pending scheduled recording should not set an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_on_bad_path_sets_recorder_error() {
+        // Use a path that cannot be created (root-owned directory or nonexistent deep path).
+        let impossible_dir = PathBuf::from("/nonexistent_sdrapp_test_dir_12345/subdir");
+        let mut rec = make_recorder(impossible_dir);
+        let shared = make_shared();
+        let cmd_tx = rec.cmd_tx.clone();
+        rec.start(Arc::clone(&shared));
+        tokio::task::yield_now().await;
+
+        cmd_tx
+            .send(RecorderCommand::Start {
+                freq_hz: 98_100_000,
+                iq_sample_rate: 2_000_000,
+                mode: RecordingMode::AudioOnly,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            shared.read().recorder_error.is_some(),
+            "Start with an unwritable path must set recorder_error"
+        );
+    }
 
     #[test]
     fn wav_spec_is_stereo_f32() {
@@ -389,7 +541,10 @@ mod tests {
     #[test]
     fn recording_stem_embeds_freq_and_time() {
         let stem = recording_stem(93_500_000, 0);
-        assert!(stem.starts_with("sdrapp_93.500MHz_19700101_000000"), "stem: {stem}");
+        assert!(
+            stem.starts_with("sdrapp_93.500MHz_19700101_000000"),
+            "stem: {stem}"
+        );
     }
 
     #[test]

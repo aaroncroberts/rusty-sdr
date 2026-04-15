@@ -157,7 +157,8 @@ impl AmDemodulator {
             self.prev_env = env;
             self.dc_y = dc_filtered;
 
-            self.resampler.process(dc_filtered, |v| out.push(v.clamp(-1.0, 1.0)));
+            self.resampler
+                .process(dc_filtered, |v| out.push(v.clamp(-1.0, 1.0)));
         }
 
         out
@@ -197,7 +198,15 @@ impl DspBiquad {
         let a0 = 1.0 + alpha;
         let a1 = -2.0 * cos_w0;
         let a2 = 1.0 - alpha;
-        Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0, z1: 0.0, z2: 0.0 }
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
     }
 
     fn highpass(cutoff_hz: f32, fs_hz: f32) -> Self {
@@ -211,7 +220,15 @@ impl DspBiquad {
         let a0 = 1.0 + alpha;
         let a1 = -2.0 * cos_w0;
         let a2 = 1.0 - alpha;
-        Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0, z1: 0.0, z2: 0.0 }
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
     }
 
     #[inline]
@@ -468,9 +485,7 @@ mod tests {
     fn silence_produces_near_zero_audio() {
         let mut demod = FmDemodulator::wbfm(2_000_000);
         // DC signal at 0 Hz deviation should produce ~0 after de-emphasis
-        let samples: Vec<Complex<f32>> = (0..2048)
-            .map(|_| Complex::new(1.0, 0.0))
-            .collect();
+        let samples: Vec<Complex<f32>> = (0..2048).map(|_| Complex::new(1.0, 0.0)).collect();
         let out = demod.process(&samples);
         for &s in &out {
             assert_abs_diff_eq!(s, 0.0, epsilon = 0.05);
@@ -495,7 +510,10 @@ mod tests {
         let out = demod.process(&samples);
         // Should have non-trivial values (not all zero)
         let rms = (out.iter().map(|&v| v * v).sum::<f32>() / out.len() as f32).sqrt();
-        assert!(rms > 0.001, "FM demod output should be non-trivial, rms={rms}");
+        assert!(
+            rms > 0.001,
+            "FM demod output should be non-trivial, rms={rms}"
+        );
     }
 
     #[test]
@@ -554,7 +572,10 @@ mod tests {
             .collect();
         let out = demod.process(&samples);
         let rms = rms_second_half(&out);
-        assert!(rms < 0.15, "USB should reject -1 kHz LSB tone (rms={rms:.4})");
+        assert!(
+            rms < 0.15,
+            "USB should reject -1 kHz LSB tone (rms={rms:.4})"
+        );
     }
 
     /// LSB should pass a -1 kHz baseband tone (below-carrier content).
@@ -579,7 +600,10 @@ mod tests {
         let samples = iq_tone(1_000.0, sr as f32, 24_000);
         let out = demod.process(&samples);
         let rms = rms_second_half(&out);
-        assert!(rms < 0.15, "LSB should reject +1 kHz USB tone (rms={rms:.4})");
+        assert!(
+            rms < 0.15,
+            "LSB should reject +1 kHz USB tone (rms={rms:.4})"
+        );
     }
 
     /// DSB should produce audio for a real (both-sideband) cosine input.
@@ -596,7 +620,10 @@ mod tests {
             .collect();
         let out = demod.process(&samples);
         let rms = rms_second_half(&out);
-        assert!(rms > 0.1, "DSB should produce audio for real 1 kHz input (rms={rms:.4})");
+        assert!(
+            rms > 0.1,
+            "DSB should produce audio for real 1 kHz input (rms={rms:.4})"
+        );
     }
 
     /// Output sample count follows the rate-conversion contract.
@@ -648,6 +675,9 @@ mod tests {
             .collect();
         let out = demod.process(&samples);
         let rms = rms_second_half(&out);
-        assert!(rms < 0.15, "CW bandpass should reject 2 kHz voice (rms={rms:.4})");
+        assert!(
+            rms < 0.15,
+            "CW bandpass should reject 2 kHz voice (rms={rms:.4})"
+        );
     }
 }

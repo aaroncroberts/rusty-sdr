@@ -23,7 +23,13 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use sdrapp_core::{block::Block, error::SourceError, sample::IqSample, signal_path::HardwareCommand, source::{Source, SourceCapabilities}};
+use sdrapp_core::{
+    block::Block,
+    error::SourceError,
+    sample::IqSample,
+    signal_path::HardwareCommand,
+    source::{Source, SourceCapabilities},
+};
 
 use crate::config::{Antenna, RspdxConfig};
 
@@ -104,8 +110,7 @@ impl RspdxSource {
         // Enumerate connected devices.
         let mut devices = [sys::sdrplay_api_DeviceT::default(); 16];
         let mut num: u32 = 0;
-        let enum_err =
-            unsafe { sys::sdrplay_api_GetDevices(devices.as_mut_ptr(), &mut num, 16) };
+        let enum_err = unsafe { sys::sdrplay_api_GetDevices(devices.as_mut_ptr(), &mut num, 16) };
 
         // Always close the API, regardless of enumeration result.
         unsafe { sys::sdrplay_api_Close() };
@@ -147,7 +152,9 @@ impl Block for RspdxSource {
         let running = Arc::clone(&self.running);
         let freq_atomic = Arc::clone(&self.frequency_hz);
         // Take the hardware command receiver out of self — it is consumed by the thread.
-        let hw_cmd_rx = self.hw_cmd_rx.take()
+        let hw_cmd_rx = self
+            .hw_cmd_rx
+            .take()
             .expect("RspdxSource::start() called twice");
 
         // Bridge channel: callback thread → tokio task
@@ -159,7 +166,9 @@ impl Block for RspdxSource {
         std::thread::Builder::new()
             .name("sdrapp-sdrplay".into())
             .spawn(move || {
-                if let Err(e) = run_sdrplay_thread(config, iq_tx_clone, running, freq_atomic_clone, hw_cmd_rx) {
+                if let Err(e) =
+                    run_sdrplay_thread(config, iq_tx_clone, running, freq_atomic_clone, hw_cmd_rx)
+                {
                     tracing::error!("SDRplay thread error: {e}");
                 }
             })
@@ -389,9 +398,15 @@ fn run_sdrplay_thread(
         if init_err == sys::sdrplay_api_ErrT_sdrplay_api_Success {
             break;
         }
-        tracing::warn!(attempt, err = init_err, "sdrplay_api_Init failed, retrying in 1s");
+        tracing::warn!(
+            attempt,
+            err = init_err,
+            "sdrplay_api_Init failed, retrying in 1s"
+        );
         // Try to uninit in case a previous session left the device initialised
-        unsafe { sys::sdrplay_api_Uninit(dev_handle); }
+        unsafe {
+            sys::sdrplay_api_Uninit(dev_handle);
+        }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     if init_err != sys::sdrplay_api_ErrT_sdrplay_api_Success {
@@ -452,9 +467,11 @@ fn run_sdrplay_thread(
                     }
                     HardwareCommand::SetAgcEnabled(en) => {
                         if en {
-                            ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_CTRL_EN;
+                            ch.ctrlParams.agc.enable =
+                                sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_CTRL_EN;
                         } else {
-                            ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_DISABLE;
+                            ch.ctrlParams.agc.enable =
+                                sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_DISABLE;
                         }
                         (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Agc,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)

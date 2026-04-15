@@ -1,9 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::sync::{
-    atomic::AtomicU64,
-    Arc,
-};
+use std::sync::{atomic::AtomicU64, Arc};
 use tokio::sync::broadcast;
 
 use crate::{block::Block, error::SourceError, sample::IqSample};

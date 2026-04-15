@@ -57,23 +57,29 @@ fn main() -> anyhow::Result<()> {
         };
         s.fft.fft_magnitudes = vec![-120.0; config.ui.fft_size];
         // Load persisted MIDI Learn bindings (knob_id → CC becomes CC → knob_id)
-        s.midi_cc_to_knob = config.midi_learn.iter()
+        s.midi_cc_to_knob = config
+            .midi_learn
+            .iter()
             .map(|(knob_id, &cc)| (cc, knob_id.clone()))
             .collect();
         // Load persisted bookmarks
-        s.bookmarks = config.bookmarks.iter().map(|b| {
-            use sdrapp_core::signal_path::{Bookmark, DemodMode};
-            let mode = match b.mode.as_str() {
-                "Nfm" => DemodMode::Nfm,
-                "Am" => DemodMode::Am,
-                "Usb" => DemodMode::Usb,
-                "Lsb" => DemodMode::Lsb,
-                "Dsb" => DemodMode::Dsb,
-                "Cw" => DemodMode::Cw,
-                _ => DemodMode::Wbfm,
-            };
-            Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
-        }).collect();
+        s.bookmarks = config
+            .bookmarks
+            .iter()
+            .map(|b| {
+                use sdrapp_core::signal_path::{Bookmark, DemodMode};
+                let mode = match b.mode.as_str() {
+                    "Nfm" => DemodMode::Nfm,
+                    "Am" => DemodMode::Am,
+                    "Usb" => DemodMode::Usb,
+                    "Lsb" => DemodMode::Lsb,
+                    "Dsb" => DemodMode::Dsb,
+                    "Cw" => DemodMode::Cw,
+                    _ => DemodMode::Wbfm,
+                };
+                Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
+            })
+            .collect();
     }
 
     // Signal path command channel is created inside SignalPath::start() and
@@ -124,75 +130,82 @@ fn main() -> anyhow::Result<()> {
     let hotplug_source: std::sync::Arc<parking_lot::Mutex<Option<sdrapp_sdrplay::RspdxSource>>> =
         std::sync::Arc::new(parking_lot::Mutex::new(None));
 
-    let (iq_rx, iq_recorder_rx, freq_atomic, hardware_cmd_tx) = if sdrapp_sdrplay::RspdxSource::is_device_available() {
-        tracing::info!("SDRplay device found — starting in hardware mode");
-        shared.write().source_name = Some("SDRplay RSPdx-R2".to_string());
+    let (iq_rx, iq_recorder_rx, freq_atomic, hardware_cmd_tx) =
+        if sdrapp_sdrplay::RspdxSource::is_device_available() {
+            tracing::info!("SDRplay device found — starting in hardware mode");
+            shared.write().source_name = Some("SDRplay RSPdx-R2".to_string());
 
-        {
-            let mut s = shared.write();
-            s.hardware.lna_state = config.source.lna_state;
-            s.hardware.if_gain_dbfs = config.source.if_gain_dbfs;
-            s.hardware.agc_enabled = config.source.agc_enabled;
-            s.hardware.agc_setpoint_dbfs = config.source.agc_setpoint_dbfs;
-            s.hardware.bias_t_enabled = config.source.bias_t_enabled;
-            s.hardware.hdr_mode = config.source.hdr_mode;
-            s.hardware.am_notch_enabled = config.source.am_notch_enabled;
-            s.hardware.fm_notch_enabled = config.source.fm_notch_enabled;
-            s.hardware.antenna_port = match config.source.antenna.as_str() { "B" => 1, "C" => 2, _ => 0 };
-        }
-        let mut src = sdrapp_sdrplay::RspdxSource::new(sdrapp_sdrplay::RspdxConfig {
-            frequency_hz: config.ui.frequency_hz,
-            sample_rate_sps: config.source.sample_rate_sps,
-            antenna,
-            agc_enabled: config.source.agc_enabled,
-            lna_state: config.source.lna_state,
-            if_gain_dbfs: config.source.if_gain_dbfs,
-            agc_setpoint_dbfs: config.source.agc_setpoint_dbfs,
-            bias_t_enabled: config.source.bias_t_enabled,
-            hdr_mode: config.source.hdr_mode,
-            am_notch_enabled: config.source.am_notch_enabled,
-            fm_notch_enabled: config.source.fm_notch_enabled,
-            ..Default::default()
-        });
-        let rx = src.subscribe();
-        let iq_rec_rx = src.subscribe();
-        let fa = Source::frequency_atomic(&src);
-        let hw_tx = src.hardware_cmd_tx();
-        drop(src.start());
-        _sdrplay_source = Some(src);
-        (rx, iq_rec_rx, fa, Some(hw_tx))
-    } else if sdrapp_rtlsdr::RtlSdrSource::is_device_available() {
-        tracing::info!("RTL-SDR device found — starting in RTL-SDR mode");
-        let rtl_cfg = sdrapp_rtlsdr::RtlSdrConfig {
-            frequency_hz: config.ui.frequency_hz,
-            sample_rate_sps: config.source.sample_rate_sps.min(2_048_000),
-            ..Default::default()
+            {
+                let mut s = shared.write();
+                s.hardware.lna_state = config.source.lna_state;
+                s.hardware.if_gain_dbfs = config.source.if_gain_dbfs;
+                s.hardware.agc_enabled = config.source.agc_enabled;
+                s.hardware.agc_setpoint_dbfs = config.source.agc_setpoint_dbfs;
+                s.hardware.bias_t_enabled = config.source.bias_t_enabled;
+                s.hardware.hdr_mode = config.source.hdr_mode;
+                s.hardware.am_notch_enabled = config.source.am_notch_enabled;
+                s.hardware.fm_notch_enabled = config.source.fm_notch_enabled;
+                s.hardware.antenna_port = match config.source.antenna.as_str() {
+                    "B" => 1,
+                    "C" => 2,
+                    _ => 0,
+                };
+            }
+            let mut src = sdrapp_sdrplay::RspdxSource::new(sdrapp_sdrplay::RspdxConfig {
+                frequency_hz: config.ui.frequency_hz,
+                sample_rate_sps: config.source.sample_rate_sps,
+                antenna,
+                agc_enabled: config.source.agc_enabled,
+                lna_state: config.source.lna_state,
+                if_gain_dbfs: config.source.if_gain_dbfs,
+                agc_setpoint_dbfs: config.source.agc_setpoint_dbfs,
+                bias_t_enabled: config.source.bias_t_enabled,
+                hdr_mode: config.source.hdr_mode,
+                am_notch_enabled: config.source.am_notch_enabled,
+                fm_notch_enabled: config.source.fm_notch_enabled,
+                ..Default::default()
+            });
+            let rx = src.subscribe();
+            let iq_rec_rx = src.subscribe();
+            let fa = Source::frequency_atomic(&src);
+            let hw_tx = src.hardware_cmd_tx();
+            drop(src.start());
+            _sdrplay_source = Some(src);
+            (rx, iq_rec_rx, fa, Some(hw_tx))
+        } else if sdrapp_rtlsdr::RtlSdrSource::is_device_available() {
+            tracing::info!("RTL-SDR device found — starting in RTL-SDR mode");
+            let rtl_cfg = sdrapp_rtlsdr::RtlSdrConfig {
+                frequency_hz: config.ui.frequency_hz,
+                sample_rate_sps: config.source.sample_rate_sps.min(2_048_000),
+                ..Default::default()
+            };
+            let caps_name = "RTL-SDR (device 0)".to_string();
+            let mut src = sdrapp_rtlsdr::RtlSdrSource::open(rtl_cfg)
+                .expect("device available but open failed");
+            shared.write().source_name = Some(caps_name);
+            let rx = src.subscribe();
+            let iq_rec_rx = src.subscribe();
+            let fa = Source::frequency_atomic(&src);
+            drop(src.start());
+            _rtlsdr_source = Some(src);
+            (rx, iq_rec_rx, fa, None)
+        } else {
+            tracing::warn!(
+                "no hardware device found — starting in demo mode (synthetic test signal)"
+            );
+            shared.write().source_name = Some("Demo Mode".to_string());
+
+            let mut src = sdrapp_core::test_source::TestSignalSource::new(
+                config.ui.frequency_hz,
+                config.source.sample_rate_sps,
+            );
+            let rx = src.subscribe();
+            let iq_rec_rx = src.subscribe();
+            let fa = Source::frequency_atomic(&src);
+            drop(src.start());
+            _demo_source = Some(src);
+            (rx, iq_rec_rx, fa, None)
         };
-        let caps_name = format!("RTL-SDR (device 0)");
-        let mut src = sdrapp_rtlsdr::RtlSdrSource::open(rtl_cfg)
-            .expect("device available but open failed");
-        shared.write().source_name = Some(caps_name);
-        let rx = src.subscribe();
-        let iq_rec_rx = src.subscribe();
-        let fa = Source::frequency_atomic(&src);
-        drop(src.start());
-        _rtlsdr_source = Some(src);
-        (rx, iq_rec_rx, fa, None)
-    } else {
-        tracing::warn!("no hardware device found — starting in demo mode (synthetic test signal)");
-        shared.write().source_name = Some("Demo Mode".to_string());
-
-        let mut src = sdrapp_core::test_source::TestSignalSource::new(
-            config.ui.frequency_hz,
-            config.source.sample_rate_sps,
-        );
-        let rx = src.subscribe();
-        let iq_rec_rx = src.subscribe();
-        let fa = Source::frequency_atomic(&src);
-        drop(src.start());
-        _demo_source = Some(src);
-        (rx, iq_rec_rx, fa, None)
-    };
 
     // ── Recorder ─────────────────────────────────────────────────────────────
     let mut recorder = sdrapp_recorder::Recorder::new(sdrapp_recorder::RecorderConfig {
@@ -249,9 +262,10 @@ fn main() -> anyhow::Result<()> {
                 if shared_probe.read().source_name.as_deref() != Some("Demo Mode") {
                     break;
                 }
-                let available = tokio::task::spawn_blocking(
-                    sdrapp_sdrplay::RspdxSource::is_device_available
-                ).await.unwrap_or(false);
+                let available =
+                    tokio::task::spawn_blocking(sdrapp_sdrplay::RspdxSource::is_device_available)
+                        .await
+                        .unwrap_or(false);
 
                 if available {
                     tracing::info!("hardware device detected while running — hot-swapping source");
@@ -267,7 +281,7 @@ fn main() -> anyhow::Result<()> {
                         sdrapp_core::signal_path::SignalPathCommand::ReconnectSource {
                             iq_rx: new_rx,
                             hardware_cmd_tx: Some(new_hw_tx),
-                        }
+                        },
                     );
                     tracing::info!("hot-plug complete — send Start to begin listening");
                     break;
@@ -338,21 +352,34 @@ fn main() -> anyhow::Result<()> {
     let midi_bindings: Vec<(usize, String, String)> = {
         use sdrapp_midi::{MidiConfig, MidiKeyKind};
         let cfg = MidiConfig::with_nanokontrol2_defaults();
-        cfg.bindings.iter().map(|b| {
-            let key_name = match b.key.kind {
-                MidiKeyKind::ControlChange => format!("CC {}", b.key.number),
-                MidiKeyKind::NoteOn => format!("Note {}", b.key.number),
-            };
-            let action_name = format!("{:?}", b.action);
-            (b.page, key_name, action_name)
-        }).collect()
+        cfg.bindings
+            .iter()
+            .map(|b| {
+                let key_name = match b.key.kind {
+                    MidiKeyKind::ControlChange => format!("CC {}", b.key.number),
+                    MidiKeyKind::NoteOn => format!("Note {}", b.key.number),
+                };
+                let action_name = format!("{:?}", b.action);
+                (b.page, key_name, action_name)
+            })
+            .collect()
     };
 
     let shared_for_app = Arc::clone(&shared);
     eframe::run_native(
         "SDR App",
         native_options,
-        Box::new(move |cc| Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx, recorder_cmd_tx, midi_bindings, auto_start)))),
+        Box::new(move |cc| {
+            Ok(Box::new(SdrApp::new(
+                cc,
+                config,
+                shared_for_app,
+                cmd_tx,
+                recorder_cmd_tx,
+                midi_bindings,
+                auto_start,
+            )))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 

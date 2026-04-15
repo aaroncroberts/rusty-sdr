@@ -5,12 +5,8 @@ use egui::{Color32, RichText, Stroke, Ui, Vec2};
 use sdrapp_core::signal_path::{DisplayCmd, ReceiverCmd, RecordingMode, SignalPathCommand};
 use sdrapp_recorder::RecorderCommand;
 
-use crate::{
-    frequency::FrequencyWidget,
-    knob::KnobWidget,
-    theme,
-};
 use super::super::SdrApp;
+use crate::{frequency::FrequencyWidget, knob::KnobWidget, theme};
 
 /// Band preset: name, center frequency in Hz, span in Hz.
 struct BandPreset {
@@ -68,10 +64,15 @@ impl SdrApp {
         let (vol_learn, vol_cc) = {
             let s = self.shared.read();
             let learn = s.midi_learn_target.as_deref() == Some("volume");
-            let cc = s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "volume").map(|(&c, _)| c);
+            let cc = s
+                .midi_cc_to_knob
+                .iter()
+                .find(|(_, v)| v.as_str() == "volume")
+                .map(|(&c, _)| c);
             (learn, cc)
         };
         let mut vol_learn_req = false;
+        let mut vol_learn_cancel = false;
         let mut vol_clear: Option<u8> = None;
         ui.vertical_centered(|ui| {
             let mut vol = self.config.ui.volume;
@@ -85,11 +86,23 @@ impl SdrApp {
                 unit: "%",
                 midi_cc: vol_cc,
                 learn_active: vol_learn,
-            }.show(ui);
+            }
+            .show(ui);
             resp.context_menu(|ui| {
-                if ui.button("Assign MIDI CC").clicked() { vol_learn_req = true; ui.close_menu(); }
+                if vol_learn {
+                    if ui.button("Cancel MIDI Learn").clicked() {
+                        vol_learn_cancel = true;
+                        ui.close_menu();
+                    }
+                } else if ui.button("Assign MIDI CC").clicked() {
+                    vol_learn_req = true;
+                    ui.close_menu();
+                }
                 if let Some(cc) = vol_cc {
-                    if ui.button(format!("Clear CC {cc} binding")).clicked() { vol_clear = Some(cc); ui.close_menu(); }
+                    if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                        vol_clear = Some(cc);
+                        ui.close_menu();
+                    }
                 }
             });
             if resp.changed() {
@@ -98,8 +111,16 @@ impl SdrApp {
                 self.config_dirty = true;
             }
         });
-        if vol_learn_req { self.shared.write().midi_learn_target = Some("volume".into()); }
-        if let Some(cc) = vol_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
+        if vol_learn_req {
+            self.shared.write().midi_learn_target = Some("volume".into());
+        }
+        if vol_learn_cancel {
+            self.shared.write().midi_learn_target = None;
+        }
+        if let Some(cc) = vol_clear {
+            self.shared.write().midi_cc_to_knob.remove(&cc);
+            self.config_dirty = true;
+        }
 
         // VU meter (stereo bars)
         // Peak level decays each frame; in real wiring this reads from AudioSink
@@ -161,13 +182,23 @@ impl SdrApp {
 
         let (is_recording, rec_mode, center_freq, iq_sr, rec_error) = {
             let s = self.shared.read();
-            (s.is_recording, s.recording_mode, s.center_freq_hz, s.sample_rate_sps, s.recorder_error.clone())
+            (
+                s.is_recording,
+                s.recording_mode,
+                s.center_freq_hz,
+                s.sample_rate_sps,
+                s.recorder_error.clone(),
+            )
         };
 
         // Recording mode selector
         if !is_recording {
             ui.horizontal(|ui| {
-                for mode in [RecordingMode::AudioOnly, RecordingMode::IqOnly, RecordingMode::Both] {
+                for mode in [
+                    RecordingMode::AudioOnly,
+                    RecordingMode::IqOnly,
+                    RecordingMode::Both,
+                ] {
                     let selected = rec_mode == mode;
                     let label = match mode {
                         RecordingMode::AudioOnly => "Audio",
@@ -184,16 +215,29 @@ impl SdrApp {
 
         if is_recording {
             let stop_btn = egui::Button::new(
-                RichText::new("■  Stop Recording").color(theme::DANGER).strong(),
+                RichText::new("■  Stop Recording")
+                    .color(theme::DANGER)
+                    .strong(),
             )
             .fill(Color32::from_rgba_premultiplied(80, 10, 10, 200))
             .stroke(Stroke::new(1.5, theme::DANGER));
 
-            if ui.add_sized(Vec2::new(ui.available_width(), 28.0), stop_btn).clicked() {
-                if self.recorder_cmd_tx.try_send(RecorderCommand::Stop).is_err() {
+            if ui
+                .add_sized(Vec2::new(ui.available_width(), 28.0), stop_btn)
+                .clicked()
+            {
+                if self
+                    .recorder_cmd_tx
+                    .try_send(RecorderCommand::Stop)
+                    .is_err()
+                {
                     tracing::error!("failed to send StopRecording to recorder");
                 }
-                if self.cmd_tx.try_send(SignalPathCommand::StopRecording).is_err() {
+                if self
+                    .cmd_tx
+                    .try_send(SignalPathCommand::StopRecording)
+                    .is_err()
+                {
                     tracing::error!("failed to send StopRecording to signal path");
                 }
             }
@@ -209,16 +253,27 @@ impl SdrApp {
                     .fill(theme::WIDGET_BG)
                     .stroke(Stroke::new(1.0, theme::STATUS_OK));
 
-            if ui.add_sized(Vec2::new(ui.available_width(), 28.0), rec_btn).clicked() {
+            if ui
+                .add_sized(Vec2::new(ui.available_width(), 28.0), rec_btn)
+                .clicked()
+            {
                 tracing::info!(freq_hz = center_freq, ?rec_mode, "starting recording");
-                if self.recorder_cmd_tx.try_send(RecorderCommand::Start {
-                    freq_hz: center_freq,
-                    iq_sample_rate: iq_sr,
-                    mode: rec_mode,
-                }).is_err() {
+                if self
+                    .recorder_cmd_tx
+                    .try_send(RecorderCommand::Start {
+                        freq_hz: center_freq,
+                        iq_sample_rate: iq_sr,
+                        mode: rec_mode,
+                    })
+                    .is_err()
+                {
                     tracing::error!("failed to send StartRecording to recorder");
                 }
-                if self.cmd_tx.try_send(SignalPathCommand::StartRecording).is_err() {
+                if self
+                    .cmd_tx
+                    .try_send(SignalPathCommand::StartRecording)
+                    .is_err()
+                {
                     tracing::error!("failed to send StartRecording to signal path");
                 }
             }
@@ -248,21 +303,30 @@ impl SdrApp {
             ui.horizontal(|ui| {
                 ui.label("Delay (s):");
                 let mut delay = self.sched_delay_secs;
-                if ui.add(egui::DragValue::new(&mut delay).range(0..=3600)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut delay).range(0..=3600))
+                    .changed()
+                {
                     self.sched_delay_secs = delay;
                 }
             });
             ui.horizontal(|ui| {
                 ui.label("Duration (s):");
                 let mut dur = self.sched_duration_secs;
-                if ui.add(egui::DragValue::new(&mut dur).range(1..=86400)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut dur).range(1..=86400))
+                    .changed()
+                {
                     self.sched_duration_secs = dur;
                 }
             });
             let arm_btn = egui::Button::new("⏱  Arm Schedule")
                 .fill(theme::WIDGET_BG)
                 .stroke(Stroke::new(1.0, theme::ACCENT));
-            if ui.add_sized(Vec2::new(ui.available_width(), 24.0), arm_btn).clicked() {
+            if ui
+                .add_sized(Vec2::new(ui.available_width(), 24.0), arm_btn)
+                .clicked()
+            {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -347,10 +411,20 @@ impl SdrApp {
 
         let enabled = self.config.rigctl.enabled;
         ui.horizontal(|ui| {
-            let en_color = if enabled { theme::STATUS_OK } else { theme::TEXT_MUTED };
-            let en_label = RichText::new(if enabled { "ON" } else { "OFF" }).color(en_color).small().strong();
-            if ui.selectable_label(enabled, en_label)
-                .on_hover_text("Enable Hamlib-compatible CAT server (requires app restart to take effect)")
+            let en_color = if enabled {
+                theme::STATUS_OK
+            } else {
+                theme::TEXT_MUTED
+            };
+            let en_label = RichText::new(if enabled { "ON" } else { "OFF" })
+                .color(en_color)
+                .small()
+                .strong();
+            if ui
+                .selectable_label(enabled, en_label)
+                .on_hover_text(
+                    "Enable Hamlib-compatible CAT server (requires app restart to take effect)",
+                )
                 .clicked()
             {
                 self.config.rigctl.enabled = !enabled;
@@ -358,7 +432,11 @@ impl SdrApp {
             }
 
             if enabled {
-                ui.label(RichText::new(format!("port {}", self.config.rigctl.port)).color(theme::TEXT_MUTED).small());
+                ui.label(
+                    RichText::new(format!("port {}", self.config.rigctl.port))
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
             }
         });
 
@@ -366,12 +444,19 @@ impl SdrApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Port").color(theme::TEXT_MUTED).small());
                 let mut port = self.config.rigctl.port as i32;
-                if ui.add(egui::DragValue::new(&mut port).range(1024..=65535)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut port).range(1024..=65535))
+                    .changed()
+                {
                     self.config.rigctl.port = port as u16;
                     self.config_dirty = true;
                 }
             });
-            ui.label(RichText::new("Connect: nc 127.0.0.1 <port>").color(theme::TEXT_DISABLED).small());
+            ui.label(
+                RichText::new("Connect: nc 127.0.0.1 <port>")
+                    .color(theme::TEXT_DISABLED)
+                    .small(),
+            );
         }
     }
 

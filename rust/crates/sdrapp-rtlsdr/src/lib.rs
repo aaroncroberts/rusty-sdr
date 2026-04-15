@@ -187,10 +187,7 @@ impl Source for RtlSdrSource {
 
     fn capabilities(&self) -> SourceCapabilities {
         SourceCapabilities {
-            name: format!(
-                "RTL-SDR (device {})",
-                self.config.device_index
-            ),
+            name: format!("RTL-SDR (device {})", self.config.device_index),
             bias_t: true,
             direct_sampling: true,
             gain_range_db: (0.0, 49.6),

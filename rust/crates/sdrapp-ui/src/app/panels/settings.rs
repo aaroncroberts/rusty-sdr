@@ -1,5 +1,5 @@
-use crate::theme;
 use super::super::SdrApp;
+use crate::theme;
 
 impl SdrApp {
     pub(in crate::app) fn settings_window(&mut self, ctx: &egui::Context) {
@@ -18,7 +18,11 @@ impl SdrApp {
                 ui.spacing_mut().item_spacing.y = 6.0;
 
                 // ── Waterfall colormap ─────────────────────────────────────────
-                ui.label(egui::RichText::new("Waterfall").color(theme::TEXT_MUTED).small());
+                ui.label(
+                    egui::RichText::new("Waterfall")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
                 ui.horizontal(|ui| {
                     ui.label("Colormap");
                     let presets = [
@@ -27,12 +31,13 @@ impl SdrApp {
                         theme::WaterfallColormap::Inferno,
                         theme::WaterfallColormap::Classic,
                     ];
-                    let current: theme::WaterfallColormap = match self.config.ui.waterfall_colormap.as_str() {
-                        "Grayscale" => theme::WaterfallColormap::Grayscale,
-                        "Inferno"   => theme::WaterfallColormap::Inferno,
-                        "Classic"   => theme::WaterfallColormap::Classic,
-                        _           => theme::WaterfallColormap::Thermal,
-                    };
+                    let current: theme::WaterfallColormap =
+                        match self.config.ui.waterfall_colormap.as_str() {
+                            "Grayscale" => theme::WaterfallColormap::Grayscale,
+                            "Inferno" => theme::WaterfallColormap::Inferno,
+                            "Classic" => theme::WaterfallColormap::Classic,
+                            _ => theme::WaterfallColormap::Thermal,
+                        };
                     let mut selected = current;
                     egui::ComboBox::from_id_salt("wf_colormap")
                         .selected_text(selected.label())
@@ -53,7 +58,11 @@ impl SdrApp {
                 ui.add_space(4.0);
 
                 // ── UI scale ──────────────────────────────────────────────────
-                ui.label(egui::RichText::new("Interface").color(theme::TEXT_MUTED).small());
+                ui.label(
+                    egui::RichText::new("Interface")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
                 ui.horizontal(|ui| {
                     ui.label("UI Scale");
                     let mut scale = self.config.ui.font_scale;
@@ -80,7 +89,11 @@ impl SdrApp {
                 ui.add_space(4.0);
 
                 // ── Config file path ──────────────────────────────────────────
-                ui.label(egui::RichText::new("Storage").color(theme::TEXT_MUTED).small());
+                ui.label(
+                    egui::RichText::new("Storage")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
                 let config_path = sdrapp_core::config::config_path();
                 ui.horizontal(|ui| {
                     ui.label("Config file");

@@ -193,7 +193,11 @@ impl RdsDecoder {
                     let symbol = self.chip_sum / OVERSAMPLE as f32;
                     self.chip_sum = 0.0;
                     self.chip_count = 0;
-                    let bit: u8 = if symbol * self.prev_symbol < 0.0 { 1 } else { 0 };
+                    let bit: u8 = if symbol * self.prev_symbol < 0.0 {
+                        1
+                    } else {
+                        0
+                    };
                     self.prev_symbol = symbol;
                     if self.push_bit(bit) {
                         updated = true;
@@ -297,7 +301,8 @@ impl RdsDecoder {
 
         let mut changed = ta_changed;
         if self.ps_received.iter().all(|&r| r) {
-            let name: String = self.ps_chars
+            let name: String = self
+                .ps_chars
                 .iter()
                 .map(|&b| b as char)
                 .collect::<String>()
@@ -342,7 +347,8 @@ impl RdsDecoder {
 
         // Publish when all 16 segments received
         if self.rt_received.iter().all(|&r| r) {
-            let rt: String = self.rt_chars
+            let rt: String = self
+                .rt_chars
                 .iter()
                 .map(|&b| b as char)
                 .collect::<String>()
@@ -454,7 +460,11 @@ mod tests {
         for data in [0x1234u16, 0xABCDu16, 0xFFFFu16, 0x0001u16] {
             let crc = crc10(data);
             let word = ((data as u32) << 10) | crc as u32;
-            assert_eq!(crc10_syndrome(word, 0), 0, "roundtrip failed for {data:#06x}");
+            assert_eq!(
+                crc10_syndrome(word, 0),
+                0,
+                "roundtrip failed for {data:#06x}"
+            );
         }
     }
 
@@ -549,7 +559,11 @@ mod tests {
         let mut dec = make_decoder_at_chip_rate();
         dec.process(&bits_to_samples(&all_bits));
 
-        assert_eq!(dec.data.ps_name.as_deref(), Some("TESTFM"), "PS name mismatch");
+        assert_eq!(
+            dec.data.ps_name.as_deref(),
+            Some("TESTFM"),
+            "PS name mismatch"
+        );
         assert_eq!(dec.data.pty, Some(10), "PTY mismatch");
         assert!(dec.data.tp, "TP should be set");
         assert!(dec.data.ta, "TA should be set");
@@ -610,6 +624,9 @@ mod tests {
         let block_b_new_ab: u16 = (2 << 12) | (1 << 4); // group=2, AB=1, seg=0
         dec.dispatch_group2(block_b_new_ab);
 
-        assert_eq!(dec.rt_chars[0], b' ', "buffer should be cleared on A/B flip");
+        assert_eq!(
+            dec.rt_chars[0], b' ',
+            "buffer should be cleared on A/B flip"
+        );
     }
 }

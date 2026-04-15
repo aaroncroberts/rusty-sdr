@@ -106,9 +106,7 @@ fn hann_window(n: usize) -> Vec<f32> {
 
 fn hamming_window(n: usize) -> Vec<f32> {
     (0..n)
-        .map(|i| {
-            0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos()
-        })
+        .map(|i| 0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos())
         .collect()
 }
 
@@ -208,7 +206,12 @@ mod tests {
 
     #[test]
     fn all_windows_produce_correct_length() {
-        for &wf in &[FftWindow::Rectangular, FftWindow::Hann, FftWindow::Hamming, FftWindow::BlackmanHarris] {
+        for &wf in &[
+            FftWindow::Rectangular,
+            FftWindow::Hann,
+            FftWindow::Hamming,
+            FftWindow::BlackmanHarris,
+        ] {
             let w = make_window(512, wf);
             assert_eq!(w.len(), 512);
         }

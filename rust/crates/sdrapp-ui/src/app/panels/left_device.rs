@@ -4,9 +4,9 @@ use egui::{RichText, Ui};
 
 use sdrapp_core::signal_path::HardwareCommand;
 
-use crate::{knob::KnobWidget, theme};
 use super::super::SdrApp;
 use super::format_frequency;
+use crate::{knob::KnobWidget, theme};
 
 impl SdrApp {
     /// Render the DEVICE SETTINGS section of the left panel.
@@ -39,15 +39,23 @@ impl SdrApp {
                         } else {
                             label.color(theme::TEXT_MUTED)
                         };
-                        if ui.selectable_label(selected, label)
+                        if ui
+                            .selectable_label(selected, label)
                             .on_disabled_hover_text("Stop playback before switching antenna")
-                            .clicked() && !selected
+                            .clicked()
+                            && !selected
                         {
                             self.config.source.antenna = port.into();
                             self.config_dirty = true;
-                            let port_num: u8 = match port { "B" => 1, "C" => 2, _ => 0 };
+                            let port_num: u8 = match port {
+                                "B" => 1,
+                                "C" => 2,
+                                _ => 0,
+                            };
                             tracing::info!(port, "antenna switched");
-                            let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port_num).into());
+                            let _ = self
+                                .cmd_tx
+                                .try_send(HardwareCommand::SetAntenna(port_num).into());
                         }
                     }
                 });
@@ -63,16 +71,16 @@ impl SdrApp {
                 // Lower rates are only valid in LowIF mode (not exposed here).
                 let rates: &[(u32, &str)] = if is_demo {
                     &[
-                        (200_000,  "200k"),
-                        (500_000,  "500k"),
+                        (200_000, "200k"),
+                        (500_000, "500k"),
                         (1_000_000, "1M"),
                         (2_000_000, "2M"),
                     ]
                 } else {
                     &[
-                        (2_000_000,  "2M"),
-                        (6_000_000,  "6M"),
-                        (8_000_000,  "8M"),
+                        (2_000_000, "2M"),
+                        (6_000_000, "6M"),
+                        (8_000_000, "8M"),
                         (10_000_000, "10M"),
                     ]
                 };
@@ -95,7 +103,11 @@ impl SdrApp {
                                 }
                             }
                         });
-                }).response.on_disabled_hover_text("Stop playback before changing the sample rate — the device must reinitialize.");
+                })
+                .response
+                .on_disabled_hover_text(
+                    "Stop playback before changing the sample rate — the device must reinitialize.",
+                );
             });
         });
 
@@ -112,7 +124,9 @@ impl SdrApp {
                 if ui.selectable_label(*agc, label).clicked() {
                     *agc = !*agc;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAgcEnabled(*agc).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(HardwareCommand::SetAgcEnabled(*agc).into());
                 }
             });
         });
@@ -120,7 +134,11 @@ impl SdrApp {
         // LNA state (only when AGC is off)
         // RSPdx-R2: 0–9 normal; 0–3 in HDR mode.
         if !self.config.source.agc_enabled {
-            let lna_max = if self.config.source.hdr_mode { 3_i32 } else { 9_i32 };
+            let lna_max = if self.config.source.hdr_mode {
+                3_i32
+            } else {
+                9_i32
+            };
             // Clamp persisted value in case it exceeds the current mode's limit.
             if self.config.source.lna_state as i32 > lna_max {
                 self.config.source.lna_state = lna_max as u8;
@@ -129,17 +147,29 @@ impl SdrApp {
             // LNA + IF Gain knobs side by side
             let (lna_learn, lna_cc) = {
                 let s = self.shared.read();
-                (s.midi_learn_target.as_deref() == Some("lna"),
-                 s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "lna").map(|(&c, _)| c))
+                (
+                    s.midi_learn_target.as_deref() == Some("lna"),
+                    s.midi_cc_to_knob
+                        .iter()
+                        .find(|(_, v)| v.as_str() == "lna")
+                        .map(|(&c, _)| c),
+                )
             };
             let (ifg_learn, ifg_cc) = {
                 let s = self.shared.read();
-                (s.midi_learn_target.as_deref() == Some("if_gain"),
-                 s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "if_gain").map(|(&c, _)| c))
+                (
+                    s.midi_learn_target.as_deref() == Some("if_gain"),
+                    s.midi_cc_to_knob
+                        .iter()
+                        .find(|(_, v)| v.as_str() == "if_gain")
+                        .map(|(&c, _)| c),
+                )
             };
             let mut lna_learn_req = false;
+            let mut lna_learn_cancel = false;
             let mut lna_clear: Option<u8> = None;
             let mut ifg_learn_req = false;
+            let mut ifg_learn_cancel = false;
             let mut ifg_clear: Option<u8> = None;
             ui.horizontal(|ui| {
                 let knob_w = (ui.available_width() / 2.0).min(60.0);
@@ -156,18 +186,32 @@ impl SdrApp {
                             unit: "",
                             midi_cc: lna_cc,
                             learn_active: lna_learn,
-                        }.show(ui);
+                        }
+                        .show(ui);
                         resp.context_menu(|ui| {
-                            if ui.button("Assign MIDI CC").clicked() { lna_learn_req = true; ui.close_menu(); }
+                            if lna_learn {
+                                if ui.button("Cancel MIDI Learn").clicked() {
+                                    lna_learn_cancel = true;
+                                    ui.close_menu();
+                                }
+                            } else if ui.button("Assign MIDI CC").clicked() {
+                                lna_learn_req = true;
+                                ui.close_menu();
+                            }
                             if let Some(cc) = lna_cc {
-                                if ui.button(format!("Clear CC {cc} binding")).clicked() { lna_clear = Some(cc); ui.close_menu(); }
+                                if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                                    lna_clear = Some(cc);
+                                    ui.close_menu();
+                                }
                             }
                         });
                         if resp.changed() {
                             let new_lna = lna.round() as u8;
                             self.config.source.lna_state = new_lna;
                             self.config_dirty = true;
-                            let _ = self.cmd_tx.try_send(HardwareCommand::SetLnaState(new_lna).into());
+                            let _ = self
+                                .cmd_tx
+                                .try_send(HardwareCommand::SetLnaState(new_lna).into());
                         }
                     });
                 });
@@ -184,36 +228,72 @@ impl SdrApp {
                             unit: "dBFS",
                             midi_cc: ifg_cc,
                             learn_active: ifg_learn,
-                        }.show(ui);
+                        }
+                        .show(ui);
                         resp.context_menu(|ui| {
-                            if ui.button("Assign MIDI CC").clicked() { ifg_learn_req = true; ui.close_menu(); }
+                            if ifg_learn {
+                                if ui.button("Cancel MIDI Learn").clicked() {
+                                    ifg_learn_cancel = true;
+                                    ui.close_menu();
+                                }
+                            } else if ui.button("Assign MIDI CC").clicked() {
+                                ifg_learn_req = true;
+                                ui.close_menu();
+                            }
                             if let Some(cc) = ifg_cc {
-                                if ui.button(format!("Clear CC {cc} binding")).clicked() { ifg_clear = Some(cc); ui.close_menu(); }
+                                if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                                    ifg_clear = Some(cc);
+                                    ui.close_menu();
+                                }
                             }
                         });
                         if resp.changed() {
                             let new_gain = gain.round() as i32;
                             self.config.source.if_gain_dbfs = new_gain;
                             self.config_dirty = true;
-                            let _ = self.cmd_tx.try_send(HardwareCommand::SetIfGain(new_gain).into());
+                            let _ = self
+                                .cmd_tx
+                                .try_send(HardwareCommand::SetIfGain(new_gain).into());
                         }
                     });
                 });
             });
-            if lna_learn_req { self.shared.write().midi_learn_target = Some("lna".into()); }
-            if let Some(cc) = lna_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
-            if ifg_learn_req { self.shared.write().midi_learn_target = Some("if_gain".into()); }
-            if let Some(cc) = ifg_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
+            if lna_learn_req {
+                self.shared.write().midi_learn_target = Some("lna".into());
+            }
+            if lna_learn_cancel {
+                self.shared.write().midi_learn_target = None;
+            }
+            if let Some(cc) = lna_clear {
+                self.shared.write().midi_cc_to_knob.remove(&cc);
+                self.config_dirty = true;
+            }
+            if ifg_learn_req {
+                self.shared.write().midi_learn_target = Some("if_gain".into());
+            }
+            if ifg_learn_cancel {
+                self.shared.write().midi_learn_target = None;
+            }
+            if let Some(cc) = ifg_clear {
+                self.shared.write().midi_cc_to_knob.remove(&cc);
+                self.config_dirty = true;
+            }
         }
 
         // AGC setpoint knob (only when AGC is on)
         if self.config.source.agc_enabled {
             let (sp_learn, sp_cc) = {
                 let s = self.shared.read();
-                (s.midi_learn_target.as_deref() == Some("agc_setpoint"),
-                 s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "agc_setpoint").map(|(&c, _)| c))
+                (
+                    s.midi_learn_target.as_deref() == Some("agc_setpoint"),
+                    s.midi_cc_to_knob
+                        .iter()
+                        .find(|(_, v)| v.as_str() == "agc_setpoint")
+                        .map(|(&c, _)| c),
+                )
             };
             let mut sp_learn_req = false;
+            let mut sp_learn_cancel = false;
             let mut sp_clear: Option<u8> = None;
             ui.vertical_centered(|ui| {
                 let mut sp = self.config.source.agc_setpoint_dbfs as f32;
@@ -227,22 +307,44 @@ impl SdrApp {
                     unit: "dBFS",
                     midi_cc: sp_cc,
                     learn_active: sp_learn,
-                }.show(ui);
+                }
+                .show(ui);
                 resp.context_menu(|ui| {
-                    if ui.button("Assign MIDI CC").clicked() { sp_learn_req = true; ui.close_menu(); }
+                    if sp_learn {
+                        if ui.button("Cancel MIDI Learn").clicked() {
+                            sp_learn_cancel = true;
+                            ui.close_menu();
+                        }
+                    } else if ui.button("Assign MIDI CC").clicked() {
+                        sp_learn_req = true;
+                        ui.close_menu();
+                    }
                     if let Some(cc) = sp_cc {
-                        if ui.button(format!("Clear CC {cc} binding")).clicked() { sp_clear = Some(cc); ui.close_menu(); }
+                        if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                            sp_clear = Some(cc);
+                            ui.close_menu();
+                        }
                     }
                 });
                 if resp.changed() {
                     let new_sp = sp.round() as i32;
                     self.config.source.agc_setpoint_dbfs = new_sp;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAgcSetpoint(new_sp).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(HardwareCommand::SetAgcSetpoint(new_sp).into());
                 }
             });
-            if sp_learn_req { self.shared.write().midi_learn_target = Some("agc_setpoint".into()); }
-            if let Some(cc) = sp_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
+            if sp_learn_req {
+                self.shared.write().midi_learn_target = Some("agc_setpoint".into());
+            }
+            if sp_learn_cancel {
+                self.shared.write().midi_learn_target = None;
+            }
+            if let Some(cc) = sp_clear {
+                self.shared.write().midi_cc_to_knob.remove(&cc);
+                self.config_dirty = true;
+            }
         }
 
         // Hardware-only advanced controls (not shown in demo mode)
@@ -254,14 +356,23 @@ impl SdrApp {
                 // Bias-T
                 let bias_t = self.config.source.bias_t_enabled;
                 let label = RichText::new("Bias-T").small();
-                let label = if bias_t { label.color(theme::ACCENT).strong() } else { label.color(theme::TEXT_MUTED) };
-                if ui.selectable_label(bias_t, label)
-                    .on_hover_text("Enable Bias-T 4.7 V supply on coax connector for active antennas.")
+                let label = if bias_t {
+                    label.color(theme::ACCENT).strong()
+                } else {
+                    label.color(theme::TEXT_MUTED)
+                };
+                if ui
+                    .selectable_label(bias_t, label)
+                    .on_hover_text(
+                        "Enable Bias-T 4.7 V supply on coax connector for active antennas.",
+                    )
                     .clicked()
                 {
                     self.config.source.bias_t_enabled = !bias_t;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetBiasT(!bias_t).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(HardwareCommand::SetBiasT(!bias_t).into());
                 }
 
                 ui.add_space(6.0);
@@ -282,14 +393,20 @@ impl SdrApp {
                 } else {
                     "High Dynamic Range mode — improves ADC performance below 2 MHz."
                 };
-                if ui.add_enabled(!freq_too_high_for_hdr, egui::SelectableLabel::new(hdr, label))
+                if ui
+                    .add_enabled(
+                        !freq_too_high_for_hdr,
+                        egui::SelectableLabel::new(hdr, label),
+                    )
                     .on_hover_text(tip)
                     .on_disabled_hover_text(tip)
                     .clicked()
                 {
                     self.config.source.hdr_mode = !hdr;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetHdrMode(!hdr).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(HardwareCommand::SetHdrMode(!hdr).into());
                 }
             });
 
@@ -330,7 +447,9 @@ impl SdrApp {
                 s.center_freq_hz,
                 s.is_recording,
                 s.rds.ps_name.clone(),
-                s.rds.pty.map(|c| sdrapp_core::dsp::rds::pty_to_str(c).to_string()),
+                s.rds
+                    .pty
+                    .map(|c| sdrapp_core::dsp::rds::pty_to_str(c).to_string()),
                 s.rds.ta,
                 s.rds.rt.clone(),
             )
@@ -338,7 +457,11 @@ impl SdrApp {
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let status_dot_color = if is_running { theme::STATUS_OK } else { theme::TEXT_DISABLED };
+            let status_dot_color = if is_running {
+                theme::STATUS_OK
+            } else {
+                theme::TEXT_DISABLED
+            };
             ui.label(RichText::new("●").color(status_dot_color));
             ui.label(
                 RichText::new(if is_running { "Running" } else { "Stopped" })
@@ -385,12 +508,8 @@ impl SdrApp {
                     } else {
                         rt.clone()
                     };
-                    ui.label(
-                        RichText::new(rt_display)
-                            .color(theme::TEXT_MUTED)
-                            .small()
-                    )
-                    .on_hover_text(rt.as_str());
+                    ui.label(RichText::new(rt_display).color(theme::TEXT_MUTED).small())
+                        .on_hover_text(rt.as_str());
                     let _ = avail; // suppress unused warning
                 });
             }

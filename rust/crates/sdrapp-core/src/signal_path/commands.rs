@@ -13,8 +13,8 @@
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-use crate::sample::IqSample;
 use super::shared_state::DemodMode;
+use crate::sample::IqSample;
 
 /// Commands forwarded from the signal path to the hardware device thread.
 ///
@@ -126,17 +126,27 @@ pub enum SignalPathCommand {
 }
 
 impl From<ReceiverCmd> for SignalPathCommand {
-    fn from(c: ReceiverCmd) -> Self { Self::Receiver(c) }
+    fn from(c: ReceiverCmd) -> Self {
+        Self::Receiver(c)
+    }
 }
 impl From<HardwareCommand> for SignalPathCommand {
-    fn from(c: HardwareCommand) -> Self { Self::Hardware(c) }
+    fn from(c: HardwareCommand) -> Self {
+        Self::Hardware(c)
+    }
 }
 impl From<DisplayCmd> for SignalPathCommand {
-    fn from(c: DisplayCmd) -> Self { Self::Display(c) }
+    fn from(c: DisplayCmd) -> Self {
+        Self::Display(c)
+    }
 }
 impl From<BookmarkCmd> for SignalPathCommand {
-    fn from(c: BookmarkCmd) -> Self { Self::Bookmark(c) }
+    fn from(c: BookmarkCmd) -> Self {
+        Self::Bookmark(c)
+    }
 }
 impl From<ScanCmd> for SignalPathCommand {
-    fn from(c: ScanCmd) -> Self { Self::Scan(c) }
+    fn from(c: ScanCmd) -> Self {
+        Self::Scan(c)
+    }
 }

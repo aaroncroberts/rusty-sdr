@@ -18,7 +18,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use sdrapp_core::signal_path::{BookmarkCmd, DisplayCmd, HardwareCommand, ReceiverCmd, SharedState, SignalPathCommand};
+use sdrapp_core::signal_path::{
+    BookmarkCmd, DisplayCmd, HardwareCommand, ReceiverCmd, SharedState, SignalPathCommand,
+};
 use sdrapp_recorder::RecorderCommand;
 
 use crate::action::MidiAction;
@@ -99,8 +101,55 @@ impl MidiController {
 
         let handle = tokio::spawn(async move {
             let mut current_page = config.current_page;
+            // Tracks when MIDI Learn mode was armed, for 10-second auto-cancel.
+            let mut learn_armed_at: Option<tokio::time::Instant> = None;
 
-            while let Some(raw) = msg_rx.recv().await {
+            loop {
+                // When MIDI Learn is armed, poll every 250 ms so the timeout fires
+                // even if no MIDI messages arrive.
+                let raw_opt = if learn_armed_at.is_some() {
+                    match tokio::time::timeout(
+                        tokio::time::Duration::from_millis(250),
+                        msg_rx.recv(),
+                    )
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(_) => {
+                            // Timeout tick — check if learn has expired.
+                            if let Some(armed) = learn_armed_at {
+                                if armed.elapsed() >= tokio::time::Duration::from_secs(10) {
+                                    let knob = shared.read().midi_learn_target.clone();
+                                    if let Some(ref k) = knob {
+                                        tracing::info!(knob = %k, "MIDI Learn timed out — cancelled");
+                                    }
+                                    shared.write().midi_learn_target = None;
+                                    learn_armed_at = None;
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                } else {
+                    msg_rx.recv().await
+                };
+
+                let Some(raw) = raw_opt else { break };
+
+                // Check if learn was just armed this iteration.
+                {
+                    let target = shared.read().midi_learn_target.clone();
+                    match (learn_armed_at.is_some(), target.is_some()) {
+                        (false, true) => {
+                            learn_armed_at = Some(tokio::time::Instant::now());
+                        }
+                        (true, false) => {
+                            learn_armed_at = None;
+                        }
+                        _ => {}
+                    }
+                }
+
                 if let Some((key, value)) = parse_midi(&raw) {
                     // ── MIDI Learn: capture next CC into a knob binding ────────
                     if key.kind == MidiKeyKind::ControlChange {
@@ -109,6 +158,7 @@ impl MidiController {
                             let mut s = shared.write();
                             s.midi_cc_to_knob.insert(key.number, knob_id.clone());
                             s.midi_learn_target = None;
+                            learn_armed_at = None;
                             tracing::info!(cc = key.number, knob = %knob_id, "MIDI Learn: CC bound to knob");
                             continue;
                         }
@@ -136,7 +186,11 @@ impl MidiController {
                             let _ = signal_cmd_tx.try_send(ReceiverCmd::SetFrequency(freq).into());
                         }
                         MidiAction::TuneCoarseDown => {
-                            let freq = shared.read().center_freq_hz.saturating_sub(1_000_000).max(1);
+                            let freq = shared
+                                .read()
+                                .center_freq_hz
+                                .saturating_sub(1_000_000)
+                                .max(1);
                             let _ = signal_cmd_tx.try_send(ReceiverCmd::SetFrequency(freq).into());
                         }
                         MidiAction::TuneMediumUp => {
@@ -170,11 +224,11 @@ impl MidiController {
                             let next = match shared.read().demod.demod_mode {
                                 DemodMode::Wbfm => DemodMode::Nfm,
                                 DemodMode::Nfm => DemodMode::Am,
-                                DemodMode::Am  => DemodMode::Usb,
+                                DemodMode::Am => DemodMode::Usb,
                                 DemodMode::Usb => DemodMode::Lsb,
                                 DemodMode::Lsb => DemodMode::Dsb,
                                 DemodMode::Dsb => DemodMode::Cw,
-                                DemodMode::Cw  => DemodMode::Wbfm,
+                                DemodMode::Cw => DemodMode::Wbfm,
                             };
                             let _ = signal_cmd_tx.try_send(ReceiverCmd::SetDemodMode(next).into());
                         }
@@ -185,7 +239,8 @@ impl MidiController {
                                 10_000 => 100_000,
                                 _ => 100,
                             };
-                            let _ = signal_cmd_tx.try_send(ReceiverCmd::SetTuneStep(next_step).into());
+                            let _ =
+                                signal_cmd_tx.try_send(ReceiverCmd::SetTuneStep(next_step).into());
                         }
 
                         // ── Volume & squelch (absolute from fader 0–127) ──────
@@ -196,7 +251,8 @@ impl MidiController {
                         MidiAction::SquelchSet(_) => {
                             // 0–127 → -80.0 dBFS to 0.0 dBFS
                             let dbfs = -80.0 + (value as f32 / 127.0) * 80.0;
-                            let _ = signal_cmd_tx.try_send(ReceiverCmd::SetSquelchThreshold(dbfs).into());
+                            let _ = signal_cmd_tx
+                                .try_send(ReceiverCmd::SetSquelchThreshold(dbfs).into());
                         }
 
                         // ── Display (zoom & waterfall) ────────────────────────
@@ -215,11 +271,13 @@ impl MidiController {
                         }
                         MidiAction::WaterfallSpeedUp => {
                             let spd = (shared.read().waterfall_speed + 0.5).min(10.0);
-                            let _ = signal_cmd_tx.try_send(DisplayCmd::SetWaterfallSpeed(spd).into());
+                            let _ =
+                                signal_cmd_tx.try_send(DisplayCmd::SetWaterfallSpeed(spd).into());
                         }
                         MidiAction::WaterfallSpeedDown => {
                             let spd = (shared.read().waterfall_speed - 0.5).max(0.1);
-                            let _ = signal_cmd_tx.try_send(DisplayCmd::SetWaterfallSpeed(spd).into());
+                            let _ =
+                                signal_cmd_tx.try_send(DisplayCmd::SetWaterfallSpeed(spd).into());
                         }
                         MidiAction::WaterfallSpeedSet(_) => {
                             // 0–127 → 0.1 to 5.0
@@ -248,7 +306,8 @@ impl MidiController {
                                 let mut s = shared.write();
                                 let len = s.bookmarks.len();
                                 if len > 0 {
-                                    s.bookmark_cursor = s.bookmark_cursor.checked_sub(1).unwrap_or(len - 1);
+                                    s.bookmark_cursor =
+                                        s.bookmark_cursor.checked_sub(1).unwrap_or(len - 1);
                                     let bm = &s.bookmarks[s.bookmark_cursor];
                                     (bm.freq_hz, bm.mode)
                                 } else {
@@ -272,9 +331,13 @@ impl MidiController {
                                 let s = shared.read();
                                 (s.center_freq_hz, s.sample_rate_sps, s.recording_mode)
                             };
-                            let _ = recorder_tx.send(RecorderCommand::Start {
-                                freq_hz, iq_sample_rate: iq_sr, mode,
-                            }).await;
+                            let _ = recorder_tx
+                                .send(RecorderCommand::Start {
+                                    freq_hz,
+                                    iq_sample_rate: iq_sr,
+                                    mode,
+                                })
+                                .await;
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::StartRecording);
                         }
                         MidiAction::RecordStop => {
@@ -291,9 +354,13 @@ impl MidiController {
                                     let s = shared.read();
                                     (s.center_freq_hz, s.sample_rate_sps, s.recording_mode)
                                 };
-                                let _ = recorder_tx.send(RecorderCommand::Start {
-                                    freq_hz, iq_sample_rate: iq_sr, mode,
-                                }).await;
+                                let _ = recorder_tx
+                                    .send(RecorderCommand::Start {
+                                        freq_hz,
+                                        iq_sample_rate: iq_sr,
+                                        mode,
+                                    })
+                                    .await;
                                 let _ = signal_cmd_tx.try_send(SignalPathCommand::StartRecording);
                             }
                         }
@@ -333,7 +400,11 @@ impl MidiController {
 /// If the exact name isn't found, tries a case-insensitive prefix match,
 /// then falls back to the first available port with a warning.
 /// On successful connection, writes the port name to `shared.midi_device`.
-fn open_midi_port(port_name: &str, tx: mpsc::UnboundedSender<Vec<u8>>, shared: Arc<RwLock<SharedState>>) {
+fn open_midi_port(
+    port_name: &str,
+    tx: mpsc::UnboundedSender<Vec<u8>>,
+    shared: Arc<RwLock<SharedState>>,
+) {
     use midir::MidiInput;
 
     let midi_in = match MidiInput::new("sdrapp") {
@@ -448,7 +519,11 @@ fn dispatch_learned_cc(
             let _ = cmd_tx.try_send(HardwareCommand::SetAgcSetpoint(sp).into());
         }
         _ => {
-            tracing::trace!(knob = knob_id, value, "learned CC: knob_id not dispatchable via signal path");
+            tracing::trace!(
+                knob = knob_id,
+                value,
+                "learned CC: knob_id not dispatchable via signal path"
+            );
         }
     }
 }
@@ -574,6 +649,9 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
 
         let cmd = cmd_rx.try_recv();
-        assert!(matches!(cmd, Ok(SignalPathCommand::Receiver(ReceiverCmd::SetFrequency(_)))));
+        assert!(matches!(
+            cmd,
+            Ok(SignalPathCommand::Receiver(ReceiverCmd::SetFrequency(_)))
+        ));
     }
 }

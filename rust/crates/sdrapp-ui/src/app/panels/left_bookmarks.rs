@@ -7,9 +7,9 @@ use sdrapp_core::{
     signal_path::{BookmarkCmd, DemodMode, ReceiverCmd},
 };
 
-use crate::{frequency::FrequencyWidget, theme};
 use super::super::SdrApp;
 use super::category_color;
+use crate::{frequency::FrequencyWidget, theme};
 
 impl SdrApp {
     /// Render the BOOKMARKS section of the left panel.
@@ -18,8 +18,13 @@ impl SdrApp {
             ui.label(RichText::new("BOOKMARKS").color(theme::TEXT_MUTED).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Sort toggle
-                let sort_color = if self.bookmark_sort_by_freq { theme::ACCENT } else { theme::TEXT_MUTED };
-                if ui.small_button(RichText::new("↕f").color(sort_color))
+                let sort_color = if self.bookmark_sort_by_freq {
+                    theme::ACCENT
+                } else {
+                    theme::TEXT_MUTED
+                };
+                if ui
+                    .small_button(RichText::new("↕f").color(sort_color))
                     .on_hover_text("Sort by frequency")
                     .clicked()
                 {
@@ -32,7 +37,9 @@ impl SdrApp {
         // Category filter chips
         let all_cats: Vec<String> = {
             let s = self.shared.read();
-            let mut cats: Vec<String> = s.bookmarks.iter()
+            let mut cats: Vec<String> = s
+                .bookmarks
+                .iter()
                 .map(|b| b.category.clone())
                 .filter(|c| !c.is_empty())
                 .collect::<std::collections::BTreeSet<_>>()
@@ -47,7 +54,11 @@ impl SdrApp {
                     let label = if cat.is_empty() { "All" } else { cat.as_str() };
                     let selected = self.bookmark_cat_filter == *cat;
                     let text = RichText::new(label).small();
-                    let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
+                    let text = if selected {
+                        text.color(theme::ACCENT).strong()
+                    } else {
+                        text.color(theme::TEXT_MUTED)
+                    };
                     if ui.selectable_label(selected, text).clicked() {
                         self.bookmark_cat_filter = cat.clone();
                     }
@@ -66,9 +77,12 @@ impl SdrApp {
             bookmarks_snapshot.sort_by_key(|b| b.freq_hz);
         }
         // Filter by category
-        let filtered: Vec<(usize, _)> = bookmarks_snapshot.iter()
+        let filtered: Vec<(usize, _)> = bookmarks_snapshot
+            .iter()
             .enumerate()
-            .filter(|(_, b)| self.bookmark_cat_filter.is_empty() || b.category == self.bookmark_cat_filter)
+            .filter(|(_, b)| {
+                self.bookmark_cat_filter.is_empty() || b.category == self.bookmark_cat_filter
+            })
             .map(|(i, b)| (i, b.clone()))
             .collect();
 
@@ -92,13 +106,24 @@ impl SdrApp {
                         ui.text_edit_singleline(&mut self.bookmark_edit_buf.0);
                     });
                     ui.horizontal(|ui| {
-                        let freq_valid = self.bookmark_edit_buf.1.trim().parse::<u64>().map_or(false, |f| f > 0);
-                        let freq_color = if freq_valid { theme::TEXT_MUTED } else { theme::DANGER };
+                        let freq_valid = self
+                            .bookmark_edit_buf
+                            .1
+                            .trim()
+                            .parse::<u64>()
+                            .is_ok_and(|f| f > 0);
+                        let freq_color = if freq_valid {
+                            theme::TEXT_MUTED
+                        } else {
+                            theme::DANGER
+                        };
                         ui.label(RichText::new("Freq (Hz)").color(freq_color).small());
                         ui.text_edit_singleline(&mut self.bookmark_edit_buf.1);
                         if !freq_valid && !self.bookmark_edit_buf.1.is_empty() {
                             ui.label(RichText::new("!").color(theme::DANGER).small())
-                                .on_hover_text("Enter frequency in Hz (e.g. 98100000 for 98.1 MHz)");
+                                .on_hover_text(
+                                    "Enter frequency in Hz (e.g. 98100000 for 98.1 MHz)",
+                                );
                         }
                     });
                     ui.horizontal(|ui| {
@@ -109,27 +134,45 @@ impl SdrApp {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Mode").color(theme::TEXT_MUTED).small());
                         for (mode, label) in [
-                            (DemodMode::Wbfm, "WBFM"), (DemodMode::Nfm, "NFM"),
-                            (DemodMode::Am, "AM"), (DemodMode::Usb, "USB"),
-                            (DemodMode::Lsb, "LSB"), (DemodMode::Dsb, "DSB"),
+                            (DemodMode::Wbfm, "WBFM"),
+                            (DemodMode::Nfm, "NFM"),
+                            (DemodMode::Am, "AM"),
+                            (DemodMode::Usb, "USB"),
+                            (DemodMode::Lsb, "LSB"),
+                            (DemodMode::Dsb, "DSB"),
                             (DemodMode::Cw, "CW"),
                         ] {
                             let sel = self.bookmark_edit_buf.2 == mode;
                             let txt = RichText::new(label).small();
-                            let txt = if sel { txt.color(theme::ACCENT).strong() } else { txt.color(theme::TEXT_MUTED) };
+                            let txt = if sel {
+                                txt.color(theme::ACCENT).strong()
+                            } else {
+                                txt.color(theme::TEXT_MUTED)
+                            };
                             if ui.selectable_label(sel, txt).clicked() {
                                 self.bookmark_edit_buf.2 = mode;
                             }
                         }
                     });
                     ui.horizontal(|ui| {
-                        let freq_valid = self.bookmark_edit_buf.1.trim().parse::<u64>().map_or(false, |f| f > 0);
+                        let freq_valid = self
+                            .bookmark_edit_buf
+                            .1
+                            .trim()
+                            .parse::<u64>()
+                            .is_ok_and(|f| f > 0);
                         ui.add_enabled_ui(freq_valid, |ui| {
-                            if ui.small_button(RichText::new("✓ Save").color(theme::STATUS_OK)).clicked() {
+                            if ui
+                                .small_button(RichText::new("✓ Save").color(theme::STATUS_OK))
+                                .clicked()
+                            {
                                 edit_commit_idx = Some(i);
                             }
                         });
-                        if ui.small_button(RichText::new("✕ Cancel").color(theme::TEXT_MUTED)).clicked() {
+                        if ui
+                            .small_button(RichText::new("✕ Cancel").color(theme::TEXT_MUTED))
+                            .clicked()
+                        {
                             edit_cancel = true;
                         }
                     });
@@ -138,8 +181,15 @@ impl SdrApp {
                 ui.horizontal(|ui| {
                     // Recall button (star for active, circle for inactive)
                     let icon = if is_active { "★" } else { "☆" };
-                    let icon_color = if is_active { theme::ACCENT } else { theme::TEXT_MUTED };
-                    if ui.small_button(RichText::new(icon).color(icon_color)).clicked() {
+                    let icon_color = if is_active {
+                        theme::ACCENT
+                    } else {
+                        theme::TEXT_MUTED
+                    };
+                    if ui
+                        .small_button(RichText::new(icon).color(icon_color))
+                        .clicked()
+                    {
                         recall_idx = Some(i);
                     }
                     // Category dot
@@ -151,18 +201,36 @@ impl SdrApp {
                     let freq_label = format!("{:.3} MHz", bm.freq_hz as f64 / 1_000_000.0);
                     let text = format!("{} — {}", bm.name, freq_label);
                     if ui
-                        .selectable_label(is_active, RichText::new(&text).color(theme::TEXT_PRIMARY).small())
-                        .on_hover_text(format!("Mode: {:?}  Category: {}", bm.mode, if bm.category.is_empty() { "—" } else { &bm.category }))
+                        .selectable_label(
+                            is_active,
+                            RichText::new(&text).color(theme::TEXT_PRIMARY).small(),
+                        )
+                        .on_hover_text(format!(
+                            "Mode: {:?}  Category: {}",
+                            bm.mode,
+                            if bm.category.is_empty() {
+                                "—"
+                            } else {
+                                &bm.category
+                            }
+                        ))
                         .clicked()
                     {
                         recall_idx = Some(i);
                     }
                     // Edit button
-                    if ui.small_button(RichText::new("Ed").color(theme::TEXT_MUTED)).on_hover_text("Edit bookmark").clicked() {
+                    if ui
+                        .small_button(RichText::new("Ed").color(theme::TEXT_MUTED))
+                        .on_hover_text("Edit bookmark")
+                        .clicked()
+                    {
                         edit_start_idx = Some(i);
                     }
                     // Delete button
-                    if ui.small_button(RichText::new("×").color(theme::TEXT_MUTED)).clicked() {
+                    if ui
+                        .small_button(RichText::new("×").color(theme::TEXT_MUTED))
+                        .clicked()
+                    {
                         remove_idx = Some(i);
                     }
                 });
@@ -177,8 +245,12 @@ impl SdrApp {
                 let bm = &s.bookmarks[i];
                 (bm.freq_hz, bm.mode)
             };
-            let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(bm_freq).into());
-            let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(bm_mode).into());
+            let _ = self
+                .cmd_tx
+                .try_send(ReceiverCmd::SetFrequency(bm_freq).into());
+            let _ = self
+                .cmd_tx
+                .try_send(ReceiverCmd::SetDemodMode(bm_mode).into());
             self.config.ui.frequency_hz = bm_freq;
             self.frequency_widget = FrequencyWidget::new(bm_freq);
             self.config_dirty = true;
@@ -210,16 +282,24 @@ impl SdrApp {
                 let name = self.bookmark_edit_buf.0.clone();
                 let mode = self.bookmark_edit_buf.2;
                 let cat = self.bookmark_edit_buf.3.clone();
-                let _ = self.cmd_tx.try_send(BookmarkCmd::Edit(i, name.clone(), freq, mode, cat.clone()).into());
+                let _ = self
+                    .cmd_tx
+                    .try_send(BookmarkCmd::Edit(i, name.clone(), freq, mode, cat.clone()).into());
                 if i < self.config.bookmarks.len() {
                     let mode_str = match mode {
-                        DemodMode::Nfm => "Nfm", DemodMode::Am => "Am",
-                        DemodMode::Usb => "Usb", DemodMode::Lsb => "Lsb",
-                        DemodMode::Dsb => "Dsb", DemodMode::Cw => "Cw",
+                        DemodMode::Nfm => "Nfm",
+                        DemodMode::Am => "Am",
+                        DemodMode::Usb => "Usb",
+                        DemodMode::Lsb => "Lsb",
+                        DemodMode::Dsb => "Dsb",
+                        DemodMode::Cw => "Cw",
                         _ => "Wbfm",
                     };
                     self.config.bookmarks[i] = BookmarkConfig {
-                        name, freq_hz: freq, mode: mode_str.into(), category: cat,
+                        name,
+                        freq_hz: freq,
+                        mode: mode_str.into(),
+                        category: cat,
                     };
                     self.config_dirty = true;
                 }
@@ -233,7 +313,10 @@ impl SdrApp {
         // Bottom row: Save + Export + Import
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            if ui.small_button(RichText::new("+ Save").color(theme::ACCENT_DIM)).clicked() {
+            if ui
+                .small_button(RichText::new("+ Save").color(theme::ACCENT_DIM))
+                .clicked()
+            {
                 let (freq, mode) = {
                     let s = self.shared.read();
                     (s.center_freq_hz, s.demod.demod_mode)
@@ -241,22 +324,39 @@ impl SdrApp {
                 let name = format!("{:.3} MHz", freq as f64 / 1_000_000.0);
                 let _ = self.cmd_tx.try_send(BookmarkCmd::Add(name.clone()).into());
                 let mode_str = match mode {
-                    DemodMode::Nfm => "Nfm", DemodMode::Am => "Am",
-                    DemodMode::Usb => "Usb", DemodMode::Lsb => "Lsb",
-                    DemodMode::Dsb => "Dsb", DemodMode::Cw => "Cw",
+                    DemodMode::Nfm => "Nfm",
+                    DemodMode::Am => "Am",
+                    DemodMode::Usb => "Usb",
+                    DemodMode::Lsb => "Lsb",
+                    DemodMode::Dsb => "Dsb",
+                    DemodMode::Cw => "Cw",
                     _ => "Wbfm",
                 };
-                self.config.bookmarks.push(BookmarkConfig::new(name, freq, mode_str));
+                self.config
+                    .bookmarks
+                    .push(BookmarkConfig::new(name, freq, mode_str));
                 self.config_dirty = true;
             }
 
             // Export CSV
-            if ui.small_button(RichText::new("Export").color(theme::TEXT_MUTED))
+            if ui
+                .small_button(RichText::new("Export").color(theme::TEXT_MUTED))
                 .on_hover_text("Export bookmarks as CSV to ~/bookmarks.csv")
                 .clicked()
             {
-                let csv = self.config.bookmarks.iter()
-                    .map(|b| format!("{},{},{},{}", b.name.replace(',', " "), b.freq_hz, b.mode, b.category))
+                let csv = self
+                    .config
+                    .bookmarks
+                    .iter()
+                    .map(|b| {
+                        format!(
+                            "{},{},{},{}",
+                            b.name.replace(',', " "),
+                            b.freq_hz,
+                            b.mode,
+                            b.category
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
                 let path = dirs::home_dir().unwrap_or_default().join("bookmarks.csv");
@@ -266,7 +366,8 @@ impl SdrApp {
             }
 
             // Import CSV
-            if ui.small_button(RichText::new("Import").color(theme::TEXT_MUTED))
+            if ui
+                .small_button(RichText::new("Import").color(theme::TEXT_MUTED))
                 .on_hover_text("Import bookmarks from ~/bookmarks.csv")
                 .clicked()
             {
@@ -278,30 +379,47 @@ impl SdrApp {
                         if parts.len() >= 3 {
                             let freq: u64 = parts[1].trim().parse().unwrap_or(0);
                             if freq > 0 {
-                                let mut bc = BookmarkConfig::new(parts[0].trim(), freq, parts[2].trim());
-                                if parts.len() >= 4 { bc.category = parts[3].trim().into(); }
+                                let mut bc =
+                                    BookmarkConfig::new(parts[0].trim(), freq, parts[2].trim());
+                                if parts.len() >= 4 {
+                                    bc.category = parts[3].trim().into();
+                                }
                                 imported.push(bc);
                             } else {
-                                tracing::warn!(line = line_no + 1, raw = line, "bookmark import: skipped line — invalid frequency");
+                                tracing::warn!(
+                                    line = line_no + 1,
+                                    raw = line,
+                                    "bookmark import: skipped line — invalid frequency"
+                                );
                             }
                         } else {
-                            tracing::warn!(line = line_no + 1, raw = line, "bookmark import: skipped line — too few columns");
+                            tracing::warn!(
+                                line = line_no + 1,
+                                raw = line,
+                                "bookmark import: skipped line — too few columns"
+                            );
                         }
                     }
                     if !imported.is_empty() {
                         // Replace all config bookmarks and rebuild SharedState
                         self.config.bookmarks = imported.clone();
                         self.config_dirty = true;
-                        let new_bms: Vec<sdrapp_core::signal_path::Bookmark> = imported.iter().map(|b| {
-                            use sdrapp_core::signal_path::{Bookmark, DemodMode};
-                            let mode = match b.mode.as_str() {
-                                "Nfm" => DemodMode::Nfm, "Am" => DemodMode::Am,
-                                "Usb" => DemodMode::Usb, "Lsb" => DemodMode::Lsb,
-                                "Dsb" => DemodMode::Dsb, "Cw" => DemodMode::Cw,
-                                _ => DemodMode::Wbfm,
-                            };
-                            Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
-                        }).collect();
+                        let new_bms: Vec<sdrapp_core::signal_path::Bookmark> = imported
+                            .iter()
+                            .map(|b| {
+                                use sdrapp_core::signal_path::{Bookmark, DemodMode};
+                                let mode = match b.mode.as_str() {
+                                    "Nfm" => DemodMode::Nfm,
+                                    "Am" => DemodMode::Am,
+                                    "Usb" => DemodMode::Usb,
+                                    "Lsb" => DemodMode::Lsb,
+                                    "Dsb" => DemodMode::Dsb,
+                                    "Cw" => DemodMode::Cw,
+                                    _ => DemodMode::Wbfm,
+                                };
+                                Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
+                            })
+                            .collect();
                         self.shared.write().bookmarks = new_bms;
                         tracing::info!(count = self.config.bookmarks.len(), "bookmarks imported");
                     }

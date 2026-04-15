@@ -4,20 +4,21 @@ use egui::{RichText, Ui, Vec2};
 
 use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd};
 
-use crate::{
-    frequency::FrequencyWidget,
-    knob::KnobWidget,
-    spectrum::SpectrumWidget,
-    theme,
-};
 use super::super::SdrApp;
+use crate::{frequency::FrequencyWidget, knob::KnobWidget, spectrum::SpectrumWidget, theme};
 
 impl SdrApp {
     pub(in crate::app) fn center_panel(&mut self, ui: &mut Ui) {
         let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz, is_running) = {
             let s = self.shared.read();
-            (s.fft.fft_magnitudes.clone(), s.fft.band_plan_enabled, s.fft.snr_db,
-             s.demod.demod_mode, s.demod.nfm_bandwidth_hz, s.is_running)
+            (
+                s.fft.fft_magnitudes.clone(),
+                s.fft.band_plan_enabled,
+                s.fft.snr_db,
+                s.demod.demod_mode,
+                s.demod.nfm_bandwidth_hz,
+                s.is_running,
+            )
         };
 
         let freq = self.config.ui.frequency_hz;
@@ -58,7 +59,8 @@ impl SdrApp {
             // 90% of dyn_range above the floor remain on-screen.
             if self.auto_ref && n >= 10 {
                 let mut sorted = fft_data.to_vec();
-                sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                sorted
+                    .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let floor_sample = sorted[n / 10];
                 let ceil_sample = sorted[(n * 99 / 100).min(n - 1)];
                 const ALPHA: f32 = 0.95;
@@ -68,8 +70,10 @@ impl SdrApp {
                     self.noise_floor_ema = floor_sample;
                     self.signal_ceil_ema = ceil_sample;
                 } else {
-                    self.noise_floor_ema = ALPHA * self.noise_floor_ema + (1.0 - ALPHA) * floor_sample;
-                    self.signal_ceil_ema = ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
+                    self.noise_floor_ema =
+                        ALPHA * self.noise_floor_ema + (1.0 - ALPHA) * floor_sample;
+                    self.signal_ceil_ema =
+                        ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
                 }
                 // Place ref_level so the noise floor is ~10% up from the bottom.
                 self.ref_level = (self.noise_floor_ema + self.dyn_range * 0.9).clamp(-120.0, 20.0);
@@ -80,7 +84,8 @@ impl SdrApp {
             // Waterfall range: floor is shifted down by wf_gain to reveal weaker signals;
             // ceiling has 30 dB of fixed headroom above the spectrum ceiling so strong
             // signals don't saturate to white.
-            self.waterfall.set_db_range((db_floor - self.wf_gain, db_ceil + 30.0));
+            self.waterfall
+                .set_db_range((db_floor - self.wf_gain, db_ceil + 30.0));
             // Fractional accumulator: push_row fires once per integer crossed.
             // Speed 1.0 = 1 row/frame, 2.0 = 2 rows/frame, 0.5 = every other frame.
             self.waterfall_row_frac += waterfall_speed.clamp(0.1, 10.0);
@@ -91,7 +96,7 @@ impl SdrApp {
         }
 
         let db_floor = self.ref_level - self.dyn_range;
-        let db_ceil  = self.ref_level;
+        let db_ceil = self.ref_level;
         let db_range = (db_floor, db_ceil);
 
         let available_h = ui.available_height();
@@ -126,7 +131,11 @@ impl SdrApp {
         if spectrum_resp.hovered() && scroll_delta.abs() > 0.5 {
             if ctrl_held {
                 // Ctrl+scroll → zoom
-                let factor = if scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
+                let factor = if scroll_delta > 0.0 {
+                    0.8_f32
+                } else {
+                    1.25_f32
+                };
                 let new_zoom = (zoom_level * factor).clamp(0.005, 1.0);
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_zoom).into());
                 self.config.ui.zoom_level = new_zoom;
@@ -139,7 +148,9 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(step).max(1)
                 };
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                let _ = self
+                    .cmd_tx
+                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
@@ -148,7 +159,9 @@ impl SdrApp {
 
         let ctx = ui.ctx().clone();
         // Capture hover position over the spectrum rect for the crosshair readout.
-        let spectrum_hover = ctx.pointer_hover_pos().filter(|p| spectrum_rect.contains(*p));
+        let spectrum_hover = ctx
+            .pointer_hover_pos()
+            .filter(|p| spectrum_rect.contains(*p));
         let mut spectrum_ui = ui.new_child(egui::UiBuilder::new().max_rect(spectrum_rect));
         let peak_ref: Option<&[f32]> = if self.peak_hold.len() == fft_data.len() {
             Some(&self.peak_hold)
@@ -163,12 +176,12 @@ impl SdrApp {
             let half = |hz: u64| (freq.saturating_sub(hz / 2), freq + hz / 2);
             match demod_mode {
                 Wbfm => half(200_000),
-                Nfm  => half(nfm_bw_hz as u64),
-                Am   => half(10_000),
-                Dsb  => half(6_000),
-                Usb  => (freq, freq + 3_000),
-                Lsb  => (freq.saturating_sub(3_000), freq),
-                Cw   => (freq.saturating_sub(400), freq + 400),
+                Nfm => half(nfm_bw_hz as u64),
+                Am => half(10_000),
+                Dsb => half(6_000),
+                Usb => (freq, freq + 3_000),
+                Lsb => (freq.saturating_sub(3_000), freq),
+                Cw => (freq.saturating_sub(400), freq + 400),
             }
         };
         // Only show filter overlay when streaming (suppress when paused/stopped).
@@ -205,18 +218,30 @@ impl SdrApp {
         // MIDI Learn state (read before closure to avoid split-borrow issues)
         let (zoom_learn, zoom_cc) = {
             let s = self.shared.read();
-            (s.midi_learn_target.as_deref() == Some("zoom"),
-             s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "zoom").map(|(&c, _)| c))
+            (
+                s.midi_learn_target.as_deref() == Some("zoom"),
+                s.midi_cc_to_knob
+                    .iter()
+                    .find(|(_, v)| v.as_str() == "zoom")
+                    .map(|(&c, _)| c),
+            )
         };
         let (wfspd_learn, wfspd_cc) = {
             let s = self.shared.read();
-            (s.midi_learn_target.as_deref() == Some("wf_speed"),
-             s.midi_cc_to_knob.iter().find(|(_, v)| v.as_str() == "wf_speed").map(|(&c, _)| c))
+            (
+                s.midi_learn_target.as_deref() == Some("wf_speed"),
+                s.midi_cc_to_knob
+                    .iter()
+                    .find(|(_, v)| v.as_str() == "wf_speed")
+                    .map(|(&c, _)| c),
+            )
         };
         // Action flags: set by context_menu closures, acted on after ui.horizontal returns
         let mut zoom_learn_req = false;
+        let mut zoom_learn_cancel = false;
         let mut zoom_clear: Option<u8> = None;
         let mut wfspd_learn_req = false;
+        let mut wfspd_learn_cancel = false;
         let mut wfspd_clear: Option<u8> = None;
 
         // Auto toggle + Zoom step buttons flank the knob row.
@@ -296,9 +321,20 @@ impl SdrApp {
                 learn_active: zoom_learn,
             }.show(ui);
             zoom_resp.context_menu(|ui| {
-                if ui.button("Assign MIDI CC").clicked() { zoom_learn_req = true; ui.close_menu(); }
+                if zoom_learn {
+                    if ui.button("Cancel MIDI Learn").clicked() {
+                        zoom_learn_cancel = true;
+                        ui.close_menu();
+                    }
+                } else if ui.button("Assign MIDI CC").clicked() {
+                    zoom_learn_req = true;
+                    ui.close_menu();
+                }
                 if let Some(cc) = zoom_cc {
-                    if ui.button(format!("Clear CC {cc} binding")).clicked() { zoom_clear = Some(cc); ui.close_menu(); }
+                    if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                        zoom_clear = Some(cc);
+                        ui.close_menu();
+                    }
                 }
             });
             if zoom_resp.changed() {
@@ -351,9 +387,20 @@ impl SdrApp {
                 learn_active: wfspd_learn,
             }.show(ui);
             wfspd_resp.context_menu(|ui| {
-                if ui.button("Assign MIDI CC").clicked() { wfspd_learn_req = true; ui.close_menu(); }
+                if wfspd_learn {
+                    if ui.button("Cancel MIDI Learn").clicked() {
+                        wfspd_learn_cancel = true;
+                        ui.close_menu();
+                    }
+                } else if ui.button("Assign MIDI CC").clicked() {
+                    wfspd_learn_req = true;
+                    ui.close_menu();
+                }
                 if let Some(cc) = wfspd_cc {
-                    if ui.button(format!("Clear CC {cc} binding")).clicked() { wfspd_clear = Some(cc); ui.close_menu(); }
+                    if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                        wfspd_clear = Some(cc);
+                        ui.close_menu();
+                    }
                 }
             });
             if wfspd_resp.changed() {
@@ -363,10 +410,26 @@ impl SdrApp {
             }
         });
         // Handle MIDI Learn actions deferred from the horizontal closure
-        if zoom_learn_req { self.shared.write().midi_learn_target = Some("zoom".into()); }
-        if let Some(cc) = zoom_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
-        if wfspd_learn_req { self.shared.write().midi_learn_target = Some("wf_speed".into()); }
-        if let Some(cc) = wfspd_clear { self.shared.write().midi_cc_to_knob.remove(&cc); self.config_dirty = true; }
+        if zoom_learn_req {
+            self.shared.write().midi_learn_target = Some("zoom".into());
+        }
+        if zoom_learn_cancel {
+            self.shared.write().midi_learn_target = None;
+        }
+        if let Some(cc) = zoom_clear {
+            self.shared.write().midi_cc_to_knob.remove(&cc);
+            self.config_dirty = true;
+        }
+        if wfspd_learn_req {
+            self.shared.write().midi_learn_target = Some("wf_speed".into());
+        }
+        if wfspd_learn_cancel {
+            self.shared.write().midi_learn_target = None;
+        }
+        if let Some(cc) = wfspd_clear {
+            self.shared.write().midi_cc_to_knob.remove(&cc);
+            self.config_dirty = true;
+        }
 
         // Row 3: FFT size, window, averaging, band plan, SNR
         ui.add_space(1.0);
@@ -399,7 +462,12 @@ impl SdrApp {
                 .width(68.0)
                 .show_ui(ui, |ui| {
                     use sdrapp_core::dsp::FftWindow;
-                    for wf in [FftWindow::Rectangular, FftWindow::Hann, FftWindow::Hamming, FftWindow::BlackmanHarris] {
+                    for wf in [
+                        FftWindow::Rectangular,
+                        FftWindow::Hann,
+                        FftWindow::Hamming,
+                        FftWindow::BlackmanHarris,
+                    ] {
                         let sel = cur_fft_window == wf;
                         if ui.selectable_label(sel, wf.label()).clicked() && !sel {
                             let _ = self.cmd_tx.try_send(DisplayCmd::SetFftWindow(wf).into());
@@ -412,22 +480,35 @@ impl SdrApp {
             // Averaging slider (1–16)
             ui.label(RichText::new("Avg").color(theme::TEXT_MUTED).small());
             let mut avg = cur_fft_avg as i32;
-            if ui.add(
-                egui::Slider::new(&mut avg, 1..=16).show_value(true)
-            ).on_hover_text("FFT averaging: frames blended via exponential moving average. 1 = off.").changed() {
-                let _ = self.cmd_tx.try_send(DisplayCmd::SetFftAveraging(avg as u8).into());
+            if ui
+                .add(egui::Slider::new(&mut avg, 1..=16).show_value(true))
+                .on_hover_text(
+                    "FFT averaging: frames blended via exponential moving average. 1 = off.",
+                )
+                .changed()
+            {
+                let _ = self
+                    .cmd_tx
+                    .try_send(DisplayCmd::SetFftAveraging(avg as u8).into());
                 self.config.ui.fft_averaging = avg as u8;
                 self.config_dirty = true;
             }
 
             // Band plan toggle
-            let bp_color = if band_plan_enabled { theme::ACCENT } else { theme::TEXT_MUTED };
-            if ui.small_button(RichText::new("BP").color(bp_color))
+            let bp_color = if band_plan_enabled {
+                theme::ACCENT
+            } else {
+                theme::TEXT_MUTED
+            };
+            if ui
+                .small_button(RichText::new("BP").color(bp_color))
                 .on_hover_text("Toggle band plan overlay on spectrum")
                 .clicked()
             {
                 let new_val = !band_plan_enabled;
-                let _ = self.cmd_tx.try_send(DisplayCmd::SetBandPlanEnabled(new_val).into());
+                let _ = self
+                    .cmd_tx
+                    .try_send(DisplayCmd::SetBandPlanEnabled(new_val).into());
                 self.config.ui.band_plan_enabled = new_val;
                 self.config_dirty = true;
             }
@@ -442,8 +523,12 @@ impl SdrApp {
                     theme::TEXT_MUTED
                 };
                 ui.add_space(4.0);
-                ui.label(RichText::new(format!("SNR {:.0} dB", snr)).color(snr_color).small())
-                    .on_hover_text("Estimated signal-to-noise ratio in the active demod channel");
+                ui.label(
+                    RichText::new(format!("SNR {:.0} dB", snr))
+                        .color(snr_color)
+                        .small(),
+                )
+                .on_hover_text("Estimated signal-to-noise ratio in the active demod channel");
             }
         });
 
@@ -458,7 +543,9 @@ impl SdrApp {
                 let low = freq.saturating_sub(span) as f64;
                 let high = freq as f64 + span as f64;
                 let new_freq = (low + t as f64 * (high - low)).round() as u64;
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                let _ = self
+                    .cmd_tx
+                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
@@ -468,9 +555,14 @@ impl SdrApp {
         // Scroll on waterfall: tune (plain) or zoom (Ctrl)
         let wf_scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if waterfall_resp.hovered() && wf_scroll.abs() > 0.5 {
-            let (wf_scroll_delta, wf_ctrl) = ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.ctrl));
+            let (wf_scroll_delta, wf_ctrl) =
+                ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.ctrl));
             if wf_ctrl {
-                let factor = if wf_scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
+                let factor = if wf_scroll_delta > 0.0 {
+                    0.8_f32
+                } else {
+                    1.25_f32
+                };
                 let new_z = (zoom_level * factor).clamp(0.005, 1.0);
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
                 self.config.ui.zoom_level = new_z;
@@ -482,7 +574,9 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(step).max(1)
                 };
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                let _ = self
+                    .cmd_tx
+                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;

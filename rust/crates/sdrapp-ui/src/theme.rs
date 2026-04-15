@@ -163,10 +163,7 @@ impl WaterfallColormap {
     pub fn build(self) -> [Color32; 256] {
         match self {
             WaterfallColormap::Thermal => waterfall_colormap(),
-            WaterfallColormap::Grayscale => lerp_colormap(&[
-                (0.0, 0, 0, 0),
-                (1.0, 255, 255, 255),
-            ]),
+            WaterfallColormap::Grayscale => lerp_colormap(&[(0.0, 0, 0, 0), (1.0, 255, 255, 255)]),
             WaterfallColormap::Inferno => lerp_colormap(&[
                 (0.00, 0, 0, 4),
                 (0.20, 40, 11, 84),

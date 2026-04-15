@@ -77,11 +77,15 @@ impl<'a> SpectrumWidget<'a> {
         {
             let range_db = db_max - db_min;
             // Pick tick spacing: 5 dB for narrow ranges, 10 dB for normal, 20 dB for wide
-            let tick_step = if range_db <= 40.0 { 5.0_f32 }
-                            else if range_db <= 100.0 { 10.0 }
-                            else { 20.0 };
+            let tick_step = if range_db <= 40.0 {
+                5.0_f32
+            } else if range_db <= 100.0 {
+                10.0
+            } else {
+                20.0
+            };
             let first = (db_min / tick_step).ceil() as i32;
-            let last  = (db_max / tick_step).floor() as i32;
+            let last = (db_max / tick_step).floor() as i32;
             for k in first..=last {
                 let db = k as f32 * tick_step;
                 let y = db_to_y(db, db_min, db_max, plot_rect);
@@ -93,7 +97,10 @@ impl<'a> SpectrumWidget<'a> {
                 };
                 let line_w = if is_major { 1.0 } else { 0.5 };
                 painter.line_segment(
-                    [Pos2::new(plot_rect.left(), y), Pos2::new(plot_rect.right(), y)],
+                    [
+                        Pos2::new(plot_rect.left(), y),
+                        Pos2::new(plot_rect.right(), y),
+                    ],
                     Stroke::new(line_w, grid_color),
                 );
                 painter.text(
@@ -101,7 +108,11 @@ impl<'a> SpectrumWidget<'a> {
                     egui::Align2::RIGHT_CENTER,
                     format!("{db:.0}"),
                     egui::FontId::proportional(9.0),
-                    if is_major { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED },
+                    if is_major {
+                        theme::TEXT_PRIMARY
+                    } else {
+                        theme::TEXT_MUTED
+                    },
                 );
             }
         }
@@ -117,11 +128,9 @@ impl<'a> SpectrumWidget<'a> {
                 }
                 // Map band edges to pixel x coords, clamped to the plot rect.
                 let x_lo = plot_rect.left()
-                    + ((band.start_hz as f64 - freq_lo) / freq_span) as f32
-                        * plot_rect.width();
+                    + ((band.start_hz as f64 - freq_lo) / freq_span) as f32 * plot_rect.width();
                 let x_hi = plot_rect.left()
-                    + ((band.end_hz as f64 - freq_lo) / freq_span) as f32
-                        * plot_rect.width();
+                    + ((band.end_hz as f64 - freq_lo) / freq_span) as f32 * plot_rect.width();
                 let x_lo = x_lo.max(plot_rect.left());
                 let x_hi = x_hi.min(plot_rect.right());
                 let visible_w = x_hi - x_lo;
@@ -139,7 +148,10 @@ impl<'a> SpectrumWidget<'a> {
 
                 // Top edge line for a cleaner look
                 painter.line_segment(
-                    [Pos2::new(x_lo, plot_rect.top()), Pos2::new(x_hi, plot_rect.top())],
+                    [
+                        Pos2::new(x_lo, plot_rect.top()),
+                        Pos2::new(x_hi, plot_rect.top()),
+                    ],
                     Stroke::new(1.0, band.band_type.accent()),
                 );
 
@@ -209,10 +221,10 @@ impl<'a> SpectrumWidget<'a> {
             // ── Neon glow trace ───────────────────────────────────────────────
             // Four stacked passes: wide dim halo → narrow bright edge.
             let glow_layers: &[(f32, u8)] = &[
-                (4.0,  12),  // wide halo
-                (2.0, 40),   // inner glow
-                (1.2, 130),  // bright edge
-                (0.6, 255),  // sharp trace
+                (4.0, 12),  // wide halo
+                (2.0, 40),  // inner glow
+                (1.2, 130), // bright edge
+                (0.6, 255), // sharp trace
             ];
             for &(width, alpha) in glow_layers {
                 painter.add(egui::Shape::line(
@@ -321,7 +333,10 @@ impl<'a> SpectrumWidget<'a> {
 
                 // Dim vertical crosshair
                 painter.line_segment(
-                    [Pos2::new(hover.x, plot_rect.top()), Pos2::new(hover.x, plot_rect.bottom())],
+                    [
+                        Pos2::new(hover.x, plot_rect.top()),
+                        Pos2::new(hover.x, plot_rect.bottom()),
+                    ],
                     Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 50)),
                 );
 
@@ -352,8 +367,18 @@ impl<'a> SpectrumWidget<'a> {
                     Pos2::new(label_pos.x - 3.0, label_pos.y - 1.0),
                     galley.size() + egui::Vec2::new(6.0, 2.0),
                 );
-                painter.rect_filled(bg_rect, 2.0, Color32::from_rgba_unmultiplied(10, 13, 20, 210));
-                painter.text(label_pos, egui::Align2::LEFT_TOP, label, font, Color32::WHITE);
+                painter.rect_filled(
+                    bg_rect,
+                    2.0,
+                    Color32::from_rgba_unmultiplied(10, 13, 20, 210),
+                );
+                painter.text(
+                    label_pos,
+                    egui::Align2::LEFT_TOP,
+                    label,
+                    font,
+                    Color32::WHITE,
+                );
 
                 // Horizontal dBFS dot on Y-axis
                 let dot_y = db_to_y(db_val, db_min, db_max, plot_rect);

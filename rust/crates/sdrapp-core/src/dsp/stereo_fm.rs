@@ -152,8 +152,7 @@ impl StereoFmDecoder {
         for &s in samples {
             // ── FM discriminator ──────────────────────────────────────────────
             let mult = self.prev.conj() * s;
-            let composite =
-                mult.im.atan2(mult.re) / std::f32::consts::PI * self.dev_scale;
+            let composite = mult.im.atan2(mult.re) / std::f32::consts::PI * self.dev_scale;
             self.prev = if s.norm_sqr() > 1e-10 {
                 s / s.norm()
             } else {
@@ -185,8 +184,7 @@ impl StereoFmDecoder {
 
             // ── L+R: low-pass composite to audio baseband ─────────────────────
             self.lpr_s1 = self.lp_alpha * self.lpr_s1 + (1.0 - self.lp_alpha) * composite;
-            self.lpr_s2 =
-                self.lp_alpha * self.lpr_s2 + (1.0 - self.lp_alpha) * self.lpr_s1;
+            self.lpr_s2 = self.lp_alpha * self.lpr_s2 + (1.0 - self.lp_alpha) * self.lpr_s1;
             let lpr = self.lpr_s2;
 
             // ── L-R: mix with 2× pilot reference, then low-pass ──────────────
@@ -194,8 +192,7 @@ impl StereoFmDecoder {
             let cos2 = 2.0 * cos_p * cos_p - 1.0;
             let mixed = composite * 2.0 * cos2;
             self.lmr_s1 = self.lp_alpha * self.lmr_s1 + (1.0 - self.lp_alpha) * mixed;
-            self.lmr_s2 =
-                self.lp_alpha * self.lmr_s2 + (1.0 - self.lp_alpha) * self.lmr_s1;
+            self.lmr_s2 = self.lp_alpha * self.lmr_s2 + (1.0 - self.lp_alpha) * self.lmr_s1;
             let lmr = self.lmr_s2;
 
             // ── Resampler: emit one audio frame per integer phase crossing ────
@@ -243,8 +240,7 @@ impl StereoFmDecoder {
         for &s in samples {
             // ── FM discriminator ──────────────────────────────────────────────
             let mult = self.prev.conj() * s;
-            let composite =
-                mult.im.atan2(mult.re) / std::f32::consts::PI * self.dev_scale;
+            let composite = mult.im.atan2(mult.re) / std::f32::consts::PI * self.dev_scale;
             self.prev = if s.norm_sqr() > 1e-10 {
                 s / s.norm()
             } else {
@@ -273,16 +269,14 @@ impl StereoFmDecoder {
 
             // ── L+R ───────────────────────────────────────────────────────────
             self.lpr_s1 = self.lp_alpha * self.lpr_s1 + (1.0 - self.lp_alpha) * composite;
-            self.lpr_s2 =
-                self.lp_alpha * self.lpr_s2 + (1.0 - self.lp_alpha) * self.lpr_s1;
+            self.lpr_s2 = self.lp_alpha * self.lpr_s2 + (1.0 - self.lp_alpha) * self.lpr_s1;
             let lpr = self.lpr_s2;
 
             // ── L-R ───────────────────────────────────────────────────────────
             let cos2 = 2.0 * cos_p * cos_p - 1.0;
             let mixed = composite * 2.0 * cos2;
             self.lmr_s1 = self.lp_alpha * self.lmr_s1 + (1.0 - self.lp_alpha) * mixed;
-            self.lmr_s2 =
-                self.lp_alpha * self.lmr_s2 + (1.0 - self.lp_alpha) * self.lmr_s1;
+            self.lmr_s2 = self.lp_alpha * self.lmr_s2 + (1.0 - self.lp_alpha) * self.lmr_s1;
             let lmr = self.lmr_s2;
 
             self.phase_acc += self.phase_step;
@@ -337,7 +331,12 @@ mod tests {
     /// - L+R = A_mono * cos(2π * f_audio * t)   (mono audio)
     /// - pilot = A_pilot * cos(2π * 19000 * t)  (stereo pilot)
     /// - L-R = A_lmr * cos(2π * 38000 * t) * cos(2π * f_audio * t)  (DSB-SC)
-    fn make_stereo_composite(f_audio: f32, a_mono: f32, a_pilot: f32, a_lmr: f32) -> Vec<Complex<f32>> {
+    fn make_stereo_composite(
+        f_audio: f32,
+        a_mono: f32,
+        a_pilot: f32,
+        a_lmr: f32,
+    ) -> Vec<Complex<f32>> {
         let n = SR as usize;
         let mut phase: f32 = 0.0;
         let mut samples = Vec::with_capacity(n);
@@ -423,11 +422,16 @@ mod tests {
         if is_stereo {
             // In stereo mode, L and R must differ
             let tail = &frames[frames.len() * 3 / 4..];
-            let l_rms = (tail.iter().map(|f| f.left * f.left).sum::<f32>() / tail.len() as f32).sqrt();
-            let r_rms = (tail.iter().map(|f| f.right * f.right).sum::<f32>() / tail.len() as f32).sqrt();
+            let l_rms =
+                (tail.iter().map(|f| f.left * f.left).sum::<f32>() / tail.len() as f32).sqrt();
+            let r_rms =
+                (tail.iter().map(|f| f.right * f.right).sum::<f32>() / tail.len() as f32).sqrt();
             // With equal L+R and L-R amplitudes, L and R should have different energy
             let diff = (l_rms - r_rms).abs();
-            assert!(diff > 0.001 || l_rms > 0.0, "L and R should differ in stereo");
+            assert!(
+                diff > 0.001 || l_rms > 0.0,
+                "L and R should differ in stereo"
+            );
         }
         // else: pilot didn't lock in 1 second — that's allowed in tests
     }
@@ -455,7 +459,11 @@ mod tests {
         let (frames, _) = dec.process(&iq);
         for f in &frames {
             assert!((-1.0..=1.0).contains(&f.left), "L={} out of range", f.left);
-            assert!((-1.0..=1.0).contains(&f.right), "R={} out of range", f.right);
+            assert!(
+                (-1.0..=1.0).contains(&f.right),
+                "R={} out of range",
+                f.right
+            );
         }
     }
 }

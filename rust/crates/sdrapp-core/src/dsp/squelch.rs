@@ -179,13 +179,16 @@ mod tests {
         let out = sq.process(&weak);
         // Weak signal (-60 dBFS) should be gated by -10 dBFS threshold
         let tail = &out[1000..];
-        assert!(tail.iter().all(|&s| s == 0.0), "weak signal should be gated");
+        assert!(
+            tail.iter().all(|&s| s == 0.0),
+            "weak signal should be gated"
+        );
     }
 
     #[test]
     fn set_threshold_updates_behaviour() {
         let mut sq = Squelch::new(48_000, -10.0); // Start closed (high threshold)
-        // Lower the threshold to open the gate
+                                                  // Lower the threshold to open the gate
         sq.set_threshold_dbfs(-120.0);
         // Feed moderate signal
         let sig: Vec<f32> = (0..2000)
@@ -214,6 +217,9 @@ mod tests {
         let level = sq.level_dbfs();
         // RMS of 0.1-amplitude sine is ~0.0707 → power ~0.005 → ~-23 dBFS
         // (≠ -20 because that's peak, not RMS) — just check it's in the right ballpark
-        assert!(level > -40.0 && level < -10.0, "level {level} not in expected range");
+        assert!(
+            level > -40.0 && level < -10.0,
+            "level {level} not in expected range"
+        );
     }
 }

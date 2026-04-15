@@ -194,8 +194,15 @@ mod tests {
 
     #[test]
     fn mode_roundtrip() {
-        for mode in [DemodMode::Usb, DemodMode::Lsb, DemodMode::Am, DemodMode::Nfm,
-                     DemodMode::Wbfm, DemodMode::Cw, DemodMode::Dsb] {
+        for mode in [
+            DemodMode::Usb,
+            DemodMode::Lsb,
+            DemodMode::Am,
+            DemodMode::Nfm,
+            DemodMode::Wbfm,
+            DemodMode::Cw,
+            DemodMode::Dsb,
+        ] {
             let (s, _) = mode_to_hamlib(mode);
             assert_eq!(hamlib_to_mode(s), Some(mode));
         }

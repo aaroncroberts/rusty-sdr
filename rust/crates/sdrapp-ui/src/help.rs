@@ -81,13 +81,34 @@ struct KeyRow {
 }
 
 const KEY_TABLE: &[KeyRow] = &[
-    KeyRow { key: "↑ / ↓", action: "Tune frequency by step size" },
-    KeyRow { key: "← / →", action: "Tune frequency by 10× step size" },
-    KeyRow { key: "Scroll on spectrum", action: "Tune frequency by step size" },
-    KeyRow { key: "Ctrl+Scroll", action: "Zoom spectrum in/out" },
-    KeyRow { key: "Click spectrum", action: "Click-to-tune: retune to clicked frequency" },
-    KeyRow { key: "Click waterfall", action: "Click-to-tune on waterfall history" },
-    KeyRow { key: "?", action: "Open/close this help panel" },
+    KeyRow {
+        key: "↑ / ↓",
+        action: "Tune frequency by step size",
+    },
+    KeyRow {
+        key: "← / →",
+        action: "Tune frequency by 10× step size",
+    },
+    KeyRow {
+        key: "Scroll on spectrum",
+        action: "Tune frequency by step size",
+    },
+    KeyRow {
+        key: "Ctrl+Scroll",
+        action: "Zoom spectrum in/out",
+    },
+    KeyRow {
+        key: "Click spectrum",
+        action: "Click-to-tune: retune to clicked frequency",
+    },
+    KeyRow {
+        key: "Click waterfall",
+        action: "Click-to-tune on waterfall history",
+    },
+    KeyRow {
+        key: "?",
+        action: "Open/close this help panel",
+    },
 ];
 
 const PAGE_NAMES: &[&str] = &["Tune", "Display", "Record"];
@@ -111,7 +132,9 @@ pub struct HelpPanel {
 
 impl Default for HelpPanel {
     fn default() -> Self {
-        Self { tab: HelpTab::Overview }
+        Self {
+            tab: HelpTab::Overview,
+        }
     }
 }
 
@@ -138,7 +161,10 @@ impl HelpPanel {
                 // Close button in top-right
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button(RichText::new("✕").color(theme::TEXT_MUTED)).clicked() {
+                        if ui
+                            .small_button(RichText::new("✕").color(theme::TEXT_MUTED))
+                            .clicked()
+                        {
                             *open = false;
                         }
                     });
@@ -199,7 +225,11 @@ impl HelpPanel {
         );
         ui.add_space(8.0);
 
-        ui.label(RichText::new("Quick Start").color(theme::ACCENT_DIM).strong());
+        ui.label(
+            RichText::new("Quick Start")
+                .color(theme::ACCENT_DIM)
+                .strong(),
+        );
         ui.add_space(4.0);
         let steps = [
             "1. Connect antenna to the appropriate port (see Antennas tab).",
@@ -249,14 +279,27 @@ impl HelpPanel {
             .show(ui, |ui| {
                 // Header
                 for header in ["Band", "Frequency", "Antenna", "Notes"] {
-                    ui.label(RichText::new(header).color(theme::ACCENT_DIM).small().strong());
+                    ui.label(
+                        RichText::new(header)
+                            .color(theme::ACCENT_DIM)
+                            .small()
+                            .strong(),
+                    );
                 }
                 ui.end_row();
 
                 for row in ANTENNA_TABLE {
                     ui.label(RichText::new(row.band).color(theme::TEXT_PRIMARY).small());
-                    ui.label(RichText::new(row.freq_range).color(theme::ACCENT_DIM).small());
-                    ui.label(RichText::new(row.antenna).color(theme::TEXT_PRIMARY).small());
+                    ui.label(
+                        RichText::new(row.freq_range)
+                            .color(theme::ACCENT_DIM)
+                            .small(),
+                    );
+                    ui.label(
+                        RichText::new(row.antenna)
+                            .color(theme::TEXT_PRIMARY)
+                            .small(),
+                    );
                     ui.label(RichText::new(row.notes).color(theme::TEXT_MUTED).small());
                     ui.end_row();
                 }
@@ -275,23 +318,39 @@ impl HelpPanel {
 
     fn tab_signals(&self, ui: &mut Ui) {
         ui.label(
-            RichText::new("Demodulation Modes").color(theme::ACCENT_DIM).strong(),
+            RichText::new("Demodulation Modes")
+                .color(theme::ACCENT_DIM)
+                .strong(),
         );
         ui.add_space(4.0);
 
         let modes = [
-            ("WBFM — Wideband FM", "FM broadcast stations (88–108 MHz). 75 kHz deviation, \
+            (
+                "WBFM — Wideband FM",
+                "FM broadcast stations (88–108 MHz). 75 kHz deviation, \
               200 kHz channel spacing. Includes stereo pilot (19 kHz) and RDS data \
-              subcarrier (57 kHz). Expect: music, speech, RDS station name and RadioText."),
-            ("NFM — Narrow FM", "Voice communications: aviation (118–137 MHz, AM!), marine \
+              subcarrier (57 kHz). Expect: music, speech, RDS station name and RadioText.",
+            ),
+            (
+                "NFM — Narrow FM",
+                "Voice communications: aviation (118–137 MHz, AM!), marine \
               VHF (156–174 MHz), amateur 2m/70cm, PMR446, emergency services. 12.5–25 kHz \
-              channel spacing. Use squelch to gate out noise between transmissions."),
-            ("AM — Amplitude Modulation", "AM broadcast (530 kHz – 1.7 MHz), shortwave, \
+              channel spacing. Use squelch to gate out noise between transmissions.",
+            ),
+            (
+                "AM — Amplitude Modulation",
+                "AM broadcast (530 kHz – 1.7 MHz), shortwave, \
               aviation voice (108–137 MHz). Envelope detector — signals appear as two \
-              sidebands symmetric around the carrier on the spectrum."),
+              sidebands symmetric around the carrier on the spectrum.",
+            ),
         ];
         for (title, desc) in &modes {
-            ui.label(RichText::new(*title).color(theme::TEXT_PRIMARY).strong().small());
+            ui.label(
+                RichText::new(*title)
+                    .color(theme::TEXT_PRIMARY)
+                    .strong()
+                    .small(),
+            );
             ui.label(RichText::new(*desc).color(theme::TEXT_MUTED).small());
             ui.add_space(6.0);
         }
@@ -300,7 +359,9 @@ impl HelpPanel {
         ui.add_space(4.0);
 
         ui.label(
-            RichText::new("Reading the Spectrum & Waterfall").color(theme::ACCENT_DIM).strong(),
+            RichText::new("Reading the Spectrum & Waterfall")
+                .color(theme::ACCENT_DIM)
+                .strong(),
         );
         ui.add_space(4.0);
         let waterfall_tips = [
@@ -312,7 +373,11 @@ impl HelpPanel {
             "Scroll the spectrum to tune frequency. Ctrl+Scroll to zoom. Click anywhere to retune to that frequency.",
         ];
         for tip in &waterfall_tips {
-            ui.label(RichText::new(format!("• {tip}")).color(theme::TEXT_PRIMARY).small());
+            ui.label(
+                RichText::new(format!("• {tip}"))
+                    .color(theme::TEXT_PRIMARY)
+                    .small(),
+            );
             ui.add_space(2.0);
         }
 
@@ -321,7 +386,9 @@ impl HelpPanel {
         ui.add_space(4.0);
 
         ui.label(
-            RichText::new("RDS (Radio Data System)").color(theme::ACCENT_DIM).strong(),
+            RichText::new("RDS (Radio Data System)")
+                .color(theme::ACCENT_DIM)
+                .strong(),
         );
         ui.add_space(4.0);
         let rds_info = [
@@ -332,14 +399,20 @@ impl HelpPanel {
             "RDS data is reset when you retune or change demod mode. Allow 2–3 seconds for reassembly.",
         ];
         for info in &rds_info {
-            ui.label(RichText::new(format!("• {info}")).color(theme::TEXT_PRIMARY).small());
+            ui.label(
+                RichText::new(format!("• {info}"))
+                    .color(theme::TEXT_PRIMARY)
+                    .small(),
+            );
             ui.add_space(2.0);
         }
     }
 
     fn tab_controls(&self, ui: &mut Ui) {
         ui.label(
-            RichText::new("Keyboard Shortcuts").color(theme::ACCENT_DIM).strong(),
+            RichText::new("Keyboard Shortcuts")
+                .color(theme::ACCENT_DIM)
+                .strong(),
         );
         ui.add_space(4.0);
 
@@ -356,7 +429,11 @@ impl HelpPanel {
             });
 
         ui.add_space(8.0);
-        ui.label(RichText::new("Tuning Tips").color(theme::ACCENT_DIM).strong());
+        ui.label(
+            RichText::new("Tuning Tips")
+                .color(theme::ACCENT_DIM)
+                .strong(),
+        );
         ui.add_space(4.0);
         let tips = [
             "Scroll step size is shown below the frequency display — click to cycle: 100 Hz → 1 kHz → 10 kHz → 100 kHz.",
@@ -366,14 +443,20 @@ impl HelpPanel {
             "The MIDI nanoKontrol2 gives hardware control over all tuning, zoom, and recording functions.",
         ];
         for tip in &tips {
-            ui.label(RichText::new(format!("• {tip}")).color(theme::TEXT_PRIMARY).small());
+            ui.label(
+                RichText::new(format!("• {tip}"))
+                    .color(theme::TEXT_PRIMARY)
+                    .small(),
+            );
             ui.add_space(2.0);
         }
     }
 
     fn tab_midi_map(&self, ui: &mut Ui, bindings: &[(usize, String, String)]) {
         ui.label(
-            RichText::new("nanoKontrol2 MIDI Binding Map").color(theme::ACCENT_DIM).strong(),
+            RichText::new("nanoKontrol2 MIDI Binding Map")
+                .color(theme::ACCENT_DIM)
+                .strong(),
         );
         ui.add_space(2.0);
         ui.label(
@@ -395,10 +478,8 @@ impl HelpPanel {
         }
 
         for (page_idx, page_name) in PAGE_NAMES.iter().enumerate() {
-            let page_bindings: Vec<_> = bindings
-                .iter()
-                .filter(|(p, _, _)| *p == page_idx)
-                .collect();
+            let page_bindings: Vec<_> =
+                bindings.iter().filter(|(p, _, _)| *p == page_idx).collect();
 
             ui.collapsing(
                 RichText::new(format!("Page {}: {}", page_idx, page_name))
@@ -433,11 +514,9 @@ impl HelpPanel {
 
         ui.add_space(4.0);
         ui.label(
-            RichText::new(
-                "Transport buttons (Play, Stop, Cycle, Record) apply on all pages.",
-            )
-            .color(theme::TEXT_MUTED)
-            .small(),
+            RichText::new("Transport buttons (Play, Stop, Cycle, Record) apply on all pages.")
+                .color(theme::TEXT_MUTED)
+                .small(),
         );
     }
 }
