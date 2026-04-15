@@ -464,8 +464,6 @@ impl SignalPath {
             let mut scan_dwell_secs: f32 = 2.0;
             // Accumulates IQ sample count for dwell timer; compare to sample_rate * dwell_secs
             let mut scan_dwell_samples: u64 = 0;
-            // True while squelch is open (signal active) — scanner pauses.
-            let mut _scan_squelch_open = false;
 
             /// Create a fresh demodulator for the given mode.
             fn make_demod(mode: DemodMode, sr: u32, nfm_bw_hz: u32) -> Demod {
@@ -665,6 +663,8 @@ impl SignalPath {
                                     shared_clone.write().demod.demod_mode = bm_mode;
                                     demod.reset();
                                     rds.reset();
+                                    audio_accumulator.clear();
+                                    iq_accumulator.clear();
                                 }
                             }
                             ScanCmd::Stop => {
@@ -797,18 +797,6 @@ impl SignalPath {
                 // ── Scanner tick ─────────────────────────────────────────────
                 if scan_running {
                     scan_dwell_samples += batch.len() as u64;
-                    // Read squelch state (above threshold = signal present = pause).
-                    let sq_threshold = shared_clone.read().demod.squelch_threshold;
-                    let snr_now = shared_clone.read().fft.snr_db.unwrap_or(-120.0);
-                    // "squelch open" = signal detected above threshold
-                    let signal_present = snr_now > (sq_threshold + 120.0).max(0.0);
-                    if signal_present {
-                        // Signal active → stay on this channel; reset dwell timer.
-                        scan_dwell_samples = 0;
-                        _scan_squelch_open = true;
-                    } else {
-                        _scan_squelch_open = false;
-                    }
                     let dwell_target = (scan_dwell_secs * sr as f32) as u64;
                     if scan_dwell_samples >= dwell_target {
                         scan_dwell_samples = 0;
@@ -839,6 +827,9 @@ impl SignalPath {
                             shared_clone.write().demod.demod_mode = bm_mode;
                             demod.reset();
                             rds.reset();
+                            // Clear accumulators so no stale audio/IQ bleeds into the new channel.
+                            audio_accumulator.clear();
+                            iq_accumulator.clear();
                         }
                     }
                 }
