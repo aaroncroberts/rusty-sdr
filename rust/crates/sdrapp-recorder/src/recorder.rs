@@ -89,6 +89,8 @@ impl Recorder {
             let mut iq_writer: Option<BufWriter<std::fs::File>> = None;
             // When a scheduled stop is armed, we store the deadline.
             let mut stop_at: Option<tokio::time::Instant> = None;
+            // Suppress repeated write-error logs — one warning per recording session.
+            let mut audio_write_warned = false;
 
             loop {
                 let stop_fut = async {
@@ -103,6 +105,7 @@ impl Recorder {
 
                 tokio::select! {
                     Some(cmd) = cmd_rx.recv() => {
+                        let was_recording = wav_writer.is_some();
                         handle_command(
                             cmd,
                             &config,
@@ -111,13 +114,21 @@ impl Recorder {
                             &mut stop_at,
                             cmd_tx_clone.clone(),
                         ).await;
+                        // Reset write-error flag when a new session opens.
+                        if !was_recording && wav_writer.is_some() {
+                            audio_write_warned = false;
+                        }
                     }
 
                     Some(frames) = audio_rx.recv() => {
                         if let Some(ref mut w) = wav_writer {
                             for frame in frames.iter() {
-                                let _ = w.write_sample(frame.left);
-                                let _ = w.write_sample(frame.right);
+                                let ok = w.write_sample(frame.left).is_ok()
+                                    && w.write_sample(frame.right).is_ok();
+                                if !ok && !audio_write_warned {
+                                    tracing::warn!("WAV write failed — disk may be full or file closed");
+                                    audio_write_warned = true;
+                                }
                             }
                         }
                     }

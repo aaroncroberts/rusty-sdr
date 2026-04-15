@@ -281,7 +281,14 @@ impl MidiController {
 
                         // ── Transport / system ────────────────────────────────
                         MidiAction::PlayToggle => {
-                            // Future: toggle signal path start/stop
+                            let is_running = shared.read().is_running;
+                            if is_running {
+                                tracing::info!("MIDI PlayToggle: stopping signal path");
+                                let _ = signal_cmd_tx.try_send(SignalPathCommand::Stop);
+                            } else {
+                                tracing::info!("MIDI PlayToggle: starting signal path");
+                                let _ = signal_cmd_tx.try_send(SignalPathCommand::Start);
+                            }
                         }
                         MidiAction::Stop => {
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::Stop);

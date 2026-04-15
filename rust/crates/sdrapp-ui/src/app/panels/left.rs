@@ -94,9 +94,15 @@ impl SdrApp {
             .clicked()
         {
             if is_running {
-                let _ = self.cmd_tx.try_send(SignalPathCommand::Stop);
+                tracing::info!("UI: Stop clicked");
+                if self.cmd_tx.try_send(SignalPathCommand::Stop).is_err() {
+                    tracing::error!("failed to send Stop command");
+                }
             } else {
-                let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
+                tracing::info!("UI: Start clicked");
+                if self.cmd_tx.try_send(SignalPathCommand::Start).is_err() {
+                    tracing::error!("failed to send Start command");
+                }
             }
         }
 
@@ -375,8 +381,14 @@ impl SdrApp {
                         ui.text_edit_singleline(&mut self.bookmark_edit_buf.0);
                     });
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Freq (Hz)").color(theme::TEXT_MUTED).small());
+                        let freq_valid = self.bookmark_edit_buf.1.trim().parse::<u64>().map_or(false, |f| f > 0);
+                        let freq_color = if freq_valid { theme::TEXT_MUTED } else { theme::DANGER };
+                        ui.label(RichText::new("Freq (Hz)").color(freq_color).small());
                         ui.text_edit_singleline(&mut self.bookmark_edit_buf.1);
+                        if !freq_valid && !self.bookmark_edit_buf.1.is_empty() {
+                            ui.label(RichText::new("!").color(theme::DANGER).small())
+                                .on_hover_text("Enter frequency in Hz (e.g. 98100000 for 98.1 MHz)");
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Cat").color(theme::TEXT_MUTED).small());
@@ -400,9 +412,12 @@ impl SdrApp {
                         }
                     });
                     ui.horizontal(|ui| {
-                        if ui.small_button(RichText::new("✓ Save").color(theme::STATUS_OK)).clicked() {
-                            edit_commit_idx = Some(i);
-                        }
+                        let freq_valid = self.bookmark_edit_buf.1.trim().parse::<u64>().map_or(false, |f| f > 0);
+                        ui.add_enabled_ui(freq_valid, |ui| {
+                            if ui.small_button(RichText::new("✓ Save").color(theme::STATUS_OK)).clicked() {
+                                edit_commit_idx = Some(i);
+                            }
+                        });
                         if ui.small_button(RichText::new("✕ Cancel").color(theme::TEXT_MUTED)).clicked() {
                             edit_cancel = true;
                         }
@@ -547,7 +562,7 @@ impl SdrApp {
                 let path = dirs::home_dir().unwrap_or_default().join("bookmarks.csv");
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let mut imported: Vec<BookmarkConfig> = Vec::new();
-                    for line in content.lines().skip(1) { // skip header
+                    for (line_no, line) in content.lines().enumerate().skip(1) {
                         let parts: Vec<&str> = line.splitn(4, ',').collect();
                         if parts.len() >= 3 {
                             let freq: u64 = parts[1].trim().parse().unwrap_or(0);
@@ -555,7 +570,11 @@ impl SdrApp {
                                 let mut bc = BookmarkConfig::new(parts[0].trim(), freq, parts[2].trim());
                                 if parts.len() >= 4 { bc.category = parts[3].trim().into(); }
                                 imported.push(bc);
+                            } else {
+                                tracing::warn!(line = line_no + 1, raw = line, "bookmark import: skipped line — invalid frequency");
                             }
+                        } else {
+                            tracing::warn!(line = line_no + 1, raw = line, "bookmark import: skipped line — too few columns");
                         }
                     }
                     if !imported.is_empty() {
@@ -640,25 +659,31 @@ impl SdrApp {
         );
         ui.add_space(4.0);
 
-        // Antenna selector
+        // Antenna selector — disabled while running (hardware reconfig during stream can glitch)
         ui.horizontal(|ui| {
             ui.label(RichText::new("Antenna").color(theme::TEXT_MUTED).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                for port in ["A", "B", "C"] {
-                    let selected = self.config.source.antenna == port;
-                    let label = RichText::new(port).small();
-                    let label = if selected {
-                        label.color(theme::ACCENT).strong()
-                    } else {
-                        label.color(theme::TEXT_MUTED)
-                    };
-                    if ui.selectable_label(selected, label).clicked() && !selected {
-                        self.config.source.antenna = port.into();
-                        self.config_dirty = true;
-                        let port_num: u8 = match port { "B" => 1, "C" => 2, _ => 0 };
-                        let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port_num).into());
+                ui.add_enabled_ui(!is_running, |ui| {
+                    for port in ["A", "B", "C"] {
+                        let selected = self.config.source.antenna == port;
+                        let label = RichText::new(port).small();
+                        let label = if selected {
+                            label.color(theme::ACCENT).strong()
+                        } else {
+                            label.color(theme::TEXT_MUTED)
+                        };
+                        if ui.selectable_label(selected, label)
+                            .on_disabled_hover_text("Stop playback before switching antenna")
+                            .clicked() && !selected
+                        {
+                            self.config.source.antenna = port.into();
+                            self.config_dirty = true;
+                            let port_num: u8 = match port { "B" => 1, "C" => 2, _ => 0 };
+                            tracing::info!(port, "antenna switched");
+                            let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port_num).into());
+                        }
                     }
-                }
+                });
             });
         });
 

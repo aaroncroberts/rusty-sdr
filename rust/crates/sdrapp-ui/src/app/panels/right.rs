@@ -167,8 +167,12 @@ impl SdrApp {
             .stroke(Stroke::new(1.5, theme::DANGER));
 
             if ui.add_sized(Vec2::new(ui.available_width(), 28.0), stop_btn).clicked() {
-                let _ = self.recorder_cmd_tx.try_send(RecorderCommand::Stop);
-                let _ = self.cmd_tx.try_send(SignalPathCommand::StopRecording);
+                if self.recorder_cmd_tx.try_send(RecorderCommand::Stop).is_err() {
+                    tracing::error!("failed to send StopRecording to recorder");
+                }
+                if self.cmd_tx.try_send(SignalPathCommand::StopRecording).is_err() {
+                    tracing::error!("failed to send StopRecording to signal path");
+                }
             }
 
             ui.add_space(4.0);
@@ -183,12 +187,17 @@ impl SdrApp {
                     .stroke(Stroke::new(1.0, theme::STATUS_OK));
 
             if ui.add_sized(Vec2::new(ui.available_width(), 28.0), rec_btn).clicked() {
-                let _ = self.recorder_cmd_tx.try_send(RecorderCommand::Start {
+                tracing::info!(freq_hz = center_freq, ?rec_mode, "starting recording");
+                if self.recorder_cmd_tx.try_send(RecorderCommand::Start {
                     freq_hz: center_freq,
                     iq_sample_rate: iq_sr,
                     mode: rec_mode,
-                });
-                let _ = self.cmd_tx.try_send(SignalPathCommand::StartRecording);
+                }).is_err() {
+                    tracing::error!("failed to send StartRecording to recorder");
+                }
+                if self.cmd_tx.try_send(SignalPathCommand::StartRecording).is_err() {
+                    tracing::error!("failed to send StartRecording to signal path");
+                }
             }
         }
 
