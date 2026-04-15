@@ -930,4 +930,112 @@ mod tests {
         assert_eq!(state.fft.fft_magnitudes.len(), FFT_SIZE);
         assert!(state.fft.fft_magnitudes.iter().all(|&v| v <= -100.0));
     }
+
+    // ── Signal path command-dispatch integration tests ────────────────────────
+    //
+    // Pattern:
+    //   1. Start the signal path (spawns a tokio task).
+    //   2. Send a command — it queues in the crossbeam channel.
+    //   3. Send an empty IQ batch to unblock the task's `iq_rx.recv().await`.
+    //   4. `yield_now()` — scheduler runs the signal path task until it blocks
+    //      again (after draining the command queue and looping back to recv).
+    //   5. Assert the SharedState mutation.
+
+    fn make_signal_path() -> (
+        SignalPath,
+        broadcast::Sender<Arc<[IqSample]>>,
+        Arc<RwLock<SharedState>>,
+    ) {
+        let (iq_tx, iq_rx) = broadcast::channel(8);
+        let shared = Arc::new(RwLock::new(SharedState::new()));
+        let path = SignalPath::start(
+            Arc::clone(&shared),
+            iq_rx,
+            None, None, None, None, None,
+        );
+        (path, iq_tx, shared)
+    }
+
+    /// Send `cmd`, tickle the signal path loop with an empty IQ batch, yield.
+    async fn tick(
+        cmd_tx: &crossbeam_channel::Sender<SignalPathCommand>,
+        iq_tx: &broadcast::Sender<Arc<[IqSample]>>,
+        cmd: impl Into<SignalPathCommand>,
+    ) {
+        cmd_tx.try_send(cmd.into()).unwrap();
+        let _ = iq_tx.send(Arc::new([]));
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn set_frequency_updates_center_freq() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetFrequency(101_700_000)).await;
+        assert_eq!(shared.read().center_freq_hz, 101_700_000);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn set_volume_updates_demod_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetVolume(0.42)).await;
+        assert!((shared.read().demod.volume - 0.42).abs() < 1e-6);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn set_demod_mode_switches_demod() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetDemodMode(DemodMode::Am)).await;
+        assert_eq!(shared.read().demod.demod_mode, DemodMode::Am);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn set_squelch_threshold_updates_demod_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, ReceiverCmd::SetSquelchThreshold(-45.0)).await;
+        assert!((shared.read().demod.squelch_threshold - (-45.0)).abs() < 1e-6);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn bookmark_add_and_remove_round_trip() {
+        let (path, iq_tx, shared) = make_signal_path();
+        // SharedState::new() starts with 1 pre-loaded bookmark (BBC Radio 4).
+        let initial = shared.read().bookmarks.len();
+        tick(&path.cmd_tx, &iq_tx, BookmarkCmd::Add("NOAA Weather".to_string())).await;
+        assert_eq!(shared.read().bookmarks.len(), initial + 1, "one bookmark added");
+        let last_idx = shared.read().bookmarks.len() - 1;
+        assert_eq!(shared.read().bookmarks[last_idx].name, "NOAA Weather");
+        tick(&path.cmd_tx, &iq_tx, BookmarkCmd::Remove(last_idx)).await;
+        assert_eq!(shared.read().bookmarks.len(), initial, "back to initial count after Remove");
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn fft_size_change_accepted_for_power_of_two() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetFftSize(4096)).await;
+        assert_eq!(shared.read().fft.fft_size, 4096);
+        assert_eq!(shared.read().fft.fft_magnitudes.len(), 4096);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn fft_size_change_rejected_for_non_power_of_two() {
+        let (path, iq_tx, shared) = make_signal_path();
+        // 3000 is not a power-of-two — should be silently ignored
+        tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetFftSize(3000)).await;
+        assert_eq!(shared.read().fft.fft_size, FFT_SIZE, "non-power-of-two FFT size should be ignored");
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
+
+    #[tokio::test]
+    async fn band_plan_toggle_updates_display_state() {
+        let (path, iq_tx, shared) = make_signal_path();
+        tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetBandPlanEnabled(true)).await;
+        assert!(shared.read().fft.band_plan_enabled);
+        let _ = path.cmd_tx.try_send(SignalPathCommand::Stop);
+    }
 }
