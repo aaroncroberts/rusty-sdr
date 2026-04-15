@@ -65,8 +65,9 @@ pub const DANGER: Color32 = Color32::from_rgb(240, 60, 60);
 /// Spectrum trace fill — cyan-green glow
 pub const SPECTRUM_TRACE: Color32 = Color32::from_rgb(40, 220, 180);
 
-/// Spectrum trace fill (semi-transparent base for polygon fill)
-pub const SPECTRUM_FILL: Color32 = Color32::from_rgba_premultiplied(20, 140, 110, 80);
+/// Spectrum trace fill (semi-transparent base for polygon fill).
+/// Premultiplied: actual (20, 140, 110) × 80/255 ≈ (6, 44, 34).
+pub const SPECTRUM_FILL: Color32 = Color32::from_rgba_premultiplied(6, 44, 34, 80);
 
 /// Spectrum grid lines
 pub const SPECTRUM_GRID: Color32 = Color32::from_rgb(28, 40, 55);
@@ -305,8 +306,8 @@ pub fn apply(ctx: &egui::Context) {
     visuals.widgets.active.rounding = ROUNDING;
     visuals.widgets.noninteractive.rounding = ROUNDING;
 
-    // Selection highlight
-    visuals.selection.bg_fill = Color32::from_rgba_premultiplied(0, 180, 220, 60);
+    // Selection highlight — subtle tint, dark enough for text to remain readable
+    visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(0, 140, 180, 55);
     visuals.selection.stroke = Stroke::new(1.0, ACCENT);
 
     // Hyperlinks

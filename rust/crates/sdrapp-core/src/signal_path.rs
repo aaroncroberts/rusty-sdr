@@ -492,6 +492,7 @@ impl SignalPath {
             // Start paused — the UI must send `Start` to begin processing.
             shared_clone.write().is_running = false;
             let mut paused = true;
+            let mut source_dead = false;
 
             loop {
                 // Drain any pending commands (non-blocking)
@@ -693,6 +694,13 @@ impl SignalPath {
                     }
                 }
 
+                // When the source is dead, sleep briefly and loop to keep
+                // processing commands (so Start/Stop/freq changes still work).
+                if source_dead {
+                    tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                    continue;
+                }
+
                 // Receive a batch of IQ samples
                 let batch = match iq_rx.recv().await {
                     Ok(b) => b,
@@ -700,7 +708,15 @@ impl SignalPath {
                         tracing::warn!(dropped = n, "signal path lagged — dropped batches");
                         continue;
                     }
-                    Err(_) => break, // Source closed
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // Source disconnected (device thread exited). Keep the
+                        // signal path alive so the UI can still send commands.
+                        tracing::warn!("IQ source disconnected — signal path idle");
+                        source_dead = true;
+                        paused = true;
+                        shared_clone.write().is_running = false;
+                        continue;
+                    }
                 };
 
                 // When paused, drain IQ without processing to avoid broadcast lag.

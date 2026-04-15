@@ -287,11 +287,20 @@ fn run_sdrplay_thread(
     );
 
     // ── Select device ─────────────────────────────────────────────────────────
+    // tuner and rspDuoMode must be set before SelectDevice (required by the API).
+    devices[device_idx].tuner = sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A;
+    devices[device_idx].rspDuoMode =
+        sys::sdrplay_api_RspDuoModeT_sdrplay_api_RspDuoMode_Single_Tuner;
+
     let err = unsafe { sys::sdrplay_api_SelectDevice(&mut devices[device_idx]) };
     anyhow::ensure!(
         err == sys::sdrplay_api_ErrT_sdrplay_api_Success,
         "SelectDevice failed: {err}"
     );
+
+    // sdrplay_api_GetDevices() locks the device API — UnlockDeviceApi() MUST be
+    // called after SelectDevice or sdrplay_api_Init will fail with error 1.
+    unsafe { sys::sdrplay_api_UnlockDeviceApi() };
 
     let dev_handle = devices[device_idx].dev;
 
