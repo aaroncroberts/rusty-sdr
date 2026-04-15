@@ -812,9 +812,9 @@ impl SdrApp {
     // ── Center Panel ─────────────────────────────────────────────────────────
 
     fn center_panel(&mut self, ui: &mut Ui) {
-        let fft_data = {
+        let (fft_data, band_plan_enabled, snr_db) = {
             let s = self.shared.read();
-            s.fft_magnitudes.clone()
+            (s.fft_magnitudes.clone(), s.band_plan_enabled, s.snr_db)
         };
 
         let freq = self.config.ui.frequency_hz;
@@ -948,7 +948,7 @@ impl SdrApp {
             freq_range: (freq.saturating_sub(span), freq + span),
             vfo_hz: freq,
             peak_hold: peak_ref,
-            show_band_plan: true,
+            show_band_plan: band_plan_enabled,
         }
         .show(&mut spectrum_ui);
 
@@ -1064,6 +1064,85 @@ impl SdrApp {
                 let _ = self.cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(ws));
                 self.config.ui.waterfall_speed = ws;
                 self.config_dirty = true;
+            }
+        });
+
+        // Row 3: FFT size, window, averaging, band plan, SNR
+        ui.add_space(1.0);
+        ui.horizontal(|ui| {
+            let (cur_fft_size, cur_fft_window, cur_fft_avg) = {
+                let s = self.shared.read();
+                (s.fft_size, s.fft_window, s.fft_averaging)
+            };
+
+            // FFT size dropdown
+            ui.label(RichText::new("FFT").color(theme::TEXT_MUTED).small());
+            egui::ComboBox::from_id_salt("fft_size")
+                .selected_text(RichText::new(cur_fft_size.to_string()).small())
+                .width(52.0)
+                .show_ui(ui, |ui| {
+                    for sz in [512_usize, 1024, 2048, 4096, 8192] {
+                        let sel = cur_fft_size == sz;
+                        if ui.selectable_label(sel, sz.to_string()).clicked() && !sel {
+                            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFftSize(sz));
+                            self.config.ui.fft_size = sz;
+                            self.config_dirty = true;
+                        }
+                    }
+                });
+
+            // Window function dropdown
+            ui.label(RichText::new("Win").color(theme::TEXT_MUTED).small());
+            egui::ComboBox::from_id_salt("fft_window")
+                .selected_text(RichText::new(cur_fft_window.label()).small())
+                .width(68.0)
+                .show_ui(ui, |ui| {
+                    use sdrapp_core::dsp::FftWindow;
+                    for wf in [FftWindow::Rectangular, FftWindow::Hann, FftWindow::Hamming, FftWindow::BlackmanHarris] {
+                        let sel = cur_fft_window == wf;
+                        if ui.selectable_label(sel, wf.label()).clicked() && !sel {
+                            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFftWindow(wf));
+                            self.config.ui.fft_window = format!("{wf:?}");
+                            self.config_dirty = true;
+                        }
+                    }
+                });
+
+            // Averaging slider (1–16)
+            ui.label(RichText::new("Avg").color(theme::TEXT_MUTED).small());
+            let mut avg = cur_fft_avg as i32;
+            if ui.add(
+                egui::Slider::new(&mut avg, 1..=16).show_value(true)
+            ).on_hover_text("FFT averaging: frames blended via exponential moving average. 1 = off.").changed() {
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFftAveraging(avg as u8));
+                self.config.ui.fft_averaging = avg as u8;
+                self.config_dirty = true;
+            }
+
+            // Band plan toggle
+            let bp_color = if band_plan_enabled { theme::ACCENT } else { theme::TEXT_MUTED };
+            if ui.small_button(RichText::new("BP").color(bp_color))
+                .on_hover_text("Toggle band plan overlay on spectrum")
+                .clicked()
+            {
+                let new_val = !band_plan_enabled;
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetBandPlanEnabled(new_val));
+                self.config.ui.band_plan_enabled = new_val;
+                self.config_dirty = true;
+            }
+
+            // SNR display
+            if let Some(snr) = snr_db {
+                let snr_color = if snr > 20.0 {
+                    theme::STATUS_OK
+                } else if snr > 10.0 {
+                    theme::AMBER
+                } else {
+                    theme::TEXT_MUTED
+                };
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("SNR {:.0} dB", snr)).color(snr_color).small())
+                    .on_hover_text("Estimated signal-to-noise ratio in the active demod channel");
             }
         });
 

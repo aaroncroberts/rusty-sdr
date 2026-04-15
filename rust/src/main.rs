@@ -39,6 +39,17 @@ fn main() -> anyhow::Result<()> {
         s.waterfall_speed = config.ui.waterfall_speed;
         s.nfm_bandwidth_hz = config.ui.nfm_bandwidth_hz;
         s.ctcss_squelch_enabled = config.ui.ctcss_enabled;
+        // FFT / spectrum display settings
+        s.fft_size = config.ui.fft_size;
+        s.fft_averaging = config.ui.fft_averaging;
+        s.band_plan_enabled = config.ui.band_plan_enabled;
+        s.fft_window = match config.ui.fft_window.as_str() {
+            "Rectangular" => sdrapp_core::dsp::FftWindow::Rectangular,
+            "Hamming" => sdrapp_core::dsp::FftWindow::Hamming,
+            "BlackmanHarris" => sdrapp_core::dsp::FftWindow::BlackmanHarris,
+            _ => sdrapp_core::dsp::FftWindow::Hann,
+        };
+        s.fft_magnitudes = vec![-120.0; config.ui.fft_size];
         // Load persisted bookmarks
         s.bookmarks = config.bookmarks.iter().map(|b| {
             use sdrapp_core::signal_path::{Bookmark, DemodMode};
@@ -176,6 +187,29 @@ fn main() -> anyhow::Result<()> {
     );
     // Use the command sender that the signal path actually reads from.
     let cmd_tx = signal_path.cmd_tx.clone();
+
+    // Apply persisted FFT settings (signal path starts with defaults; sync from config).
+    {
+        use sdrapp_core::{dsp::FftWindow, signal_path::SignalPathCommand};
+        if config.ui.fft_size != 2048 {
+            let _ = cmd_tx.try_send(SignalPathCommand::SetFftSize(config.ui.fft_size));
+        }
+        if config.ui.fft_averaging != 4 {
+            let _ = cmd_tx.try_send(SignalPathCommand::SetFftAveraging(config.ui.fft_averaging));
+        }
+        let wf = match config.ui.fft_window.as_str() {
+            "Rectangular" => FftWindow::Rectangular,
+            "Hamming" => FftWindow::Hamming,
+            "BlackmanHarris" => FftWindow::BlackmanHarris,
+            _ => FftWindow::Hann,
+        };
+        if wf != FftWindow::Hann {
+            let _ = cmd_tx.try_send(SignalPathCommand::SetFftWindow(wf));
+        }
+        if config.ui.band_plan_enabled {
+            let _ = cmd_tx.try_send(SignalPathCommand::SetBandPlanEnabled(true));
+        }
+    }
 
     // ── MIDI controller ───────────────────────────────────────────────────────
     let midi_ctrl = sdrapp_midi::MidiController::new(

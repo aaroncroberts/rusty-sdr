@@ -2,11 +2,39 @@
 
 //! FFT processor for spectrum/waterfall display.
 //!
-//! Takes a batch of IQ samples, applies a Hann window,
+//! Takes a batch of IQ samples, applies a configurable window function,
 //! runs FFT via `rustfft`, and returns log-magnitude bins.
+
+use serde::{Deserialize, Serialize};
 
 use crate::sample::IqSample;
 use rustfft::{num_complex::Complex, FftPlanner};
+
+/// Window function applied before the FFT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FftWindow {
+    /// Rectangular (no windowing). Best time resolution, worst leakage.
+    Rectangular,
+    /// Hann — good general-purpose window. Low leakage, moderate main-lobe width.
+    #[default]
+    Hann,
+    /// Hamming — slightly less sidelobe attenuation than Hann, marginally narrower main lobe.
+    Hamming,
+    /// Blackman-Harris — very low sidelobes (~92 dB). Best for adjacent-channel rejection.
+    BlackmanHarris,
+}
+
+impl FftWindow {
+    /// Human-readable label for UI display.
+    pub fn label(self) -> &'static str {
+        match self {
+            FftWindow::Rectangular => "Rect",
+            FftWindow::Hann => "Hann",
+            FftWindow::Hamming => "Hamming",
+            FftWindow::BlackmanHarris => "Blkm-Har",
+        }
+    }
+}
 
 /// Computes a windowed FFT from IQ samples and returns magnitude in dBFS.
 ///
@@ -19,12 +47,12 @@ pub struct FftProcessor {
 }
 
 impl FftProcessor {
-    pub fn new(fft_size: usize) -> Self {
+    pub fn new(fft_size: usize, window_fn: FftWindow) -> Self {
         assert!(
             fft_size.is_power_of_two(),
             "fft_size must be a power of two"
         );
-        let window = hann_window(fft_size);
+        let window = make_window(fft_size, window_fn);
         Self {
             fft_size,
             window,
@@ -60,10 +88,40 @@ impl FftProcessor {
     }
 }
 
-/// Hann window coefficients for a given size.
+/// Generate window coefficients for the given function and size.
+pub fn make_window(n: usize, window_fn: FftWindow) -> Vec<f32> {
+    match window_fn {
+        FftWindow::Rectangular => vec![1.0; n],
+        FftWindow::Hann => hann_window(n),
+        FftWindow::Hamming => hamming_window(n),
+        FftWindow::BlackmanHarris => blackman_harris_window(n),
+    }
+}
+
 fn hann_window(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos()))
+        .collect()
+}
+
+fn hamming_window(n: usize) -> Vec<f32> {
+    (0..n)
+        .map(|i| {
+            0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos()
+        })
+        .collect()
+}
+
+fn blackman_harris_window(n: usize) -> Vec<f32> {
+    let a0 = 0.35875_f32;
+    let a1 = 0.48829_f32;
+    let a2 = 0.14128_f32;
+    let a3 = 0.01168_f32;
+    (0..n)
+        .map(|i| {
+            let t = 2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0);
+            a0 - a1 * t.cos() + a2 * (2.0 * t).cos() - a3 * (3.0 * t).cos()
+        })
         .collect()
 }
 
@@ -94,7 +152,7 @@ mod tests {
     #[test]
     fn dc_tone_peaks_at_center_bin() {
         let fft_size = 1024;
-        let mut proc = FftProcessor::new(fft_size);
+        let mut proc = FftProcessor::new(fft_size, FftWindow::Hann);
         // Pure DC: real=1, imag=0
         let samples: Vec<IqSample> = (0..fft_size).map(|_| IqSample::new(1.0, 0.0)).collect();
         let mags = proc.process(&samples).unwrap();
@@ -112,7 +170,7 @@ mod tests {
 
     #[test]
     fn returns_none_for_insufficient_samples() {
-        let mut proc = FftProcessor::new(1024);
+        let mut proc = FftProcessor::new(1024, FftWindow::Hann);
         let samples: Vec<IqSample> = (0..512).map(|_| IqSample::new(0.0, 0.0)).collect();
         assert!(proc.process(&samples).is_none());
     }
@@ -120,7 +178,7 @@ mod tests {
     #[test]
     fn silence_returns_low_dbfs() {
         let fft_size = 256;
-        let mut proc = FftProcessor::new(fft_size);
+        let mut proc = FftProcessor::new(fft_size, FftWindow::Hann);
         let samples: Vec<IqSample> = (0..fft_size).map(|_| IqSample::new(0.0, 0.0)).collect();
         let mags = proc.process(&samples).unwrap();
         assert!(mags.iter().all(|&m| m <= -100.0));
@@ -133,5 +191,26 @@ mod tests {
         assert_abs_diff_eq!(w[7], 0.0, epsilon = 1e-5);
         // Peak near center
         assert!(w[3] > 0.9 || w[4] > 0.9);
+    }
+
+    #[test]
+    fn rectangular_window_is_all_ones() {
+        let w = make_window(16, FftWindow::Rectangular);
+        assert!(w.iter().all(|&v| (v - 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn blackman_harris_near_zero_at_endpoints() {
+        let w = blackman_harris_window(64);
+        assert!(w[0].abs() < 0.01);
+        assert!(w[63].abs() < 0.01);
+    }
+
+    #[test]
+    fn all_windows_produce_correct_length() {
+        for &wf in &[FftWindow::Rectangular, FftWindow::Hann, FftWindow::Hamming, FftWindow::BlackmanHarris] {
+            let w = make_window(512, wf);
+            assert_eq!(w.len(), 512);
+        }
     }
 }

@@ -19,7 +19,7 @@ pub mod volume;
 pub use bandpass::AudioBandpass;
 pub use ctcss::CtcssDetector;
 pub use demod::{AmDemodulator, CwDemodulator, FmDemodulator, SsbDemodulator, SsbMode};
-pub use fft::FftProcessor;
+pub use fft::{FftProcessor, FftWindow};
 pub use packer::Packer;
 pub use rds::RdsDecoder;
 pub use squelch::Squelch;

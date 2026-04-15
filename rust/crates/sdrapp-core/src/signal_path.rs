@@ -170,6 +170,18 @@ pub struct SharedState {
     pub fm_notch_enabled: bool,
     /// Active antenna port: 0=A, 1=B, 2=C.
     pub antenna_port: u8,
+
+    // ── FFT / spectrum display settings ──────────────────────────────────────
+    /// FFT bin count for spectrum display (512, 1024, 2048, 4096, 8192).
+    pub fft_size: usize,
+    /// FFT window function applied before transform.
+    pub fft_window: crate::dsp::FftWindow,
+    /// Number of FFT frames to average (exponential moving average). 1 = no averaging.
+    pub fft_averaging: u8,
+    /// Whether to show the band plan overlay on the spectrum.
+    pub band_plan_enabled: bool,
+    /// Estimated SNR in the active demod channel (dB). None until computed.
+    pub snr_db: Option<f32>,
 }
 
 impl SharedState {
@@ -185,6 +197,9 @@ impl SharedState {
                 Bookmark::new("BBC Radio 4", 93_500_000, DemodMode::Wbfm),
             ],
             nfm_bandwidth_hz: 12_500,
+            fft_size: FFT_SIZE,
+            fft_window: crate::dsp::FftWindow::Hann,
+            fft_averaging: 4,
             ..Default::default()
         }
     }
@@ -233,6 +248,15 @@ pub enum SignalPathCommand {
     SetNfmBandwidth(u32),
     /// Enable or disable CTCSS tone squelch in NFM mode.
     SetCtcssEnabled(bool),
+    // ── FFT / spectrum display settings ──────────────────────────────────────
+    /// Change the FFT bin count (must be a power of two: 512–8192).
+    SetFftSize(usize),
+    /// Change the FFT window function.
+    SetFftWindow(crate::dsp::FftWindow),
+    /// Set exponential averaging: 1 = off, 2–16 = frames to average.
+    SetFftAveraging(u8),
+    /// Toggle band plan overlay.
+    SetBandPlanEnabled(bool),
     // ── Hardware controls (forwarded to device thread via HardwareCommand) ───
     SetLnaState(u8),
     SetIfGain(i32),
@@ -306,7 +330,11 @@ impl SignalPath {
 
         let handle = tokio::spawn(async move {
             let sr = sample_rate.max(200_000);
-            let mut fft = FftProcessor::new(FFT_SIZE);
+            let mut fft_size = FFT_SIZE;
+            let mut fft_window = crate::dsp::FftWindow::Hann;
+            let mut fft = FftProcessor::new(fft_size, fft_window);
+            let mut fft_averaging: u8 = 4;
+            let mut fft_avg_buf: Vec<f32> = vec![-120.0; fft_size];
             let mut vol = Volume::new(0.8);
             let mut demod: Demod = Demod::Wbfm(StereoFmDecoder::new(sr));
             let mut squelch = Squelch::new(48_000, -50.0);
@@ -481,6 +509,30 @@ impl SignalPath {
                                 let _ = tx.try_send(HardwareCommand::SetAntenna(port));
                             }
                         }
+                        // ── FFT / spectrum display settings ──────────────────
+                        SignalPathCommand::SetFftSize(sz) => {
+                            if sz.is_power_of_two() && sz >= 512 && sz <= 8192 {
+                                fft_size = sz;
+                                fft = FftProcessor::new(fft_size, fft_window);
+                                fft_avg_buf = vec![-120.0; fft_size];
+                                iq_accumulator.clear();
+                                shared_clone.write().fft_size = sz;
+                                shared_clone.write().fft_magnitudes = vec![-120.0; sz];
+                            }
+                        }
+                        SignalPathCommand::SetFftWindow(wf) => {
+                            fft_window = wf;
+                            fft = FftProcessor::new(fft_size, fft_window);
+                            shared_clone.write().fft_window = wf;
+                        }
+                        SignalPathCommand::SetFftAveraging(n) => {
+                            fft_averaging = n.max(1).min(16);
+                            fft_avg_buf = vec![-120.0; fft_size];
+                            shared_clone.write().fft_averaging = fft_averaging;
+                        }
+                        SignalPathCommand::SetBandPlanEnabled(en) => {
+                            shared_clone.write().band_plan_enabled = en;
+                        }
                         SignalPathCommand::Stop => {
                             shared_clone.write().is_running = false;
                             return;
@@ -500,14 +552,61 @@ impl SignalPath {
 
                 // Accumulate for FFT
                 iq_accumulator.extend_from_slice(&batch);
-                if iq_accumulator.len() >= FFT_SIZE {
+                if iq_accumulator.len() >= fft_size {
                     if let Some(mags) = fft.process(&iq_accumulator) {
-                        shared_clone.write().fft_magnitudes = mags;
+                        // Exponential moving average: alpha ≈ 2/(N+1) for N-frame avg.
+                        let alpha = if fft_averaging <= 1 {
+                            1.0_f32
+                        } else {
+                            2.0 / (fft_averaging as f32 + 1.0)
+                        };
+                        for (avg, &new) in fft_avg_buf.iter_mut().zip(mags.iter()) {
+                            *avg = alpha * new + (1.0 - alpha) * *avg;
+                        }
+                        // SNR: peak in center ±bw_bins vs median of remaining bins.
+                        let snr = {
+                            let n = fft_avg_buf.len();
+                            let center = n / 2;
+                            let bw_hz = {
+                                let s = shared_clone.read();
+                                match s.demod_mode {
+                                    DemodMode::Wbfm => 200_000_u32,
+                                    DemodMode::Nfm => s.nfm_bandwidth_hz,
+                                    DemodMode::Am | DemodMode::Usb | DemodMode::Lsb | DemodMode::Dsb => 10_000,
+                                    DemodMode::Cw => 1_000,
+                                }
+                            };
+                            let sr_hz = shared_clone.read().sample_rate_sps.max(1) as f32;
+                            let half_bw_bins = ((bw_hz as f32 / sr_hz * n as f32) as usize).max(2).min(n / 4);
+                            let sig_lo = center.saturating_sub(half_bw_bins);
+                            let sig_hi = (center + half_bw_bins).min(n - 1);
+                            let peak = fft_avg_buf[sig_lo..=sig_hi]
+                                .iter()
+                                .cloned()
+                                .fold(f32::NEG_INFINITY, f32::max);
+                            // Noise: collect all bins outside signal window, take median.
+                            let mut noise_bins: Vec<f32> = fft_avg_buf[..sig_lo].iter()
+                                .chain(fft_avg_buf[sig_hi + 1..].iter())
+                                .cloned()
+                                .collect();
+                            let noise_floor = if noise_bins.is_empty() {
+                                -120.0_f32
+                            } else {
+                                noise_bins.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                                noise_bins[noise_bins.len() / 2]
+                            };
+                            peak - noise_floor
+                        };
+                        {
+                            let mut s = shared_clone.write();
+                            s.fft_magnitudes = fft_avg_buf.clone();
+                            s.snr_db = Some(snr);
+                        }
                         if let Some(ref ctx) = egui_ctx {
                             ctx.request_repaint();
                         }
                     }
-                    iq_accumulator.drain(..FFT_SIZE);
+                    iq_accumulator.drain(..fft_size);
                 }
 
                 // Demodulate IQ → StereoFrame batches at 48 kHz.

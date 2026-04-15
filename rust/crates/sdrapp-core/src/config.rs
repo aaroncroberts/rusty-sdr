@@ -113,6 +113,18 @@ pub struct UiConfig {
     /// CTCSS tone squelch enabled for NFM.
     #[serde(default)]
     pub ctcss_enabled: bool,
+    /// FFT bin count (512, 1024, 2048, 4096, 8192).
+    #[serde(default = "default_fft_size")]
+    pub fft_size: usize,
+    /// FFT window function: "Hann", "Hamming", "BlackmanHarris", "Rectangular".
+    #[serde(default = "default_fft_window")]
+    pub fft_window: String,
+    /// FFT display averaging frames (1–16).
+    #[serde(default = "default_fft_averaging")]
+    pub fft_averaging: u8,
+    /// Show band plan overlay on spectrum.
+    #[serde(default)]
+    pub band_plan_enabled: bool,
 }
 
 fn default_zoom_level() -> f32 {
@@ -123,6 +135,15 @@ fn default_waterfall_speed() -> f32 {
 }
 fn default_nfm_bandwidth() -> u32 {
     12_500
+}
+fn default_fft_size() -> usize {
+    2048
+}
+fn default_fft_window() -> String {
+    "Hann".into()
+}
+fn default_fft_averaging() -> u8 {
+    4
 }
 
 impl Default for UiConfig {
@@ -137,6 +158,10 @@ impl Default for UiConfig {
             waterfall_speed: 1.0,
             nfm_bandwidth_hz: 12_500,
             ctcss_enabled: false,
+            fft_size: 2048,
+            fft_window: "Hann".into(),
+            fft_averaging: 4,
+            band_plan_enabled: false,
         }
     }
 }
