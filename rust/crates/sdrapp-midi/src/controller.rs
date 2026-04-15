@@ -244,7 +244,13 @@ impl MidiController {
 
                         // ── Recording ─────────────────────────────────────────
                         MidiAction::RecordStart => {
-                            let _ = recorder_tx.send(RecorderCommand::Start).await;
+                            let (freq_hz, iq_sr, mode) = {
+                                let s = shared.read();
+                                (s.center_freq_hz, s.sample_rate_sps, s.recording_mode)
+                            };
+                            let _ = recorder_tx.send(RecorderCommand::Start {
+                                freq_hz, iq_sample_rate: iq_sr, mode,
+                            }).await;
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::StartRecording);
                         }
                         MidiAction::RecordStop => {
@@ -257,7 +263,13 @@ impl MidiController {
                                 let _ = recorder_tx.send(RecorderCommand::Stop).await;
                                 let _ = signal_cmd_tx.try_send(SignalPathCommand::StopRecording);
                             } else {
-                                let _ = recorder_tx.send(RecorderCommand::Start).await;
+                                let (freq_hz, iq_sr, mode) = {
+                                    let s = shared.read();
+                                    (s.center_freq_hz, s.sample_rate_sps, s.recording_mode)
+                                };
+                                let _ = recorder_tx.send(RecorderCommand::Start {
+                                    freq_hz, iq_sample_rate: iq_sr, mode,
+                                }).await;
                                 let _ = signal_cmd_tx.try_send(SignalPathCommand::StartRecording);
                             }
                         }
@@ -456,7 +468,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
 
         let cmd = rec_rx.try_recv();
-        assert!(matches!(cmd, Ok(RecorderCommand::Start)));
+        assert!(matches!(cmd, Ok(RecorderCommand::Start { .. })));
     }
 
     #[test]

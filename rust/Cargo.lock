@@ -3435,7 +3435,9 @@ dependencies = [
  "egui_plot",
  "parking_lot",
  "sdrapp-core",
+ "sdrapp-recorder",
  "serde",
+ "tokio",
  "tracing",
 ]
 

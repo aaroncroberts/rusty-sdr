@@ -10,4 +10,4 @@ mod config;
 mod recorder;
 
 pub use config::RecorderConfig;
-pub use recorder::{Recorder, RecorderCommand};
+pub use recorder::{RecordingMode, Recorder, RecorderCommand};

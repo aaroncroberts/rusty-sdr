@@ -8,10 +8,12 @@ publish.workspace = true
 
 [dependencies]
 sdrapp-core = { path = "../sdrapp-core" }
+sdrapp-recorder = { path = "../sdrapp-recorder" }
 egui = { workspace = true }
 eframe = { workspace = true }
 egui_plot = { workspace = true }
 serde = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-channel = { workspace = true }

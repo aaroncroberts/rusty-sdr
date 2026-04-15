@@ -21,8 +21,9 @@ use egui::{Color32, RichText, Stroke, Ui, Vec2};
 use sdrapp_core::{
     config::{AppConfig, BookmarkConfig},
     registry::ModuleRegistry,
-    signal_path::{DemodMode, SharedState, SignalPathCommand},
+    signal_path::{DemodMode, RecordingMode, SharedState, SignalPathCommand},
 };
+use sdrapp_recorder::RecorderCommand;
 
 use crate::{
     frequency::FrequencyWidget,
@@ -82,6 +83,7 @@ pub struct SdrApp {
     registry: ModuleRegistry,
     shared: Arc<RwLock<SharedState>>,
     cmd_tx: crossbeam_channel::Sender<SignalPathCommand>,
+    recorder_cmd_tx: tokio::sync::mpsc::Sender<RecorderCommand>,
     frequency_widget: FrequencyWidget,
     waterfall: WaterfallWidget,
     /// Dirty flag — save config at next opportunity
@@ -109,6 +111,10 @@ pub struct SdrApp {
     /// Live MIDI bindings for the help panel MIDI Map tab.
     /// Populated at construction from the nanoKontrol2 default profile.
     midi_bindings: Vec<(usize, String, String)>,
+    /// Scheduled recording: delay before start (seconds).
+    sched_delay_secs: u32,
+    /// Scheduled recording: duration (seconds).
+    sched_duration_secs: u32,
 }
 
 impl SdrApp {
@@ -117,6 +123,7 @@ impl SdrApp {
         config: AppConfig,
         shared: Arc<RwLock<SharedState>>,
         cmd_tx: crossbeam_channel::Sender<SignalPathCommand>,
+        recorder_cmd_tx: tokio::sync::mpsc::Sender<RecorderCommand>,
         midi_bindings: Vec<(usize, String, String)>,
     ) -> Self {
         // Apply our beautiful dark theme
@@ -130,6 +137,7 @@ impl SdrApp {
             config,
             shared,
             cmd_tx,
+            recorder_cmd_tx,
             config_dirty: false,
             vu_peak: 0.0,
             peak_hold: Vec::new(),
@@ -141,6 +149,8 @@ impl SdrApp {
             waterfall_row_frac: 0.0,
             help_panel: HelpPanel::default(),
             midi_bindings,
+            sched_delay_secs: 0,
+            sched_duration_secs: 60,
         }
     }
 
@@ -984,26 +994,41 @@ impl SdrApp {
         ui.label(RichText::new("RECORDER").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        let is_recording = self.shared.read().is_recording;
+        let (is_recording, rec_mode, center_freq, iq_sr) = {
+            let s = self.shared.read();
+            (s.is_recording, s.recording_mode, s.center_freq_hz, s.sample_rate_sps)
+        };
+
+        // Recording mode selector
+        if !is_recording {
+            ui.horizontal(|ui| {
+                for mode in [RecordingMode::AudioOnly, RecordingMode::IqOnly, RecordingMode::Both] {
+                    let selected = rec_mode == mode;
+                    let label = match mode {
+                        RecordingMode::AudioOnly => "Audio",
+                        RecordingMode::IqOnly => "IQ",
+                        RecordingMode::Both => "Both",
+                    };
+                    if ui.selectable_label(selected, label).clicked() {
+                        self.shared.write().recording_mode = mode;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        }
 
         if is_recording {
-            // Stop button
             let stop_btn = egui::Button::new(
-                RichText::new("■  Stop Recording")
-                    .color(theme::DANGER)
-                    .strong(),
+                RichText::new("■  Stop Recording").color(theme::DANGER).strong(),
             )
             .fill(Color32::from_rgba_premultiplied(80, 10, 10, 200))
             .stroke(Stroke::new(1.5, theme::DANGER));
 
-            if ui
-                .add_sized(Vec2::new(ui.available_width(), 28.0), stop_btn)
-                .clicked()
-            {
+            if ui.add_sized(Vec2::new(ui.available_width(), 28.0), stop_btn).clicked() {
+                let _ = self.recorder_cmd_tx.try_send(RecorderCommand::Stop);
                 let _ = self.cmd_tx.try_send(SignalPathCommand::StopRecording);
             }
 
-            // Recording indicator
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("●").color(theme::DANGER));
@@ -1015,13 +1040,55 @@ impl SdrApp {
                     .fill(theme::WIDGET_BG)
                     .stroke(Stroke::new(1.0, theme::STATUS_OK));
 
-            if ui
-                .add_sized(Vec2::new(ui.available_width(), 28.0), rec_btn)
-                .clicked()
-            {
+            if ui.add_sized(Vec2::new(ui.available_width(), 28.0), rec_btn).clicked() {
+                let _ = self.recorder_cmd_tx.try_send(RecorderCommand::Start {
+                    freq_hz: center_freq,
+                    iq_sample_rate: iq_sr,
+                    mode: rec_mode,
+                });
                 let _ = self.cmd_tx.try_send(SignalPathCommand::StartRecording);
             }
         }
+
+        // ── Scheduled Recording ───────────────────────────────────────────────
+        ui.add_space(6.0);
+        ui.collapsing("Schedule", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Delay (s):");
+                let mut delay = self.sched_delay_secs;
+                if ui.add(egui::DragValue::new(&mut delay).range(0..=3600)).changed() {
+                    self.sched_delay_secs = delay;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Duration (s):");
+                let mut dur = self.sched_duration_secs;
+                if ui.add(egui::DragValue::new(&mut dur).range(1..=86400)).changed() {
+                    self.sched_duration_secs = dur;
+                }
+            });
+            let arm_btn = egui::Button::new("⏱  Arm Schedule")
+                .fill(theme::WIDGET_BG)
+                .stroke(Stroke::new(1.0, theme::ACCENT));
+            if ui.add_sized(Vec2::new(ui.available_width(), 24.0), arm_btn).clicked() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let _ = self.recorder_cmd_tx.try_send(RecorderCommand::Schedule {
+                    start_unix_secs: now + self.sched_delay_secs as u64,
+                    duration_secs: self.sched_duration_secs,
+                    freq_hz: center_freq,
+                    iq_sample_rate: iq_sr,
+                    mode: rec_mode,
+                });
+                tracing::info!(
+                    delay = self.sched_delay_secs,
+                    duration = self.sched_duration_secs,
+                    "scheduled recording armed"
+                );
+            }
+        });
 
         ui.add_space(8.0);
         ui.separator();

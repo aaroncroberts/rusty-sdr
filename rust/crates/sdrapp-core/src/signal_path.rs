@@ -31,6 +31,28 @@ use crate::sample::{IqSample, StereoFrame};
 const FFT_SIZE: usize = 2048;
 const AUDIO_FRAME_SIZE: usize = 1024;
 
+/// Which streams to capture when recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordingMode {
+    /// Demodulated stereo audio → .wav
+    #[default]
+    AudioOnly,
+    /// Raw I/Q complex samples → .iq
+    IqOnly,
+    /// Both simultaneously.
+    Both,
+}
+
+impl std::fmt::Display for RecordingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AudioOnly => write!(f, "Audio only"),
+            Self::IqOnly => write!(f, "IQ only"),
+            Self::Both => write!(f, "Audio + IQ"),
+        }
+    }
+}
+
 /// Demodulation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DemodMode {
@@ -114,6 +136,12 @@ pub struct SharedState {
     pub ctcss_squelch_enabled: bool,
     /// Whether a CTCSS tone is currently detected (NFM + CTCSS enabled).
     pub ctcss_tone_detected: bool,
+    /// Active recording mode (what to capture when recording starts).
+    pub recording_mode: RecordingMode,
+    /// Scheduled recording: seconds until start (0 = start now, None = not scheduled).
+    pub scheduled_record_delay_secs: Option<u64>,
+    /// Scheduled recording duration in seconds.
+    pub scheduled_record_duration_secs: u32,
 }
 
 impl SharedState {

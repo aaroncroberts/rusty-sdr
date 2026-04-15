@@ -74,16 +74,6 @@ fn main() -> anyhow::Result<()> {
     // start() spawns the cpal std::thread internally
     let _audio_handle = audio_sink.start();
 
-    // ── Recorder ─────────────────────────────────────────────────────────────
-    let mut recorder = sdrapp_recorder::Recorder::new(sdrapp_recorder::RecorderConfig {
-        output_dir: dirs::audio_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
-        sample_rate: 48_000,
-    });
-    let recorder_audio_tx = recorder.audio_tx.clone();
-    let recorder_cmd_tx = recorder.cmd_tx.clone();
-    // Recorder::start() needs to run inside the tokio runtime
-    rt.spawn(async move { recorder.start().await });
-
     // ── IQ source: real hardware or demo mode ─────────────────────────────────
     //
     // Try to open the SDRplay API and enumerate devices.  If that fails (device
@@ -95,6 +85,8 @@ fn main() -> anyhow::Result<()> {
     //
     // The source variables must stay alive until `eframe::run_native` returns
     // (i.e. the whole app lifetime) so their internal Arcs remain valid.
+    //
+    // Two subscribers are created: one for the signal path, one for IQ recording.
     let antenna = match config.source.antenna.as_str() {
         "B" => sdrapp_sdrplay::Antenna::B,
         "C" => sdrapp_sdrplay::Antenna::C,
@@ -104,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     let mut _sdrplay_source: Option<sdrapp_sdrplay::RspdxSource> = None;
     let mut _demo_source: Option<sdrapp_core::test_source::TestSignalSource> = None;
 
-    let (iq_rx, freq_atomic) = if sdrapp_sdrplay::RspdxSource::is_device_available() {
+    let (iq_rx, iq_recorder_rx, freq_atomic) = if sdrapp_sdrplay::RspdxSource::is_device_available() {
         tracing::info!("SDRplay device found — starting in hardware mode");
         shared.write().source_name = Some("SDRplay RSPdx-R2".to_string());
 
@@ -117,10 +109,11 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         });
         let rx = src.subscribe();
+        let iq_rec_rx = src.subscribe();
         let fa = src.frequency_atomic();
         drop(src.start());
         _sdrplay_source = Some(src);
-        (rx, fa)
+        (rx, iq_rec_rx, fa)
     } else {
         tracing::warn!("no SDRplay device — starting in demo mode (synthetic test signal)");
         shared.write().source_name = Some("Demo Mode".to_string());
@@ -130,11 +123,24 @@ fn main() -> anyhow::Result<()> {
             config.source.sample_rate_sps,
         );
         let rx = src.subscribe();
+        let iq_rec_rx = src.subscribe();
         let fa = src.frequency_atomic();
         drop(src.start());
         _demo_source = Some(src);
-        (rx, fa)
+        (rx, iq_rec_rx, fa)
     };
+
+    // ── Recorder ─────────────────────────────────────────────────────────────
+    let mut recorder = sdrapp_recorder::Recorder::new(sdrapp_recorder::RecorderConfig {
+        output_dir: dirs::audio_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+        sample_rate: 48_000,
+    });
+    let recorder_audio_tx = recorder.audio_tx.clone();
+    let recorder_cmd_tx = recorder.cmd_tx.clone();
+    // Give the recorder a second IQ subscriber for raw .iq file recording.
+    recorder.set_iq_source(iq_recorder_rx);
+    // Recorder::start() needs to run inside the tokio runtime
+    rt.spawn(async move { recorder.start().await });
 
     // ── Signal path ───────────────────────────────────────────────────────────
     let _signal_path = SignalPath::start(
@@ -149,7 +155,7 @@ fn main() -> anyhow::Result<()> {
     // ── MIDI controller ───────────────────────────────────────────────────────
     let midi_ctrl = sdrapp_midi::MidiController::new(
         sdrapp_midi::MidiConfig::with_nanokontrol2_defaults(),
-        recorder_cmd_tx,
+        recorder_cmd_tx.clone(),
     );
 
     let shared_for_midi = Arc::clone(&shared);
@@ -188,7 +194,7 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "SDR App",
         native_options,
-        Box::new(move |cc| Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx, midi_bindings)))),
+        Box::new(move |cc| Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx, recorder_cmd_tx, midi_bindings)))),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
