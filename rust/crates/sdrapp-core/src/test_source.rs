@@ -44,7 +44,7 @@ pub struct TestSignalSource {
 impl TestSignalSource {
     /// Create a new test source with the given initial frequency and sample rate.
     pub fn new(frequency_hz: u64, sample_rate_sps: u32) -> Self {
-        let (tx, _) = broadcast::channel(64);
+        let (tx, _) = broadcast::channel(512);
         Self {
             frequency_hz: Arc::new(AtomicU64::new(frequency_hz)),
             sample_rate_sps: sample_rate_sps.max(48_000),

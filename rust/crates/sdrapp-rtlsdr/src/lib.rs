@@ -97,7 +97,7 @@ impl RtlSdrSource {
     pub fn open(config: RtlSdrConfig) -> Option<Self> {
         #[cfg(feature = "rtlsdr")]
         {
-            let (tx, _) = broadcast::channel(64);
+            let (tx, _) = broadcast::channel(512);
             Some(Self {
                 frequency_hz: Arc::new(AtomicU64::new(config.frequency_hz)),
                 sample_rate_sps: config.sample_rate_sps,

@@ -59,7 +59,7 @@ pub struct RspdxSource {
 
 impl RspdxSource {
     pub fn new(config: RspdxConfig) -> Self {
-        let (tx, _) = broadcast::channel(64);
+        let (tx, _) = broadcast::channel(512);
         let frequency_hz = Arc::new(AtomicU64::new(config.frequency_hz));
         let (hw_cmd_tx, hw_cmd_rx) = crossbeam_channel::bounded::<HardwareCommand>(32);
         Self {
