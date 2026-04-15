@@ -90,6 +90,8 @@ pub struct SdrApp {
     // ── App settings ──────────────────────────────────────────────────────────
     /// Whether the settings window (Ctrl+,) is open.
     show_settings: bool,
+    /// When true, send Start command on the very first frame (--auto-start flag).
+    auto_start_pending: bool,
 }
 
 impl SdrApp {
@@ -100,6 +102,7 @@ impl SdrApp {
         cmd_tx: crossbeam_channel::Sender<SignalPathCommand>,
         recorder_cmd_tx: tokio::sync::mpsc::Sender<RecorderCommand>,
         midi_bindings: Vec<(usize, String, String)>,
+        auto_start: bool,
     ) -> Self {
         // Apply our beautiful dark theme
         theme::apply(&cc.egui_ctx);
@@ -150,6 +153,7 @@ impl SdrApp {
             scan_dwell_ui: 2.0,
             scan_cat_ui: String::new(),
             show_settings: false,
+            auto_start_pending: auto_start,
         }
     }
 }
@@ -158,6 +162,13 @@ impl SdrApp {
 
 impl eframe::App for SdrApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ── --auto-start: fire Start on the very first rendered frame ─────────
+        if self.auto_start_pending {
+            tracing::info!("--auto-start: sending Start command");
+            let _ = self.cmd_tx.send(SignalPathCommand::Start);
+            self.auto_start_pending = false;
+        }
+
         if self.config_dirty {
             self.config.save();
             self.config_dirty = false;

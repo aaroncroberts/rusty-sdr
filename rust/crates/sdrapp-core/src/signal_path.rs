@@ -359,6 +359,10 @@ pub enum SignalPathCommand {
     Start,
     /// Pause signal processing.  The task stays alive; send `Start` to resume.
     Stop,
+    /// Hot-swap the IQ source.  Sent by the hardware probe task when a device
+    /// appears (or reappears) while the app is running.  Clears `source_dead`
+    /// so the signal path resumes reading from the new receiver.
+    ReconnectSource(broadcast::Receiver<Arc<[IqSample]>>),
 }
 
 impl From<ReceiverCmd> for SignalPathCommand {
@@ -391,7 +395,7 @@ impl SignalPath {
     /// `iq_rx` is the broadcast receiver from the source (e.g. RspdxSource).
     pub fn start(
         shared: Arc<RwLock<SharedState>>,
-        mut iq_rx: broadcast::Receiver<Arc<[IqSample]>>,
+        iq_rx: broadcast::Receiver<Arc<[IqSample]>>,
         // crossbeam channels used for audio/recorder (sync threads, not async tasks)
         audio_tx: Option<crossbeam_channel::Sender<Arc<[StereoFrame]>>>,
         recorder_tx: Option<mpsc::Sender<Arc<[StereoFrame]>>>,
@@ -407,6 +411,8 @@ impl SignalPath {
         let shared_clone = Arc::clone(&shared);
         let freq_atomic_clone = freq_atomic;
         let hw_cmd_tx = hardware_cmd_tx;
+        // iq_rx must be mut so ReconnectSource can swap it at runtime.
+        let mut iq_rx = iq_rx;
 
         // Read initial sample rate before moving shared into the task
         let sample_rate = shared.read().sample_rate_sps;
@@ -691,6 +697,11 @@ impl SignalPath {
                             shared_clone.write().is_running = false;
                             iq_accumulator.clear();
                         }
+                        SignalPathCommand::ReconnectSource(new_rx) => {
+                            iq_rx = new_rx;
+                            source_dead = false;
+                            tracing::info!("IQ source hot-swapped — signal path live");
+                        }
                     }
                 }
 
@@ -909,8 +920,8 @@ impl SignalPath {
                 }
             }
 
-            shared_clone.write().is_running = false;
-            tracing::info!("signal path stopped");
+            // Note: the loop above never breaks (signal path runs for the app lifetime).
+            // Kept here as a logical boundary; dead code warning is expected.
         });
 
         Self {

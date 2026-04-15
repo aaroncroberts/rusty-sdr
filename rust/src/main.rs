@@ -11,6 +11,9 @@ use sdrapp_core::{
 use sdrapp_ui::SdrApp;
 
 fn main() -> anyhow::Result<()> {
+    // CLI flags
+    let auto_start = std::env::args().any(|a| a == "--auto-start" || a == "-s");
+
     // Structured logging — RUST_LOG overrides default
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -19,6 +22,9 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    if auto_start {
+        tracing::info!("--auto-start flag set: will begin listening on first frame");
+    }
     tracing::info!("sdrapp starting");
 
     let config = AppConfig::load_or_default();
@@ -110,6 +116,9 @@ fn main() -> anyhow::Result<()> {
     let mut _sdrplay_source: Option<sdrapp_sdrplay::RspdxSource> = None;
     let mut _rtlsdr_source: Option<sdrapp_rtlsdr::RtlSdrSource> = None;
     let mut _demo_source: Option<sdrapp_core::test_source::TestSignalSource> = None;
+    // Holds a hot-plugged hardware source so it stays alive for the app lifetime.
+    let hotplug_source: std::sync::Arc<parking_lot::Mutex<Option<sdrapp_sdrplay::RspdxSource>>> =
+        std::sync::Arc::new(parking_lot::Mutex::new(None));
 
     let (iq_rx, iq_recorder_rx, freq_atomic, hardware_cmd_tx) = if sdrapp_sdrplay::RspdxSource::is_device_available() {
         tracing::info!("SDRplay device found — starting in hardware mode");
@@ -206,6 +215,56 @@ fn main() -> anyhow::Result<()> {
     // Use the command sender that the signal path actually reads from.
     let cmd_tx = signal_path.cmd_tx.clone();
 
+    // ── Hardware hot-plug probe ───────────────────────────────────────────────
+    // When the app started in demo mode, poll for hardware every 3 seconds.
+    // On detection: create a real source, send ReconnectSource so the signal
+    // path hot-swaps without a restart.
+    if _demo_source.is_some() {
+        let shared_probe = Arc::clone(&shared);
+        let cmd_tx_probe = cmd_tx.clone();
+        let holder = std::sync::Arc::clone(&hotplug_source);
+        let sdrplay_cfg = sdrapp_sdrplay::RspdxConfig {
+            frequency_hz: config.ui.frequency_hz,
+            sample_rate_sps: config.source.sample_rate_sps,
+            antenna,
+            agc_enabled: config.source.agc_enabled,
+            lna_state: config.source.lna_state,
+            if_gain_dbfs: config.source.if_gain_dbfs,
+            agc_setpoint_dbfs: config.source.agc_setpoint_dbfs,
+            bias_t_enabled: config.source.bias_t_enabled,
+            hdr_mode: config.source.hdr_mode,
+            am_notch_enabled: config.source.am_notch_enabled,
+            fm_notch_enabled: config.source.fm_notch_enabled,
+            ..Default::default()
+        };
+        rt.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                // Stop probing once hardware is connected.
+                if shared_probe.read().source_name.as_deref() != Some("Demo Mode") {
+                    break;
+                }
+                let available = tokio::task::spawn_blocking(
+                    sdrapp_sdrplay::RspdxSource::is_device_available
+                ).await.unwrap_or(false);
+
+                if available {
+                    tracing::info!("hardware device detected while running — hot-swapping source");
+                    let mut src = sdrapp_sdrplay::RspdxSource::new(sdrplay_cfg.clone());
+                    let new_rx = src.subscribe();
+                    drop(src.start());
+                    *holder.lock() = Some(src);
+                    shared_probe.write().source_name = Some("SDRplay RSPdx-R2".to_string());
+                    let _ = cmd_tx_probe.try_send(
+                        sdrapp_core::signal_path::SignalPathCommand::ReconnectSource(new_rx)
+                    );
+                    tracing::info!("hot-plug complete — send Start to begin listening");
+                    break;
+                }
+            }
+        });
+    }
+
     // Apply persisted FFT settings (signal path starts with defaults; sync from config).
     {
         use sdrapp_core::{dsp::FftWindow, signal_path::DisplayCmd};
@@ -282,7 +341,7 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "SDR App",
         native_options,
-        Box::new(move |cc| Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx, recorder_cmd_tx, midi_bindings)))),
+        Box::new(move |cc| Ok(Box::new(SdrApp::new(cc, config, shared_for_app, cmd_tx, recorder_cmd_tx, midi_bindings, auto_start)))),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
