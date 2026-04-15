@@ -192,7 +192,7 @@ pub enum SignalPathCommand {
 /// Manages the running signal path tasks.
 pub struct SignalPath {
     shared: Arc<RwLock<SharedState>>,
-    cmd_tx: crossbeam_channel::Sender<SignalPathCommand>,
+    pub cmd_tx: crossbeam_channel::Sender<SignalPathCommand>,
     /// Handles to all running tasks, for awaiting shutdown.
     _handles: Vec<JoinHandle<()>>,
 }

@@ -51,9 +51,8 @@ fn main() -> anyhow::Result<()> {
         }).collect();
     }
 
-    // Signal path command channel: UI → signal path
-    let (cmd_tx, _cmd_rx) =
-        crossbeam_channel::bounded::<sdrapp_core::signal_path::SignalPathCommand>(64);
+    // Signal path command channel is created inside SignalPath::start() and
+    // exposed via signal_path.cmd_tx.  This placeholder is replaced below.
 
     // Tokio runtime — eframe owns the main thread, tokio runs on worker threads
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -143,7 +142,7 @@ fn main() -> anyhow::Result<()> {
     rt.spawn(async move { recorder.start().await });
 
     // ── Signal path ───────────────────────────────────────────────────────────
-    let _signal_path = SignalPath::start(
+    let signal_path = SignalPath::start(
         Arc::clone(&shared),
         iq_rx,
         Some(audio_tx),
@@ -151,6 +150,8 @@ fn main() -> anyhow::Result<()> {
         None, // RepaintHandle: egui context not available yet; UI polls SharedState
         Some(freq_atomic),
     );
+    // Use the command sender that the signal path actually reads from.
+    let cmd_tx = signal_path.cmd_tx.clone();
 
     // ── MIDI controller ───────────────────────────────────────────────────────
     let midi_ctrl = sdrapp_midi::MidiController::new(
