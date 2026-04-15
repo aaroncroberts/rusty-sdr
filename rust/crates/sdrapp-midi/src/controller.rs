@@ -178,11 +178,11 @@ impl MidiController {
 
                         // ── Display (zoom & waterfall) ────────────────────────
                         MidiAction::ZoomIn => {
-                            let z = (shared.read().zoom_level * 0.9).max(0.05);
+                            let z = (shared.read().zoom_level / 1.5).max(0.005);
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetZoom(z));
                         }
                         MidiAction::ZoomOut => {
-                            let z = (shared.read().zoom_level * 1.1).min(1.0);
+                            let z = (shared.read().zoom_level * 1.5).min(1.0);
                             let _ = signal_cmd_tx.try_send(SignalPathCommand::SetZoom(z));
                         }
                         MidiAction::ZoomSet(_) => {

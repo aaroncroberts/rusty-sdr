@@ -896,13 +896,13 @@ impl SdrApp {
             };
 
             ui.label(RichText::new("Zoom").color(theme::TEXT_MUTED).small());
-            // [-] slider [+] pattern for fine control
-            let z_step = zoom_level * 0.15;
+            // Multiplicative zoom buttons: each click scales by ×1.5 or ÷1.5
+            // so zoom-out is equally fast at any zoom level.
             if ui.small_button(RichText::new("−").color(theme::TEXT_MUTED))
-                .on_hover_text("Zoom in (or Ctrl+scroll up on spectrum)")
+                .on_hover_text("Zoom in ×1.5 (or Ctrl+scroll up on spectrum)")
                 .clicked()
             {
-                let new_z = (zoom_level - z_step).clamp(0.005, 1.0);
+                let new_z = (zoom_level / 1.5).clamp(0.005, 1.0);
                 let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_z));
                 self.config.ui.zoom_level = new_z;
                 self.config_dirty = true;
@@ -918,12 +918,20 @@ impl SdrApp {
                 self.config_dirty = true;
             }
             if ui.small_button(RichText::new("+").color(theme::TEXT_MUTED))
-                .on_hover_text("Zoom out (or Ctrl+scroll down on spectrum)")
+                .on_hover_text("Zoom out ×1.5 (or Ctrl+scroll down on spectrum)")
                 .clicked()
             {
-                let new_z = (zoom_level + z_step).clamp(0.005, 1.0);
+                let new_z = (zoom_level * 1.5).clamp(0.005, 1.0);
                 let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_z));
                 self.config.ui.zoom_level = new_z;
+                self.config_dirty = true;
+            }
+            if ui.small_button(RichText::new("Full").color(theme::ACCENT))
+                .on_hover_text("Reset to full bandwidth (zoom = 1.0)")
+                .clicked()
+            {
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(1.0));
+                self.config.ui.zoom_level = 1.0;
                 self.config_dirty = true;
             }
             ui.label(RichText::new(&bw_label).color(theme::ACCENT).small())
@@ -1051,7 +1059,7 @@ impl SdrApp {
             // Convert preset span to zoom_level relative to hardware bandwidth
             let sr_half = self.shared.read().sample_rate_sps as u64 / 2;
             if sr_half > 0 {
-                let z = (span as f32 / sr_half as f32).clamp(0.05, 1.0);
+                let z = (span as f32 / sr_half as f32).clamp(0.005, 1.0);
                 let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(z));
                 self.config.ui.zoom_level = z;
             }
