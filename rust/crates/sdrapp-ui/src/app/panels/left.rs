@@ -92,10 +92,12 @@ impl SdrApp {
         if ui
             .add_sized(Vec2::new(ui.available_width(), 28.0), btn)
             .clicked()
-            && is_running
         {
-            let _ = self.cmd_tx.try_send(SignalPathCommand::Stop);
-            // Start is handled by main.rs wiring the signal path; button is a placeholder
+            if is_running {
+                let _ = self.cmd_tx.try_send(SignalPathCommand::Stop);
+            } else {
+                let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
+            }
         }
 
         ui.add_space(8.0);
@@ -138,16 +140,16 @@ impl SdrApp {
             }
         });
 
-        // Nudge buttons: ◄◄ ◄ ► ►► (×10 / ×1 step)
+        // Nudge buttons: << < > >> (×10 / ×1 step)
         ui.add_space(4.0);
         let freq = self.config.ui.frequency_hz;
         ui.horizontal(|ui| {
             let btn_w = (ui.available_width() - 16.0) / 4.0;
             for (label, delta, tip) in [
-                ("◄◄", -(step_hz as i64 * 10), "−10 × step"),
-                ("◄",  -(step_hz as i64),       "−1 × step  (or ↓ / ↑ arrow keys)"),
-                ("►",   step_hz as i64,          "+1 × step  (or ↑ arrow key)"),
-                ("►►",  step_hz as i64 * 10,    "+10 × step"),
+                ("<<", -(step_hz as i64 * 10), "-10x step"),
+                ("<",  -(step_hz as i64),       "-1x step  (or Down arrow key)"),
+                (">",   step_hz as i64,          "+1x step  (or Up arrow key)"),
+                (">>",  step_hz as i64 * 10,    "+10x step"),
             ] {
                 if ui.add_sized(
                     Vec2::new(btn_w, 22.0),

@@ -30,6 +30,11 @@ pub struct SpectrumWidget<'a> {
     pub freq_range: (u64, u64),
     /// VFO center frequency in Hz (for the center marker line).
     pub vfo_hz: u64,
+    /// Filter passband low edge in Hz (absolute). Drawn as a translucent overlay.
+    /// Set to `vfo_hz` for symmetric demodulators; use asymmetric values for SSB.
+    pub filter_lo_hz: u64,
+    /// Filter passband high edge in Hz (absolute).
+    pub filter_hi_hz: u64,
     /// Optional peak-hold buffer (same length as fft_data).
     pub peak_hold: Option<&'a [f32]>,
     /// Whether to draw the frequency band allocation overlay.
@@ -239,20 +244,37 @@ impl<'a> SpectrumWidget<'a> {
             }
         }
 
+        // ── Filter passband overlay ───────────────────────────────────────────
+        // Semi-transparent fill showing the demodulator's receive bandwidth.
+        if freq_hi > freq_lo && self.filter_hi_hz > self.filter_lo_hz {
+            let freq_span = freq_hi - freq_lo;
+            let lo_t = ((self.filter_lo_hz as f64 - freq_lo) / freq_span).clamp(0.0, 1.0) as f32;
+            let hi_t = ((self.filter_hi_hz as f64 - freq_lo) / freq_span).clamp(0.0, 1.0) as f32;
+            let lo_x = plot_rect.left() + lo_t * plot_rect.width();
+            let hi_x = plot_rect.left() + hi_t * plot_rect.width();
+            if hi_x - lo_x >= 1.0 {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(lo_x, plot_rect.top()),
+                        Pos2::new(hi_x, plot_rect.bottom()),
+                    ),
+                    0.0,
+                    Color32::from_rgba_premultiplied(0, 160, 220, 22),
+                );
+                // Passband edge lines
+                for edge_x in [lo_x, hi_x] {
+                    painter.line_segment(
+                        [Pos2::new(edge_x, plot_rect.top()), Pos2::new(edge_x, plot_rect.bottom())],
+                        Stroke::new(0.75, Color32::from_rgba_premultiplied(0, 180, 255, 60)),
+                    );
+                }
+            }
+        }
+
         // ── VFO line ─────────────────────────────────────────────────────────
         if freq_hi > freq_lo {
             let vfo_t = ((self.vfo_hz as f64 - freq_lo) / (freq_hi - freq_lo)) as f32;
             let vfo_x = plot_rect.left() + vfo_t.clamp(0.0, 1.0) * plot_rect.width();
-
-            // Faint highlight column
-            painter.rect_filled(
-                Rect::from_min_max(
-                    Pos2::new(vfo_x - 0.5, plot_rect.top()),
-                    Pos2::new(vfo_x + 0.5, plot_rect.bottom()),
-                ),
-                0.0,
-                Color32::from_rgba_premultiplied(0, 210, 255, 40),
-            );
 
             painter.line_segment(
                 [
@@ -367,6 +389,8 @@ mod tests {
                     db_range: (-120.0, 0.0),
                     freq_range: (95_000_000, 105_000_000),
                     vfo_hz: 100_000_000,
+                    filter_lo_hz: 99_900_000,
+                    filter_hi_hz: 100_100_000,
                     peak_hold: Some(&peak),
                     show_band_plan: true,
                 }

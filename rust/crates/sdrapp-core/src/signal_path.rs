@@ -354,6 +354,10 @@ pub enum SignalPathCommand {
     Scan(ScanCmd),
     StartRecording,
     StopRecording,
+    /// Begin (or resume) signal processing.  The signal path starts in a
+    /// paused state; send this command to begin demodulating and producing audio.
+    Start,
+    /// Pause signal processing.  The task stays alive; send `Start` to resume.
     Stop,
 }
 
@@ -485,7 +489,9 @@ impl SignalPath {
                     .map(|(i, b)| (i, b.freq_hz, b.mode))
             }
 
-            shared_clone.write().is_running = true;
+            // Start paused — the UI must send `Start` to begin processing.
+            shared_clone.write().is_running = false;
+            let mut paused = true;
 
             loop {
                 // Drain any pending commands (non-blocking)
@@ -674,9 +680,15 @@ impl SignalPath {
                         SignalPathCommand::StopRecording => {
                             shared_clone.write().is_recording = false;
                         }
+                        SignalPathCommand::Start => {
+                            paused = false;
+                            shared_clone.write().is_running = true;
+                            iq_accumulator.clear();
+                        }
                         SignalPathCommand::Stop => {
+                            paused = true;
                             shared_clone.write().is_running = false;
-                            return;
+                            iq_accumulator.clear();
                         }
                     }
                 }
@@ -690,6 +702,11 @@ impl SignalPath {
                     }
                     Err(_) => break, // Source closed
                 };
+
+                // When paused, drain IQ without processing to avoid broadcast lag.
+                if paused {
+                    continue;
+                }
 
                 // Accumulate for FFT
                 iq_accumulator.extend_from_slice(&batch);

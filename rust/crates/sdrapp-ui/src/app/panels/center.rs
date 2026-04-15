@@ -2,7 +2,7 @@
 
 use egui::{RichText, Ui, Vec2};
 
-use sdrapp_core::signal_path::{DisplayCmd, ReceiverCmd};
+use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd};
 
 use crate::{
     frequency::FrequencyWidget,
@@ -13,9 +13,10 @@ use super::super::SdrApp;
 
 impl SdrApp {
     pub(in crate::app) fn center_panel(&mut self, ui: &mut Ui) {
-        let (fft_data, band_plan_enabled, snr_db) = {
+        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz) = {
             let s = self.shared.read();
-            (s.fft.fft_magnitudes.clone(), s.fft.band_plan_enabled, s.fft.snr_db)
+            (s.fft.fft_magnitudes.clone(), s.fft.band_plan_enabled, s.fft.snr_db,
+             s.demod.demod_mode, s.demod.nfm_bandwidth_hz)
         };
 
         let freq = self.config.ui.frequency_hz;
@@ -143,11 +144,29 @@ impl SdrApp {
         } else {
             None
         };
+        // Compute filter passband bounds for the bandwidth overlay.
+        // For symmetric modes, the filter spans ±bw/2 around vfo_hz.
+        // For SSB, only one sideband is used.
+        let (filter_lo_hz, filter_hi_hz) = {
+            use DemodMode::*;
+            let half = |hz: u64| (freq.saturating_sub(hz / 2), freq + hz / 2);
+            match demod_mode {
+                Wbfm => half(200_000),
+                Nfm  => half(nfm_bw_hz as u64),
+                Am   => half(10_000),
+                Dsb  => half(6_000),
+                Usb  => (freq, freq + 3_000),
+                Lsb  => (freq.saturating_sub(3_000), freq),
+                Cw   => (freq.saturating_sub(400), freq + 400),
+            }
+        };
         SpectrumWidget {
             fft_data: &fft_data,
             db_range,
             freq_range: (freq.saturating_sub(span), freq + span),
             vfo_hz: freq,
+            filter_lo_hz,
+            filter_hi_hz,
             peak_hold: peak_ref,
             show_band_plan: band_plan_enabled,
         }
@@ -214,10 +233,11 @@ impl SdrApp {
             };
 
             ui.label(RichText::new("Zoom").color(theme::TEXT_MUTED).small());
-            // Multiplicative zoom buttons: each click scales by ×1.5 or ÷1.5
-            // so zoom-out is equally fast at any zoom level.
-            if ui.small_button(RichText::new("−").color(theme::TEXT_MUTED))
-                .on_hover_text("Zoom in ×1.5 (or Ctrl+scroll up on spectrum)")
+            // "In" narrows the span (÷1.5 on zoom_level) → more detail.
+            // "Out" widens the span (×1.5 on zoom_level) → less detail.
+            // "Full" shows the entire hardware bandwidth.
+            if ui.small_button(RichText::new("In").color(theme::TEXT_MUTED))
+                .on_hover_text("Zoom in: narrow the displayed span for more detail (Ctrl+scroll up)")
                 .clicked()
             {
                 let new_z = (zoom_level / 1.5).clamp(0.005, 1.0);
@@ -235,8 +255,8 @@ impl SdrApp {
                 self.config.ui.zoom_level = z;
                 self.config_dirty = true;
             }
-            if ui.small_button(RichText::new("+").color(theme::TEXT_MUTED))
-                .on_hover_text("Zoom out ×1.5 (or Ctrl+scroll down on spectrum)")
+            if ui.small_button(RichText::new("Out").color(theme::TEXT_MUTED))
+                .on_hover_text("Zoom out: widen the displayed span (Ctrl+scroll down)")
                 .clicked()
             {
                 let new_z = (zoom_level * 1.5).clamp(0.005, 1.0);
@@ -245,7 +265,7 @@ impl SdrApp {
                 self.config_dirty = true;
             }
             if ui.small_button(RichText::new("Full").color(theme::ACCENT))
-                .on_hover_text("Reset to full bandwidth (zoom = 1.0)")
+                .on_hover_text("Show full hardware bandwidth")
                 .clicked()
             {
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(1.0).into());
