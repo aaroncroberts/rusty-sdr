@@ -119,6 +119,20 @@ pub struct SdrApp {
     sched_delay_secs: u32,
     /// Scheduled recording: duration (seconds).
     sched_duration_secs: u32,
+    // ── Bookmark manager state ─────────────────────────────────────────────────
+    /// Index of bookmark being edited inline (None = no edit in progress).
+    bookmark_edit_idx: Option<usize>,
+    /// Temporary edit buffer: (name, freq_str, mode, category)
+    bookmark_edit_buf: (String, String, sdrapp_core::signal_path::DemodMode, String),
+    /// Category filter for bookmark list (empty = show all).
+    bookmark_cat_filter: String,
+    /// Sort bookmarks by frequency (false = insertion order).
+    bookmark_sort_by_freq: bool,
+    // ── Scanner state ─────────────────────────────────────────────────────────
+    /// Dwell time in seconds (local UI state before sending command).
+    scan_dwell_ui: f32,
+    /// Category filter for scanner (empty = all bookmarks).
+    scan_cat_ui: String,
 }
 
 impl SdrApp {
@@ -156,6 +170,12 @@ impl SdrApp {
             midi_bindings,
             sched_delay_secs: 0,
             sched_duration_secs: 60,
+            bookmark_edit_idx: None,
+            bookmark_edit_buf: (String::new(), String::new(), sdrapp_core::signal_path::DemodMode::Wbfm, String::new()),
+            bookmark_cat_filter: String::new(),
+            bookmark_sort_by_freq: false,
+            scan_dwell_ui: 2.0,
+            scan_cat_ui: String::new(),
         }
     }
 
@@ -441,40 +461,150 @@ impl SdrApp {
         ui.add_space(6.0);
 
         // ── Bookmarks ─────────────────────────────────────────────────────────
-        ui.label(RichText::new("BOOKMARKS").color(theme::TEXT_MUTED).small());
-        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("BOOKMARKS").color(theme::TEXT_MUTED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Sort toggle
+                let sort_color = if self.bookmark_sort_by_freq { theme::ACCENT } else { theme::TEXT_MUTED };
+                if ui.small_button(RichText::new("↕f").color(sort_color))
+                    .on_hover_text("Sort by frequency")
+                    .clicked()
+                {
+                    self.bookmark_sort_by_freq = !self.bookmark_sort_by_freq;
+                }
+            });
+        });
+        ui.add_space(2.0);
 
-        // Collect bookmark data and determine actions
-        let (bookmarks_snapshot, cursor) = {
+        // Category filter chips
+        let all_cats: Vec<String> = {
+            let s = self.shared.read();
+            let mut cats: Vec<String> = s.bookmarks.iter()
+                .map(|b| b.category.clone())
+                .filter(|c| !c.is_empty())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            cats.insert(0, String::new()); // "All" slot
+            cats
+        };
+        if all_cats.len() > 1 {
+            ui.horizontal_wrapped(|ui| {
+                for cat in &all_cats {
+                    let label = if cat.is_empty() { "All" } else { cat.as_str() };
+                    let selected = self.bookmark_cat_filter == *cat;
+                    let text = RichText::new(label).small();
+                    let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
+                    if ui.selectable_label(selected, text).clicked() {
+                        self.bookmark_cat_filter = cat.clone();
+                    }
+                }
+            });
+            ui.add_space(2.0);
+        }
+
+        // Collect bookmark data
+        let (mut bookmarks_snapshot, cursor) = {
             let s = self.shared.read();
             (s.bookmarks.clone(), s.bookmark_cursor)
         };
+        // Sort if requested
+        if self.bookmark_sort_by_freq {
+            bookmarks_snapshot.sort_by_key(|b| b.freq_hz);
+        }
+        // Filter by category
+        let filtered: Vec<(usize, _)> = bookmarks_snapshot.iter()
+            .enumerate()
+            .filter(|(_, b)| self.bookmark_cat_filter.is_empty() || b.category == self.bookmark_cat_filter)
+            .map(|(i, b)| (i, b.clone()))
+            .collect();
+
         let mut remove_idx: Option<usize> = None;
         let mut recall_idx: Option<usize> = None;
+        let mut edit_start_idx: Option<usize> = None;
+        let mut edit_commit_idx: Option<usize> = None;
+        let mut edit_cancel = false;
 
-        for (i, bm) in bookmarks_snapshot.iter().enumerate() {
+        for (i, bm) in &filtered {
+            let i = *i;
             let is_active = i == cursor;
-            ui.horizontal(|ui| {
-                // Recall button (star for active, circle for inactive)
-                let icon = if is_active { "★" } else { "☆" };
-                let icon_color = if is_active { theme::ACCENT } else { theme::TEXT_MUTED };
-                if ui.small_button(RichText::new(icon).color(icon_color)).clicked() {
-                    recall_idx = Some(i);
-                }
-                // Bookmark name (click also recalls)
-                let freq_label = format!("{:.3} MHz", bm.freq_hz as f64 / 1_000_000.0);
-                let text = format!("{} — {}", bm.name, freq_label);
-                if ui
-                    .selectable_label(is_active, RichText::new(&text).color(theme::TEXT_PRIMARY).small())
-                    .clicked()
-                {
-                    recall_idx = Some(i);
-                }
-                // Delete button
-                if ui.small_button(RichText::new("×").color(theme::TEXT_MUTED)).clicked() {
-                    remove_idx = Some(i);
-                }
-            });
+            let is_editing = self.bookmark_edit_idx == Some(i);
+
+            if is_editing {
+                // Inline edit form
+                ui.group(|ui| {
+                    ui.label(RichText::new("Edit bookmark").color(theme::ACCENT).small());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Name").color(theme::TEXT_MUTED).small());
+                        ui.text_edit_singleline(&mut self.bookmark_edit_buf.0);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Freq (Hz)").color(theme::TEXT_MUTED).small());
+                        ui.text_edit_singleline(&mut self.bookmark_edit_buf.1);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Cat").color(theme::TEXT_MUTED).small());
+                        ui.text_edit_singleline(&mut self.bookmark_edit_buf.3);
+                    });
+                    // Mode selector
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Mode").color(theme::TEXT_MUTED).small());
+                        for (mode, label) in [
+                            (DemodMode::Wbfm, "WBFM"), (DemodMode::Nfm, "NFM"),
+                            (DemodMode::Am, "AM"), (DemodMode::Usb, "USB"),
+                            (DemodMode::Lsb, "LSB"), (DemodMode::Dsb, "DSB"),
+                            (DemodMode::Cw, "CW"),
+                        ] {
+                            let sel = self.bookmark_edit_buf.2 == mode;
+                            let txt = RichText::new(label).small();
+                            let txt = if sel { txt.color(theme::ACCENT).strong() } else { txt.color(theme::TEXT_MUTED) };
+                            if ui.selectable_label(sel, txt).clicked() {
+                                self.bookmark_edit_buf.2 = mode;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.small_button(RichText::new("✓ Save").color(theme::STATUS_OK)).clicked() {
+                            edit_commit_idx = Some(i);
+                        }
+                        if ui.small_button(RichText::new("✕ Cancel").color(theme::TEXT_MUTED)).clicked() {
+                            edit_cancel = true;
+                        }
+                    });
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    // Recall button (star for active, circle for inactive)
+                    let icon = if is_active { "★" } else { "☆" };
+                    let icon_color = if is_active { theme::ACCENT } else { theme::TEXT_MUTED };
+                    if ui.small_button(RichText::new(icon).color(icon_color)).clicked() {
+                        recall_idx = Some(i);
+                    }
+                    // Category dot
+                    if !bm.category.is_empty() {
+                        let cat_color = category_color(&bm.category);
+                        ui.label(RichText::new("●").color(cat_color).small());
+                    }
+                    // Bookmark name (click recalls)
+                    let freq_label = format!("{:.3} MHz", bm.freq_hz as f64 / 1_000_000.0);
+                    let text = format!("{} — {}", bm.name, freq_label);
+                    if ui
+                        .selectable_label(is_active, RichText::new(&text).color(theme::TEXT_PRIMARY).small())
+                        .on_hover_text(format!("Mode: {:?}  Category: {}", bm.mode, if bm.category.is_empty() { "—" } else { &bm.category }))
+                        .clicked()
+                    {
+                        recall_idx = Some(i);
+                    }
+                    // Edit button
+                    if ui.small_button(RichText::new("✎").color(theme::TEXT_MUTED)).on_hover_text("Edit bookmark").clicked() {
+                        edit_start_idx = Some(i);
+                    }
+                    // Delete button
+                    if ui.small_button(RichText::new("×").color(theme::TEXT_MUTED)).clicked() {
+                        remove_idx = Some(i);
+                    }
+                });
+            }
         }
 
         // Apply bookmark actions
@@ -492,39 +622,175 @@ impl SdrApp {
             self.config_dirty = true;
         }
         if let Some(i) = remove_idx {
+            self.bookmark_edit_idx = None;
             let _ = self.cmd_tx.try_send(SignalPathCommand::RemoveBookmark(i));
-            // Mirror to config
             if i < self.config.bookmarks.len() {
                 self.config.bookmarks.remove(i);
                 self.config_dirty = true;
             }
         }
-
-        // "Save current" button
-        ui.add_space(2.0);
-        if ui
-            .small_button(RichText::new("+ Save current freq").color(theme::ACCENT_DIM))
-            .clicked()
-        {
-            let (freq, mode) = {
-                let s = self.shared.read();
-                (s.center_freq_hz, s.demod_mode)
-            };
-            let name = format!("{:.3} MHz", freq as f64 / 1_000_000.0);
-            let _ = self.cmd_tx.try_send(SignalPathCommand::AddBookmark(name.clone()));
-            // Mirror to config for persistence
-            let mode_str = match mode {
-                DemodMode::Nfm => "Nfm",
-                DemodMode::Am => "Am",
-                DemodMode::Usb => "Usb",
-                DemodMode::Lsb => "Lsb",
-                DemodMode::Dsb => "Dsb",
-                DemodMode::Cw => "Cw",
-                _ => "Wbfm",
-            };
-            self.config.bookmarks.push(BookmarkConfig::new(name, freq, mode_str));
-            self.config_dirty = true;
+        if let Some(i) = edit_start_idx {
+            let s = self.shared.read();
+            if i < s.bookmarks.len() {
+                let bm = &s.bookmarks[i];
+                self.bookmark_edit_buf = (
+                    bm.name.clone(),
+                    bm.freq_hz.to_string(),
+                    bm.mode,
+                    bm.category.clone(),
+                );
+                self.bookmark_edit_idx = Some(i);
+            }
         }
+        if let Some(i) = edit_commit_idx {
+            let freq: u64 = self.bookmark_edit_buf.1.trim().parse().unwrap_or(0);
+            if freq > 0 {
+                let name = self.bookmark_edit_buf.0.clone();
+                let mode = self.bookmark_edit_buf.2;
+                let cat = self.bookmark_edit_buf.3.clone();
+                let _ = self.cmd_tx.try_send(SignalPathCommand::EditBookmark(i, name.clone(), freq, mode, cat.clone()));
+                if i < self.config.bookmarks.len() {
+                    let mode_str = match mode {
+                        DemodMode::Nfm => "Nfm", DemodMode::Am => "Am",
+                        DemodMode::Usb => "Usb", DemodMode::Lsb => "Lsb",
+                        DemodMode::Dsb => "Dsb", DemodMode::Cw => "Cw",
+                        _ => "Wbfm",
+                    };
+                    self.config.bookmarks[i] = BookmarkConfig {
+                        name, freq_hz: freq, mode: mode_str.into(), category: cat,
+                    };
+                    self.config_dirty = true;
+                }
+            }
+            self.bookmark_edit_idx = None;
+        }
+        if edit_cancel {
+            self.bookmark_edit_idx = None;
+        }
+
+        // Bottom row: Save + Export + Import
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            if ui.small_button(RichText::new("+ Save").color(theme::ACCENT_DIM)).clicked() {
+                let (freq, mode) = {
+                    let s = self.shared.read();
+                    (s.center_freq_hz, s.demod_mode)
+                };
+                let name = format!("{:.3} MHz", freq as f64 / 1_000_000.0);
+                let _ = self.cmd_tx.try_send(SignalPathCommand::AddBookmark(name.clone()));
+                let mode_str = match mode {
+                    DemodMode::Nfm => "Nfm", DemodMode::Am => "Am",
+                    DemodMode::Usb => "Usb", DemodMode::Lsb => "Lsb",
+                    DemodMode::Dsb => "Dsb", DemodMode::Cw => "Cw",
+                    _ => "Wbfm",
+                };
+                self.config.bookmarks.push(BookmarkConfig::new(name, freq, mode_str));
+                self.config_dirty = true;
+            }
+
+            // Export CSV
+            if ui.small_button(RichText::new("Export").color(theme::TEXT_MUTED))
+                .on_hover_text("Export bookmarks as CSV to ~/bookmarks.csv")
+                .clicked()
+            {
+                let csv = self.config.bookmarks.iter()
+                    .map(|b| format!("{},{},{},{}", b.name.replace(',', " "), b.freq_hz, b.mode, b.category))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let path = dirs::home_dir().unwrap_or_default().join("bookmarks.csv");
+                let header = "name,freq_hz,mode,category\n";
+                let _ = std::fs::write(&path, format!("{header}{csv}"));
+                tracing::info!(path = %path.display(), "bookmarks exported");
+            }
+
+            // Import CSV
+            if ui.small_button(RichText::new("Import").color(theme::TEXT_MUTED))
+                .on_hover_text("Import bookmarks from ~/bookmarks.csv")
+                .clicked()
+            {
+                let path = dirs::home_dir().unwrap_or_default().join("bookmarks.csv");
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let mut imported: Vec<BookmarkConfig> = Vec::new();
+                    for line in content.lines().skip(1) { // skip header
+                        let parts: Vec<&str> = line.splitn(4, ',').collect();
+                        if parts.len() >= 3 {
+                            let freq: u64 = parts[1].trim().parse().unwrap_or(0);
+                            if freq > 0 {
+                                let mut bc = BookmarkConfig::new(parts[0].trim(), freq, parts[2].trim());
+                                if parts.len() >= 4 { bc.category = parts[3].trim().into(); }
+                                imported.push(bc);
+                            }
+                        }
+                    }
+                    if !imported.is_empty() {
+                        // Replace all config bookmarks and rebuild SharedState
+                        self.config.bookmarks = imported.clone();
+                        self.config_dirty = true;
+                        let new_bms: Vec<sdrapp_core::signal_path::Bookmark> = imported.iter().map(|b| {
+                            use sdrapp_core::signal_path::{Bookmark, DemodMode};
+                            let mode = match b.mode.as_str() {
+                                "Nfm" => DemodMode::Nfm, "Am" => DemodMode::Am,
+                                "Usb" => DemodMode::Usb, "Lsb" => DemodMode::Lsb,
+                                "Dsb" => DemodMode::Dsb, "Cw" => DemodMode::Cw,
+                                _ => DemodMode::Wbfm,
+                            };
+                            Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
+                        }).collect();
+                        self.shared.write().bookmarks = new_bms;
+                        tracing::info!(count = self.config.bookmarks.len(), "bookmarks imported");
+                    }
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // ── Scanner ───────────────────────────────────────────────────────────
+        ui.label(RichText::new("SCANNER").color(theme::TEXT_MUTED).small());
+        ui.add_space(4.0);
+
+        let scan_running = self.shared.read().scan_running;
+
+        // Category filter
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Cat").color(theme::TEXT_MUTED).small());
+            ui.text_edit_singleline(&mut self.scan_cat_ui).on_hover_text("Scan only this category (empty = all bookmarks)");
+        });
+
+        // Dwell time
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Dwell").color(theme::TEXT_MUTED).small());
+            if ui.add(egui::Slider::new(&mut self.scan_dwell_ui, 0.5_f32..=15.0_f32)
+                .suffix(" s").show_value(true))
+                .changed()
+            {
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetScanDwell(self.scan_dwell_ui));
+            }
+        });
+
+        // Start / Stop / Next
+        ui.horizontal(|ui| {
+            if scan_running {
+                let stop_btn = egui::Button::new(RichText::new("■  Stop").color(theme::DANGER).strong())
+                    .fill(theme::WIDGET_BG);
+                if ui.add_sized(Vec2::new(70.0, 22.0), stop_btn).clicked() {
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::StopScan);
+                }
+                if ui.small_button(RichText::new("▶▶ Next").color(theme::TEXT_MUTED)).clicked() {
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::ScanNext);
+                }
+                ui.label(RichText::new("SCAN").color(theme::STATUS_OK).small().strong());
+            } else {
+                let start_btn = egui::Button::new(RichText::new("▶  Scan").color(theme::STATUS_OK).strong())
+                    .fill(theme::WIDGET_BG);
+                if ui.add_sized(Vec2::new(70.0, 22.0), start_btn).clicked() {
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetScanDwell(self.scan_dwell_ui));
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::StartScan(self.scan_cat_ui.clone()));
+                }
+            }
+        });
 
         ui.add_space(8.0);
         ui.separator();
@@ -1663,6 +1929,21 @@ impl eframe::App for SdrApp {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Deterministic color for a bookmark category, based on the string hash.
+fn category_color(category: &str) -> egui::Color32 {
+    let hash: u32 = category.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    // Six visually distinct hues: cyan, green, yellow, orange, purple, pink
+    const COLORS: [egui::Color32; 6] = [
+        egui::Color32::from_rgb(0x4E, 0xC9, 0xE0), // cyan
+        egui::Color32::from_rgb(0x73, 0xC9, 0x91), // green
+        egui::Color32::from_rgb(0xE8, 0xC5, 0x4B), // yellow
+        egui::Color32::from_rgb(0xE0, 0x8C, 0x4E), // orange
+        egui::Color32::from_rgb(0xB3, 0x7B, 0xD8), // purple
+        egui::Color32::from_rgb(0xE0, 0x6C, 0xAA), // pink
+    ];
+    COLORS[(hash as usize) % COLORS.len()]
+}
 
 fn format_frequency(hz: u64) -> String {
     if hz >= 1_000_000_000 {

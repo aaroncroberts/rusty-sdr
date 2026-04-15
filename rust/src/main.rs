@@ -62,7 +62,7 @@ fn main() -> anyhow::Result<()> {
                 "Cw" => DemodMode::Cw,
                 _ => DemodMode::Wbfm,
             };
-            Bookmark::new(&b.name, b.freq_hz, mode)
+            Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
         }).collect();
     }
 

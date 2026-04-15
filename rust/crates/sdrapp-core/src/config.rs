@@ -171,13 +171,16 @@ impl Default for UiConfig {
 pub struct BookmarkConfig {
     pub name: String,
     pub freq_hz: u64,
-    /// Demod mode string: "Wbfm", "Nfm", or "Am".
+    /// Demod mode string: "Wbfm", "Nfm", "Am", "Usb", "Lsb", "Dsb", "Cw".
     pub mode: String,
+    /// Optional category/group name (empty = uncategorised).
+    #[serde(default)]
+    pub category: String,
 }
 
 impl BookmarkConfig {
     pub fn new(name: impl Into<String>, freq_hz: u64, mode: impl Into<String>) -> Self {
-        Self { name: name.into(), freq_hz, mode: mode.into() }
+        Self { name: name.into(), freq_hz, mode: mode.into(), category: String::new() }
     }
 }
 

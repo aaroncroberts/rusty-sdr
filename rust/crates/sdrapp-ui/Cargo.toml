@@ -17,3 +17,4 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-channel = { workspace = true }
+dirs = { workspace = true }

@@ -79,11 +79,18 @@ pub struct Bookmark {
     pub name: String,
     pub freq_hz: u64,
     pub mode: DemodMode,
+    /// Optional group/category name (empty = uncategorised).
+    pub category: String,
 }
 
 impl Bookmark {
     pub fn new(name: impl Into<String>, freq_hz: u64, mode: DemodMode) -> Self {
-        Self { name: name.into(), freq_hz, mode }
+        Self { name: name.into(), freq_hz, mode, category: String::new() }
+    }
+
+    pub fn with_category(mut self, cat: impl Into<String>) -> Self {
+        self.category = cat.into();
+        self
     }
 }
 
@@ -171,6 +178,16 @@ pub struct SharedState {
     /// Active antenna port: 0=A, 1=B, 2=C.
     pub antenna_port: u8,
 
+    // ── Scanner state ─────────────────────────────────────────────────────────
+    /// Whether the frequency scanner is currently running.
+    pub scan_running: bool,
+    /// Index of the bookmark the scanner is currently dwelling on.
+    pub scan_cursor: usize,
+    /// Dwell time in seconds before advancing to the next bookmark.
+    pub scan_dwell_secs: f32,
+    /// Category filter for scanner (empty = scan all bookmarks).
+    pub scan_category: String,
+
     // ── FFT / spectrum display settings ──────────────────────────────────────
     /// FFT bin count for spectrum display (512, 1024, 2048, 4096, 8192).
     pub fft_size: usize,
@@ -200,6 +217,7 @@ impl SharedState {
             fft_size: FFT_SIZE,
             fft_window: crate::dsp::FftWindow::Hann,
             fft_averaging: 4,
+            scan_dwell_secs: 2.0,
             ..Default::default()
         }
     }
@@ -248,6 +266,18 @@ pub enum SignalPathCommand {
     SetNfmBandwidth(u32),
     /// Enable or disable CTCSS tone squelch in NFM mode.
     SetCtcssEnabled(bool),
+    // ── Bookmark management ───────────────────────────────────────────────────
+    /// Edit an existing bookmark at index: new (name, freq_hz, mode, category).
+    EditBookmark(usize, String, u64, DemodMode, String),
+    // ── Scanner ───────────────────────────────────────────────────────────────
+    /// Start cycling through bookmarks in the given category (empty = all).
+    StartScan(String),
+    /// Stop the scanner.
+    StopScan,
+    /// Skip to the next bookmark immediately (also works during scan).
+    ScanNext,
+    /// Set scanner dwell time in seconds (0.5–30 s).
+    SetScanDwell(f32),
     // ── FFT / spectrum display settings ──────────────────────────────────────
     /// Change the FFT bin count (must be a power of two: 512–8192).
     SetFftSize(usize),
@@ -345,6 +375,43 @@ impl SignalPath {
             let mut ctcss_enabled: bool = false;
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
+            // Scanner state
+            let mut scan_running = false;
+            let mut scan_cursor: usize = 0;
+            let mut scan_category = String::new();
+            let mut scan_dwell_secs: f32 = 2.0;
+            // Accumulates IQ sample count for dwell timer; compare to sample_rate * dwell_secs
+            let mut scan_dwell_samples: u64 = 0;
+            // True while squelch is open (signal active) — scanner pauses.
+            let mut _scan_squelch_open = false;
+
+            /// Create a fresh demodulator for the given mode.
+            fn make_demod(mode: DemodMode, sr: u32, nfm_bw_hz: u32) -> Demod {
+                match mode {
+                    DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(sr)),
+                    DemodMode::Nfm => Demod::Nfm(FmDemodulator::new(sr, 48_000, nfm_bw_hz as f32, 0.0)),
+                    DemodMode::Am => Demod::Am(AmDemodulator::new(sr, 48_000)),
+                    DemodMode::Usb => Demod::Ssb(SsbDemodulator::standard(SsbMode::Usb, sr)),
+                    DemodMode::Lsb => Demod::Ssb(SsbDemodulator::standard(SsbMode::Lsb, sr)),
+                    DemodMode::Dsb => Demod::Ssb(SsbDemodulator::standard(SsbMode::Dsb, sr)),
+                    DemodMode::Cw => Demod::Cw(CwDemodulator::new(sr, 48_000)),
+                }
+            }
+
+            /// Find the next bookmark at or after `start_idx` matching `category`.
+            /// Returns (index, freq_hz, mode) or None.
+            fn scan_next_bookmark(
+                bookmarks: &[Bookmark],
+                category: &str,
+                start_idx: usize,
+            ) -> Option<(usize, u64, DemodMode)> {
+                bookmarks
+                    .iter()
+                    .enumerate()
+                    .skip(start_idx)
+                    .find(|(_, b)| category.is_empty() || b.category == category)
+                    .map(|(i, b)| (i, b.freq_hz, b.mode))
+            }
 
             shared_clone.write().is_running = true;
 
@@ -373,23 +440,7 @@ impl SignalPath {
                             shared_clone.write().volume = v;
                         }
                         SignalPathCommand::SetDemodMode(mode) => {
-                            demod = match mode {
-                                DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(sr)),
-                                DemodMode::Nfm => {
-                                    Demod::Nfm(FmDemodulator::new(sr, 48_000, nfm_bw_hz as f32, 0.0))
-                                }
-                                DemodMode::Am => Demod::Am(AmDemodulator::standard(sr)),
-                                DemodMode::Usb => {
-                                    Demod::Ssb(SsbDemodulator::standard(SsbMode::Usb, sr))
-                                }
-                                DemodMode::Lsb => {
-                                    Demod::Ssb(SsbDemodulator::standard(SsbMode::Lsb, sr))
-                                }
-                                DemodMode::Dsb => {
-                                    Demod::Ssb(SsbDemodulator::standard(SsbMode::Dsb, sr))
-                                }
-                                DemodMode::Cw => Demod::Cw(CwDemodulator::standard(sr)),
-                            };
+                            demod = make_demod(mode, sr, nfm_bw_hz);
                             squelch.reset();
                             audio_bp.reset();
                             ctcss.reset();
@@ -509,6 +560,56 @@ impl SignalPath {
                                 let _ = tx.try_send(HardwareCommand::SetAntenna(port));
                             }
                         }
+                        // ── Bookmark editing ─────────────────────────────────
+                        SignalPathCommand::EditBookmark(idx, name, freq, mode, cat) => {
+                            let mut s = shared_clone.write();
+                            if idx < s.bookmarks.len() {
+                                s.bookmarks[idx] = Bookmark { name, freq_hz: freq, mode, category: cat };
+                            }
+                        }
+                        // ── Scanner ───────────────────────────────────────────
+                        SignalPathCommand::StartScan(cat) => {
+                            scan_category = cat.clone();
+                            scan_running = true;
+                            scan_cursor = 0;
+                            scan_dwell_samples = 0;
+                            {
+                                let mut s = shared_clone.write();
+                                s.scan_running = true;
+                                s.scan_category = cat;
+                                s.scan_cursor = 0;
+                            }
+                            // Jump to first matching bookmark immediately.
+                            let first = {
+                                let s = shared_clone.read();
+                                scan_next_bookmark(&s.bookmarks, &scan_category, scan_cursor)
+                            };
+                            if let Some((idx, bm_freq, bm_mode)) = first {
+                                scan_cursor = idx;
+                                shared_clone.write().scan_cursor = idx;
+                                shared_clone.write().center_freq_hz = bm_freq;
+                                if let Some(ref atomic) = freq_atomic_clone {
+                                    atomic.store(bm_freq, Ordering::Relaxed);
+                                }
+                                demod = make_demod(bm_mode, sr, nfm_bw_hz);
+                                shared_clone.write().demod_mode = bm_mode;
+                                demod.reset();
+                                rds.reset();
+                            }
+                        }
+                        SignalPathCommand::StopScan => {
+                            scan_running = false;
+                            shared_clone.write().scan_running = false;
+                        }
+                        SignalPathCommand::ScanNext => {
+                            if scan_running {
+                                scan_dwell_samples = u64::MAX; // force advance on next tick
+                            }
+                        }
+                        SignalPathCommand::SetScanDwell(secs) => {
+                            scan_dwell_secs = secs.clamp(0.5, 30.0);
+                            shared_clone.write().scan_dwell_secs = scan_dwell_secs;
+                        }
                         // ── FFT / spectrum display settings ──────────────────
                         SignalPathCommand::SetFftSize(sz) => {
                             if sz.is_power_of_two() && sz >= 512 && sz <= 8192 {
@@ -607,6 +708,55 @@ impl SignalPath {
                         }
                     }
                     iq_accumulator.drain(..fft_size);
+                }
+
+                // ── Scanner tick ─────────────────────────────────────────────
+                if scan_running {
+                    scan_dwell_samples += batch.len() as u64;
+                    // Read squelch state (above threshold = signal present = pause).
+                    let sq_threshold = shared_clone.read().squelch_threshold;
+                    let snr_now = shared_clone.read().snr_db.unwrap_or(-120.0);
+                    // "squelch open" = signal detected above threshold
+                    let signal_present = snr_now > (sq_threshold + 120.0).max(0.0);
+                    if signal_present {
+                        // Signal active → stay on this channel; reset dwell timer.
+                        scan_dwell_samples = 0;
+                        _scan_squelch_open = true;
+                    } else {
+                        _scan_squelch_open = false;
+                    }
+                    let dwell_target = (scan_dwell_secs * sr as f32) as u64;
+                    if scan_dwell_samples >= dwell_target {
+                        scan_dwell_samples = 0;
+                        // Advance to next matching bookmark.
+                        let next_idx = scan_cursor + 1;
+                        let (bm_freq, bm_mode, new_idx) = {
+                            let s = shared_clone.read();
+                            if let Some((idx, freq, mode)) = scan_next_bookmark(&s.bookmarks, &scan_category, next_idx) {
+                                (freq, mode, idx)
+                            } else if let Some((idx, freq, mode)) = scan_next_bookmark(&s.bookmarks, &scan_category, 0) {
+                                (freq, mode, idx) // wrap around
+                            } else {
+                                // No bookmarks → stop scan
+                                (0, DemodMode::Wbfm, usize::MAX)
+                            }
+                        };
+                        if new_idx == usize::MAX {
+                            scan_running = false;
+                            shared_clone.write().scan_running = false;
+                        } else {
+                            scan_cursor = new_idx;
+                            shared_clone.write().scan_cursor = new_idx;
+                            shared_clone.write().center_freq_hz = bm_freq;
+                            if let Some(ref atomic) = freq_atomic_clone {
+                                atomic.store(bm_freq, Ordering::Relaxed);
+                            }
+                            demod = make_demod(bm_mode, sr, nfm_bw_hz);
+                            shared_clone.write().demod_mode = bm_mode;
+                            demod.reset();
+                            rds.reset();
+                        }
+                    }
                 }
 
                 // Demodulate IQ → StereoFrame batches at 48 kHz.
