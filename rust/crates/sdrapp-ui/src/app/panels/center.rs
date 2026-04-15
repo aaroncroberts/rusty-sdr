@@ -61,8 +61,15 @@ impl SdrApp {
                 let floor_sample = sorted[n / 10];
                 let ceil_sample = sorted[(n * 99 / 100).min(n - 1)];
                 const ALPHA: f32 = 0.95;
-                self.noise_floor_ema = ALPHA * self.noise_floor_ema + (1.0 - ALPHA) * floor_sample;
-                self.signal_ceil_ema = ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
+                // On the very first frame of real data, snap immediately instead
+                // of waiting ~2 seconds for the EMA to converge from the initial guess.
+                if self.noise_floor_ema <= -84.9 {
+                    self.noise_floor_ema = floor_sample;
+                    self.signal_ceil_ema = ceil_sample;
+                } else {
+                    self.noise_floor_ema = ALPHA * self.noise_floor_ema + (1.0 - ALPHA) * floor_sample;
+                    self.signal_ceil_ema = ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
+                }
                 // Place ref_level so the noise floor is ~10% up from the bottom.
                 self.ref_level = (self.noise_floor_ema + self.dyn_range * 0.9).clamp(-120.0, 20.0);
             }
@@ -139,6 +146,8 @@ impl SdrApp {
         }
 
         let ctx = ui.ctx().clone();
+        // Capture hover position over the spectrum rect for the crosshair readout.
+        let spectrum_hover = ctx.pointer_hover_pos().filter(|p| spectrum_rect.contains(*p));
         let mut spectrum_ui = ui.new_child(egui::UiBuilder::new().max_rect(spectrum_rect));
         let peak_ref: Option<&[f32]> = if self.peak_hold.len() == fft_data.len() {
             Some(&self.peak_hold)
@@ -176,6 +185,7 @@ impl SdrApp {
             filter_hi_hz: show_filter_hi,
             peak_hold: peak_ref,
             show_band_plan: band_plan_enabled,
+            hover_pos: spectrum_hover,
         }
         .show(&mut spectrum_ui);
 

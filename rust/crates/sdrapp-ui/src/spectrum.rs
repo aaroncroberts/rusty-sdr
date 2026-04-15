@@ -39,6 +39,9 @@ pub struct SpectrumWidget<'a> {
     pub peak_hold: Option<&'a [f32]>,
     /// Whether to draw the frequency band allocation overlay.
     pub show_band_plan: bool,
+    /// Current mouse position in screen coordinates, if hovering over the widget.
+    /// When Some, draws a crosshair + frequency/power readout at the cursor.
+    pub hover_pos: Option<egui::Pos2>,
 }
 
 impl<'a> SpectrumWidget<'a> {
@@ -309,6 +312,58 @@ impl<'a> SpectrumWidget<'a> {
                 );
             }
         }
+
+        // ── Hover crosshair + readout ─────────────────────────────────────────
+        // Shows exact frequency and signal level at the cursor position.
+        if let Some(hover) = self.hover_pos {
+            if plot_rect.contains(hover) && freq_hi > freq_lo && n > 1 {
+                let t = ((hover.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0);
+
+                // Dim vertical crosshair
+                painter.line_segment(
+                    [Pos2::new(hover.x, plot_rect.top()), Pos2::new(hover.x, plot_rect.bottom())],
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 50)),
+                );
+
+                // Frequency at cursor
+                let cursor_hz = (freq_lo + t as f64 * (freq_hi - freq_lo)) as u64;
+
+                // Signal level: look up nearest FFT bin
+                let bin = (t * (n - 1) as f32).round() as usize;
+                let db_val = self.fft_data[bin.min(n - 1)];
+
+                let label = format!("{}   {:.0} dBFS", format_freq_cursor(cursor_hz), db_val);
+
+                // Position readout: top-right of plot if cursor is in left half, else top-left.
+                let (anchor, label_x) = if t < 0.5 {
+                    (egui::Align2::LEFT_TOP, hover.x + 6.0)
+                } else {
+                    (egui::Align2::RIGHT_TOP, hover.x - 6.0)
+                };
+
+                // Dark background pill for readability
+                let font = egui::FontId::monospace(10.0);
+                let galley = painter.layout_no_wrap(label.clone(), font.clone(), Color32::WHITE);
+                let label_pos = match anchor {
+                    egui::Align2::LEFT_TOP => Pos2::new(label_x, plot_rect.top() + 4.0),
+                    _ => Pos2::new(label_x - galley.size().x, plot_rect.top() + 4.0),
+                };
+                let bg_rect = Rect::from_min_size(
+                    Pos2::new(label_pos.x - 3.0, label_pos.y - 1.0),
+                    galley.size() + egui::Vec2::new(6.0, 2.0),
+                );
+                painter.rect_filled(bg_rect, 2.0, Color32::from_rgba_unmultiplied(10, 13, 20, 210));
+                painter.text(label_pos, egui::Align2::LEFT_TOP, label, font, Color32::WHITE);
+
+                // Horizontal dBFS dot on Y-axis
+                let dot_y = db_to_y(db_val, db_min, db_max, plot_rect);
+                painter.circle_filled(
+                    Pos2::new(plot_rect.left() - 3.0, dot_y),
+                    3.0,
+                    Color32::from_rgba_unmultiplied(0, 210, 255, 200),
+                );
+            }
+        }
     }
 }
 
@@ -317,6 +372,19 @@ impl<'a> SpectrumWidget<'a> {
 fn db_to_y(db: f32, db_min: f32, db_max: f32, rect: Rect) -> f32 {
     let t = ((db - db_min) / (db_max - db_min)).clamp(0.0, 1.0);
     rect.bottom() - t * rect.height()
+}
+
+/// High-precision frequency label for the hover cursor readout.
+fn format_freq_cursor(hz: u64) -> String {
+    if hz >= 1_000_000_000 {
+        format!("{:.4} GHz", hz as f64 / 1_000_000_000.0)
+    } else if hz >= 1_000_000 {
+        format!("{:.3} MHz", hz as f64 / 1_000_000.0)
+    } else if hz >= 1_000 {
+        format!("{:.1} kHz", hz as f64 / 1_000.0)
+    } else {
+        format!("{hz} Hz")
+    }
 }
 
 fn format_freq_short(hz: u64) -> String {
