@@ -1,251 +1,201 @@
-# SDR++ Rust Rewrite — Architecture
+# SDR App — Architecture
 
-> Discovery deliverable for sdrpp-s4b.1
+## Overview
 
-## Decision Summary
-
-| Concern | Decision | Rationale |
-|---------|----------|-----------|
-| UI | egui 0.33 / eframe | Rust-native immediate-mode, wgpu backend, custom widget support |
-| Signal pipeline | tokio mpsc + broadcast | mpsc for tight DSP chains, broadcast for fan-out to UI/recorder |
-| Audio output | cpal 0.16 → CoreAudio | No C++ dependency, native macOS, low-latency callback model |
-| MIDI | midir 0.10 → CoreMIDI | Only maintained Rust CoreMIDI wrapper; callback → tokio channel bridge |
-| SDRplay FFI | bindgen → sdrplay-sys | No existing crate; clean C headers, ~100 lines of unsafe isolated in sys crate |
-| DSP primitives | dasp (sample types/windows) + custom | dasp is primitives only — streaming graph is ours, tokio-native |
-| Config | serde + serde_json | Typed structs, versioned, round-trip tested |
-| WAV I/O | hound | Pure Rust, no deps |
+A Rust SDR application built on eframe/egui. The signal path runs as a tokio task; the UI renders at
+60 fps reading shared state. No hardware dependency for building or testing the core crates.
 
 ---
 
-## Crate Layout
+## Crate Dependency Graph
 
 ```
-rust/
-├── Cargo.toml                  # workspace root
-├── crates/
-│   ├── sdrapp-core/            # DSP stream types, block traits, signal path
-│   ├── sdrapp-sdrplay-sys/     # bindgen FFI — all unsafe lives here
-│   ├── sdrapp-sdrplay/         # safe SDRplay wrapper, RSPdx-R2 support
-│   ├── sdrapp-audio/           # cpal audio sink
-│   ├── sdrapp-recorder/        # hound WAV recorder, baseband capture
-│   ├── sdrapp-midi/            # midir MIDI controller, nanoKontrol2 profile
-│   └── sdrapp-ui/              # egui/eframe widgets (spectrum, waterfall, VFO)
-└── src/
-    └── main.rs                 # binary: wires all crates, launches eframe
-```
+sdrapp (bin)
+├── sdrapp-ui          ──► sdrapp-core
+├── sdrapp-audio       ──► sdrapp-core
+├── sdrapp-midi        ──► sdrapp-core
+├── sdrapp-recorder    ──► sdrapp-core
+├── sdrapp-sdrplay     ──► sdrapp-sdrplay-sys
+│                      ──► sdrapp-core
+└── sdrapp-rtlsdr      ──► sdrapp-core
 
-### Dependency Graph
-
+sdrapp-core            (no hardware, no UI — fully unit-testable in CI)
 ```
-main ──► sdrapp-ui
-         sdrapp-audio
-         sdrapp-midi
-         sdrapp-recorder
-         sdrapp-sdrplay ──► sdrapp-sdrplay-sys
-         sdrapp-core    ◄── (all of the above)
-```
-
-`sdrapp-core` is the only shared dependency. It has no hardware deps, no UI deps — fully unit-testable in CI without any hardware or display.
 
 ---
 
-## Signal Path
+## Signal Path (`sdrapp-core/src/signal_path/`)
+
+The signal path is split into three submodules:
+
+| File | Contents |
+|------|----------|
+| `shared_state.rs` | `SharedState` and all sub-structs (`HardwareState`, `DemodState`, `FftDisplayState`, `RdsState`, `ScannerState`). Written by the signal path task, read by the UI each frame. |
+| `commands.rs` | All command enums: `ReceiverCmd`, `HardwareCommand`, `DisplayCmd`, `BookmarkCmd`, `ScanCmd`, `SignalPathCommand`. Plus `From` impls for `.into()` at call sites. |
+| `mod.rs` | `SignalPath` engine: IQ receive loop, FFT, demodulation, audio emit, scanner tick. Re-exports `shared_state::*` and `commands::*` so all public types stay at `sdrapp_core::signal_path::*`. |
+
+### Data Flow
 
 ```
 RSPdx-R2 hardware
-    │
+    │ sdrplay_api callback (OS thread)
+    │ crossbeam channel
     ▼
-sdrplay_api callback (OS thread)
-    │  tokio::sync::mpsc
-    ▼
-IQ Frontend task (tokio)
-  - DC offset correction
-  - Resampling
-  - FFT for spectrum (N-point, overlap-save)
-    │
-    ├──► tokio::sync::broadcast ──► Spectrum UI task (egui paint callback)
-    │
-    └──► VFO task (frequency shift + decimation)
-           │
-           ├──► Audio sink task ──► cpal callback (OS thread) ──► speakers
-           │
-           └──► Recorder task ──► hound WAV writer
+broadcast::Sender<Arc<[IqSample]>>  ──► signal path task (tokio)
+                                         │
+                                         ├─ FFT → SharedState.fft.fft_magnitudes
+                                         │
+                                         ├─ Demod → Vec<StereoFrame>
+                                         │           │
+                                         │           ├─► audio sink (cpal, OS thread)
+                                         │           │
+                                         │           └─► recorder (tokio task)
+                                         │
+                                         └─ Scanner tick → SharedState.scanner.*
 ```
 
 ### Channel Types
 
-| Edge | Type | Why |
-|------|------|-----|
-| SDRplay callback → IQ frontend | `mpsc::channel` | Single producer, single consumer |
-| IQ frontend → VFO | `mpsc::channel` | Single consumer DSP chain |
-| IQ frontend → UI spectrum | `broadcast::channel` | Multiple consumers OK (UI + recorder) |
-| VFO → audio sink | `mpsc::channel` | Single consumer |
-| VFO → recorder | `mpsc::channel` | Single consumer |
-| MIDI callback → dispatcher | `mpsc::unbounded_channel` | Low-volume, never blocks callback thread |
+| Edge | Type | Rationale |
+|------|------|-----------|
+| Source → signal path | `broadcast::channel` | Multiple subscribers (signal path + recorder) |
+| Signal path → audio sink | `crossbeam::channel` (sync) | Audio runs on OS callback thread, not async |
+| Signal path → recorder | `tokio::mpsc` | Recorder is an async task |
+| UI → signal path | `crossbeam::bounded(64)` | Non-blocking send; UI drops frame on backpressure |
+| Signal path → hardware device | `crossbeam::channel` | Hardware device loop is sync (not async) |
 
-**Hot path discipline** (following rtlsdr-next pattern):
-- Zero allocations between SDRplay callback and audio output
-- Pre-allocated ring buffers for IQ samples
-- FFT runs on borrowed slices, writes into pre-allocated output buffer
+### Command Pattern
+
+All UI→signal path communication uses `SignalPathCommand`. Use `.into()` at call sites:
+
+```rust
+cmd_tx.try_send(ReceiverCmd::SetFrequency(101_700_000).into()).ok();
+cmd_tx.try_send(HardwareCommand::SetLnaState(3).into()).ok();
+```
+
+Commands that affect hardware state update `SharedState` first, then forward a `HardwareCommand`
+to the device thread. This means `SharedState.hardware` always mirrors the last command sent,
+even if the device is disconnected.
+
+### Hot-Plug Reconnect
+
+When hardware reconnects:
+```rust
+SignalPathCommand::ReconnectSource {
+    iq_rx: new_broadcast_receiver,
+    hardware_cmd_tx: Some(new_hw_channel),
+}
+```
+
+The signal path:
+1. Swaps the IQ broadcast receiver
+2. Swaps the hardware command channel
+3. Re-applies all `SharedState.hardware` fields to the new device
+4. Rebuilds the demodulator for the current mode
+5. Clears IQ and audio accumulators
 
 ---
 
-## Module: sdrapp-core
+## Shared State Pattern
 
-The signal processing foundation. No hardware, no UI, fully unit-tested.
+`Arc<parking_lot::RwLock<SharedState>>` is shared between:
+- Signal path task (tokio) — primary writer
+- MIDI controller task (tokio) — writes `midi_cc_to_knob`, `midi_device`, `midi_page`
+- Audio sink — writes `audio_buffer_fill`
+- UI render loop (main thread) — reader
 
-### Key Types
-
-```rust
-// Typed IQ sample
-pub type IqSample = num_complex::Complex<f32>;
-
-// Stereo audio frame
-pub struct StereoFrame {
-    pub left: f32,
-    pub right: f32,
-}
-
-// Block trait — every DSP node implements this
-pub trait Block: Send + 'static {
-    fn start(&mut self) -> tokio::task::JoinHandle<()>;
-    fn stop(&self);
-}
-
-// Source trait — produces IqSamples
-pub trait Source: Block {
-    fn output(&self) -> broadcast::Receiver<Arc<[IqSample]>>;
-    fn set_frequency(&self, hz: u64) -> Result<(), SourceError>;
-    fn set_sample_rate(&self, sps: u32) -> Result<(), SourceError>;
-}
-
-// Sink trait — consumes StereoFrames
-pub trait AudioSink: Block {
-    fn input(&self) -> mpsc::Sender<Arc<[StereoFrame]>>;
-}
-```
-
-### Testing Strategy
-
-- Every DSP block has a synchronous `process(input: &[T]) -> Vec<U>` method tested without tokio
-- Async pipeline tests use `tokio::test` with synthetic sources
-- Property-based tests with `proptest` for numeric blocks (FIR taps, decimation ratios)
-- No hardware required for any test in this crate
+**Lock discipline:**
+- UI acquires `read()` for one frame only — never across an await point
+- Signal path acquires `write()` for minimal mutations — never while waiting for IQ
+- MIDI controller acquires `write()` on CC dispatch — brief, non-blocking
 
 ---
 
-## Module: sdrapp-sdrplay-sys + sdrapp-sdrplay
+## UI Structure (`sdrapp-ui/src/app/panels/`)
 
-### sdrplay-sys (unsafe boundary)
+| File | Method | Contents |
+|------|--------|----------|
+| `left.rs` | `left_panel()` | Source status, start/stop, frequency widget, demod mode, NFM settings, scanner |
+| `left_bookmarks.rs` | `bookmarks_section()` | Bookmark list, inline edit form, save/export/import CSV |
+| `left_device.rs` | `device_settings_section()` | Antenna, sample rate, AGC, LNA/IF knobs, Bias-T, HDR, notch filters, RDS display |
+| `center.rs` | `center_panel()` | Spectrum + waterfall, FFT controls, zoom, band plan |
+| `right.rs` | `right_panel()` | Volume knob + VU meter, band presets, recorder start/stop/schedule, MIDI status, rigctl config |
+| `settings.rs` | `settings_panel()` | FFT size/window, waterfall colormap, font scale, NMF settings |
+| `status.rs` | `status_bar()` | Bottom status bar: freq, SNR, sample rate, demod mode, buffer fill |
 
-Generated by `build.rs` using `bindgen` against the installed SDRplay API headers:
+### UI→Signal Path Pattern
+
+UI never writes hardware state directly. All changes go through `cmd_tx`:
 
 ```rust
-// build.rs
-bindgen::Builder::default()
-    .header("/usr/local/include/sdrplay_api.h")
-    .allowlist_function("sdrplay_api_.*")
-    .allowlist_type("sdrplay_api_.*")
-    .generate()?
-    .write_to_file(out_dir.join("bindings.rs"))?;
+// Read state for display
+let agc = self.config.source.agc_enabled;
+
+// On user action: update config + send command
+self.config.source.agc_enabled = !agc;
+self.config_dirty = true;
+let _ = self.cmd_tx.try_send(HardwareCommand::SetAgcEnabled(!agc).into());
 ```
 
-`#![forbid(unsafe_code)]` is set on **every crate except `sdrapp-sdrplay-sys`**.
-
-### sdrapp-sdrplay (safe wrapper)
-
-- RSPdx-R2 device selection and enumeration
-- Antenna selection (A/B/C), IF mode, gain/AGC
-- Callback → mpsc bridge: SDRplay's C callback writes into a pre-allocated ring, Rust task drains it
-- Typed `RspdxConfig` struct (serde): persists device, antenna, IF mode, gain
+`config_dirty = true` triggers `AppConfig::save()` at frame-rate (debounced to 1 Hz).
 
 ---
 
-## Module: sdrapp-ui
+## MIDI Learn
 
-### Waterfall Widget
+Rendezvous pattern — no direct UI↔MIDI coupling:
 
-`egui_plot` is too slow for real-time FFT data. The waterfall uses egui's `painter.image()` with a manually-managed pixel buffer:
+1. User right-clicks a knob → context menu → "Assign MIDI CC"
+2. UI sets `shared.write().midi_learn_target = Some("knob_id")`
+3. KnobWidget renders a pulsing amber ring while `learn_active`
+4. MIDI dispatcher (tokio task) checks `midi_learn_target` on every CC event
+5. On match: writes `shared.write().midi_cc_to_knob.insert(cc, knob_id)`; clears target
+6. UI frame-rate sync: compares `midi_cc_to_knob.len()` vs `config.midi_learn.len()`;
+   on change: snapshots bindings into `config.midi_learn` and sets `config_dirty`
 
-```rust
-// Each frame: shift rows down, write new FFT row at top, upload texture
-fn update_waterfall(&mut self, fft_row: &[f32], ctx: &egui::Context) {
-    // shift pixel buffer (memmove)
-    // map fft_row magnitudes → color LUT → RGBA bytes at row 0
-    // ctx.tex_manager().set(self.texture_id, image_data)
-}
-```
-
-This approach: zero heap allocation per frame, GPU texture upload via egui's wgpu backend.
-
-### VFO Overlay
-
-Drawn via `painter.rect` + `painter.line_segment` on top of the spectrum. Drag to retune — maps pixel offset to Hz via the displayed frequency range.
+Persistence: `AppConfig.midi_learn: HashMap<String, u8>` (knob_id → CC number).
+Runtime: `SharedState.midi_cc_to_knob: HashMap<u8, String>` (CC → knob_id, reversed for fast lookup).
 
 ---
 
-## Module: sdrapp-midi
+## Recording
 
-### nanoKontrol2 Profile
+The recorder (`sdrapp-recorder`) is an independent tokio task:
 
-All 47 controls defined as a `const DEFAULT_PROFILE: MidiProfile` — a compile-time constant, not a hardcoded match tree.
+- Receives `RecorderCommand` (Start/Stop/Schedule) via `mpsc`
+- Receives `Arc<[StereoFrame]>` audio via `mpsc` from the signal path
+- Receives `Arc<[IqSample]>` IQ via `broadcast::Receiver` from the source
+- On file open failure: writes to `SharedState.recorder_error` (displayed as error banner in UI)
 
-```rust
-pub enum MidiAction {
-    TuneCoarse(i64),      // Hz delta
-    TuneFine(i64),
-    TuneMedium(i64),
-    RecordStart,
-    RecordStop,
-    PlayToggle,
-    ZoomIn,
-    ZoomOut,
-    PageNext,             // CYCLE button
-    VolumeSet(f32),
-    // ...
-}
-```
-
-### MIDI Learn
-
-Binding map is `HashMap<MidiKey, MidiAction>` serialized to serde_json. MIDI learn mode: next received CC/NoteOn replaces the binding for the selected action.
-
-### tokio Bridge
-
-```rust
-let (tx, mut rx) = mpsc::unbounded_channel::<MidiMessage>();
-let _conn = input.connect(port, "sdrapp", move |_ts, msg, _| {
-    let _ = tx.send(MidiMessage::from_bytes(msg));
-}, ())?;
-
-tokio::spawn(async move {
-    while let Some(msg) = rx.recv().await {
-        dispatcher.dispatch(msg).await;
-    }
-});
-```
+Recording modes: `AudioOnly` (.wav), `IqOnly` (.iq), `Both`.
 
 ---
 
-## CI Gates
+## Config
 
-Every PR must pass:
-```
-cargo fmt --check
-cargo clippy --workspace -- -D warnings
-cargo test --workspace
-cargo build --workspace --release
-```
+`AppConfig` (JSON, `serde`) persists to:
+- macOS: `~/Library/Application Support/sdrapp/config.json`
+- Linux: `~/.config/sdrapp/config.json`
 
-Hardware-in-loop tests (RSPdx-R2, nanoKontrol2) are manual — documented in `tests/hardware/README.md`.
+Unknown JSON fields are silently ignored (`#[serde(deny_unknown_fields)]` is NOT set). All new
+fields must have `#[serde(default)]` for backwards compatibility with older config files.
 
 ---
 
 ## Unsafe Budget
 
-| Crate | unsafe allowed? | Why |
-|-------|----------------|-----|
-| `sdrapp-sdrplay-sys` | Yes | bindgen output + callback marshaling |
-| all others | `#![forbid(unsafe_code)]` | enforced by compiler |
+| Crate | unsafe? | Scope |
+|-------|---------|-------|
+| `sdrapp-sdrplay-sys` | Yes | bindgen output + SDRplay callback marshaling |
+| all others | `#![forbid(unsafe_code)]` | Compiler-enforced |
 
 The entire unsafe surface is ~150 lines in one crate.
+
+---
+
+## Testing Strategy
+
+- **Unit tests**: DSP blocks have sync `process(input) -> output` methods tested in `#[test]`
+- **Integration tests**: Signal path uses `#[tokio::test]` with synthetic broadcast sources
+- **No hardware required**: All tests in CI pass without SDRplay hardware
+- **CI exclusions**: `sdrapp-sdrplay` and `sdrapp-sdrplay-sys` require proprietary API headers

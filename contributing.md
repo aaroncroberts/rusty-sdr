@@ -4,43 +4,68 @@
 
 **Required:**
 - Rust stable toolchain (`rustup toolchain install stable`)
-- SDRplay API installed from [sdrplay.com/api](https://www.sdrplay.com/api/) (proprietary, not in any package manager)
-- macOS system dependencies via Homebrew:
+- macOS system dependencies:
 
 ```sh
-brew install cmake fftw glfw libusb
+brew install cmake fftw glfw libusb airspy airspyhf hackrf rtl-sdr portaudio codec2 zstd
 ```
+
+- SDRplay API (optional — only needed to run on real hardware):
+  Install from [sdrplay.com/api](https://www.sdrplay.com/api/) (proprietary, not in any package manager).
 
 **Verify the setup:**
 ```sh
 cd rust
-cargo build        # should compile without errors
-cargo test         # must pass without SDRplay hardware connected
+# CI build (no SDRplay hardware required):
+cargo build --workspace --exclude sdrapp-sdrplay --exclude sdrapp-sdrplay-sys
+cargo test  --workspace --exclude sdrapp-sdrplay --exclude sdrapp-sdrplay-sys
 ```
+
+Note: `sdrapp-sdrplay` and `sdrapp-sdrplay-sys` require the proprietary SDRplay API headers and are excluded from CI. All other crates compile and test cleanly without hardware.
 
 ## Crate Map
 
-All crates live under `rust/crates/`.
+All crates live under `rust/crates/`. `sdrapp-core` is the only shared dependency — no hardware, no UI.
 
 | Crate | Role |
 |---|---|
-| `sdrapp-core` | DSP types, signal path, block traits, shared application state |
-| `sdrapp-sdrplay-sys` | bindgen FFI to the SDRplay C API — all `unsafe` code lives here |
-| `sdrapp-sdrplay` | Safe RSPdx-R2 source wrapper built on top of `sdrapp-sdrplay-sys` |
+| `sdrapp-core` | DSP blocks, signal path engine, shared state, config. Fully unit-testable. |
+| `sdrapp-sdrplay-sys` | bindgen FFI to the SDRplay C API — **all `unsafe` code lives here** |
+| `sdrapp-sdrplay` | Safe RSPdx-R2 source wrapper (hot-plug reconnect, hardware commands) |
+| `sdrapp-rtlsdr` | RTL-SDR source wrapper |
 | `sdrapp-audio` | cpal CoreAudio sink for demodulated audio output |
-| `sdrapp-recorder` | hound-based WAV recorder |
-| `sdrapp-midi` | midir nanoKontrol2 MIDI controller and binding system |
-| `sdrapp-ui` | egui spectrum, waterfall, and VFO widgets |
+| `sdrapp-recorder` | hound WAV recorder + raw IQ capture; errors surfaced via `SharedState.recorder_error` |
+| `sdrapp-midi` | midir nanoKontrol2 MIDI controller, 3-page CYCLE mapping, MIDI Learn |
+| `sdrapp-ui` | egui/eframe spectrum, waterfall, controls; reads `SharedState` each frame |
 
 For deeper design context see [`rust/ARCHITECTURE.md`](rust/ARCHITECTURE.md).
 
+## Key Design Patterns
+
+**Command flow**: UI never touches hardware directly. Sends `SignalPathCommand` (crossbeam channel)
+→ signal path task updates `SharedState` + forwards `HardwareCommand` to device thread.
+
+**SharedState**: `parking_lot::RwLock<SharedState>` shared between signal path (writer) and UI
+(reader). UI holds the read guard for one frame only; no reads across await points.
+
+**Hot-plug**: When hardware reconnects, `ReconnectSource { iq_rx, hardware_cmd_tx }` command
+swaps the IQ broadcast receiver AND hardware command channel, then re-applies all current
+`SharedState.hardware` fields to the new device.
+
+**MIDI Learn**: `SharedState.midi_learn_target = Some(knob_id)` → MIDI controller intercepts
+next CC → writes `midi_cc_to_knob` → UI frame-rate sync check persists to `AppConfig.midi_learn`.
+
 ## Coding Conventions
 
-**Unsafe code:** `#![forbid(unsafe_code)]` is set on every crate except `sdrapp-sdrplay-sys` and `sdrapp-sdrplay`. Keep all FFI boundary code in those two crates.
+**Unsafe code:** `#![forbid(unsafe_code)]` is set on every crate except `sdrapp-sdrplay-sys`.
+Keep all FFI boundary code in that one crate.
 
-**Error handling:** No `unwrap()` in library code. Use `?` with `anyhow::Result` or a typed error enum. `unwrap()` is acceptable only in tests and `main`.
+**Error handling:** No `unwrap()` in library code. `?` with typed errors. `unwrap()` is acceptable
+only in tests and `main`. Recoverable errors should surface to the UI via `SharedState` fields
+(e.g. `recorder_error: Option<String>`).
 
-**Tests:** Place unit tests in a `#[cfg(test)] mod tests` block at the bottom of each file. All tests must pass without SDRplay hardware connected — mock or stub hardware interactions.
+**Tests:** `#[cfg(test)] mod tests` block at the bottom of each file. All tests must pass without
+any hardware connected. Use `tokio::test` + synthetic IQ sources for signal path integration tests.
 
 **Formatting:** Enforced by `rustfmt`. Run `cargo fmt` before committing.
 
@@ -49,15 +74,16 @@ For deeper design context see [`rust/ARCHITECTURE.md`](rust/ARCHITECTURE.md).
 All of these must be clean before submitting a PR:
 
 ```sh
-cargo test                           # all workspace tests
-cargo clippy -- -D warnings          # no warnings allowed
-cargo fmt --check                    # formatting enforced
+# Run from rust/
+cargo test   --workspace --exclude sdrapp-sdrplay --exclude sdrapp-sdrplay-sys
+cargo clippy --workspace --exclude sdrapp-sdrplay --exclude sdrapp-sdrplay-sys -- -D warnings
+cargo fmt --check
 ```
 
 ## PR Process
 
-1. Create a branch from `master` with a short descriptive name (`feat/midi-page-cycle`, `fix/waterfall-flicker`).
+1. Branch from `master` with a short descriptive name (`feat/midi-page-cycle`, `fix/waterfall-flicker`).
 2. Keep commits focused — one logical change per commit.
-3. Ensure `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` all pass.
-4. Open a pull request against `master` with a description of what changed and why.
+3. All CI checks must pass (test, clippy, fmt).
+4. Open a PR against `master` with a description of what changed and why.
 5. Hardware-specific changes (SDRplay, MIDI) should note whether they were tested on real hardware.

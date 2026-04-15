@@ -37,14 +37,36 @@ make clean    # cargo clean + remove dist/
 
 | Crate | Purpose |
 |---|---|
-| `sdrapp` (bin) | Entry point — wires all crates together |
+| `sdrapp` (bin) | Entry point — wires all crates, launches eframe |
 | `sdrapp-core` | Signal path, DSP blocks, shared state, config |
 | `sdrapp-ui` | eframe/egui UI (spectrum, waterfall, controls) |
-| `sdrapp-sdrplay` | SDRplay RSPdx-R2 FFI source |
-| `sdrapp-sdrplay-sys` | Raw bindgen bindings to sdrplay_api |
+| `sdrapp-sdrplay` | SDRplay RSPdx-R2 safe source wrapper |
+| `sdrapp-sdrplay-sys` | bindgen FFI bindings to sdrplay_api (all unsafe) |
+| `sdrapp-rtlsdr` | RTL-SDR source wrapper |
 | `sdrapp-audio` | cpal audio sink (CoreAudio on macOS) |
-| `sdrapp-recorder` | WAV recorder |
-| `sdrapp-midi` | MIDI controller (nanoKontrol2) |
+| `sdrapp-recorder` | WAV + IQ recorder (hound) |
+| `sdrapp-midi` | MIDI controller (nanoKontrol2, 3-page CYCLE system) |
+
+### Key Architecture
+
+**Signal path** (`sdrapp-core/src/signal_path/`):
+- `shared_state.rs` — `SharedState` and sub-structs read by the UI (RwLock-guarded)
+- `commands.rs` — all command enums (`ReceiverCmd`, `HardwareCommand`, `DisplayCmd`, etc.)
+- `mod.rs` — `SignalPath` engine: IQ→FFT→demod→audio pipeline, command dispatch loop
+
+**UI panels** (`sdrapp-ui/src/app/panels/`):
+- `left.rs` — source, frequency, demod mode, scanner sections
+- `left_bookmarks.rs` — bookmark list: display, recall, add/edit/remove, CSV export/import
+- `left_device.rs` — device settings: antenna, sample rate, AGC, LNA/IF knobs, notch filters, RDS
+- `center.rs` — spectrum + waterfall display, FFT controls
+- `right.rs` — volume, band presets, recorder start/stop, scheduled recording, MIDI status, rigctl
+
+**Shared state pattern**: UI never writes hardware state directly. It sends `SignalPathCommand` via
+a crossbeam channel. The signal path task updates `SharedState` and forwards `HardwareCommand` to
+the device thread. UI reads `SharedState` each frame under `RwLock::read()`.
+
+**MIDI Learn**: Context-menu on any knob → sets `SharedState.midi_learn_target`. MIDI controller
+intercepts the next CC and writes to `SharedState.midi_cc_to_knob`. Persisted in `AppConfig.midi_learn`.
 
 ### Building
 
