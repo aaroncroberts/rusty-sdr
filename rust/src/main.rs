@@ -208,12 +208,12 @@ fn main() -> anyhow::Result<()> {
 
     // Apply persisted FFT settings (signal path starts with defaults; sync from config).
     {
-        use sdrapp_core::{dsp::FftWindow, signal_path::SignalPathCommand};
+        use sdrapp_core::{dsp::FftWindow, signal_path::DisplayCmd};
         if config.ui.fft_size != 2048 {
-            let _ = cmd_tx.try_send(SignalPathCommand::SetFftSize(config.ui.fft_size));
+            let _ = cmd_tx.try_send(DisplayCmd::SetFftSize(config.ui.fft_size).into());
         }
         if config.ui.fft_averaging != 4 {
-            let _ = cmd_tx.try_send(SignalPathCommand::SetFftAveraging(config.ui.fft_averaging));
+            let _ = cmd_tx.try_send(DisplayCmd::SetFftAveraging(config.ui.fft_averaging).into());
         }
         let wf = match config.ui.fft_window.as_str() {
             "Rectangular" => FftWindow::Rectangular,
@@ -222,10 +222,10 @@ fn main() -> anyhow::Result<()> {
             _ => FftWindow::Hann,
         };
         if wf != FftWindow::Hann {
-            let _ = cmd_tx.try_send(SignalPathCommand::SetFftWindow(wf));
+            let _ = cmd_tx.try_send(DisplayCmd::SetFftWindow(wf).into());
         }
         if config.ui.band_plan_enabled {
-            let _ = cmd_tx.try_send(SignalPathCommand::SetBandPlanEnabled(true));
+            let _ = cmd_tx.try_send(DisplayCmd::SetBandPlanEnabled(true).into());
         }
     }
 

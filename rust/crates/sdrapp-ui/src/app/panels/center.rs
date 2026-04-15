@@ -2,7 +2,7 @@
 
 use egui::{RichText, Ui, Vec2};
 
-use sdrapp_core::signal_path::SignalPathCommand;
+use sdrapp_core::signal_path::{DisplayCmd, ReceiverCmd};
 
 use crate::{
     frequency::FrequencyWidget,
@@ -104,7 +104,7 @@ impl SdrApp {
                 let new_freq = (low + t as f64 * (high - low)).round() as u64;
                 let _ = self
                     .cmd_tx
-                    .try_send(SignalPathCommand::SetFrequency(new_freq));
+                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
@@ -118,7 +118,7 @@ impl SdrApp {
                 // Ctrl+scroll → zoom
                 let factor = if scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
                 let new_zoom = (zoom_level * factor).clamp(0.005, 1.0);
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_zoom));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_zoom).into());
                 self.config.ui.zoom_level = new_zoom;
                 self.config_dirty = true;
             } else {
@@ -129,7 +129,7 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(step).max(1)
                 };
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
@@ -221,7 +221,7 @@ impl SdrApp {
                 .clicked()
             {
                 let new_z = (zoom_level / 1.5).clamp(0.005, 1.0);
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_z));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
                 self.config.ui.zoom_level = new_z;
                 self.config_dirty = true;
             }
@@ -231,7 +231,7 @@ impl SdrApp {
                     .show_value(false)
                     .logarithmic(true),
             ).changed() {
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(z));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(z).into());
                 self.config.ui.zoom_level = z;
                 self.config_dirty = true;
             }
@@ -240,7 +240,7 @@ impl SdrApp {
                 .clicked()
             {
                 let new_z = (zoom_level * 1.5).clamp(0.005, 1.0);
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_z));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
                 self.config.ui.zoom_level = new_z;
                 self.config_dirty = true;
             }
@@ -248,7 +248,7 @@ impl SdrApp {
                 .on_hover_text("Reset to full bandwidth (zoom = 1.0)")
                 .clicked()
             {
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(1.0));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(1.0).into());
                 self.config.ui.zoom_level = 1.0;
                 self.config_dirty = true;
             }
@@ -262,7 +262,7 @@ impl SdrApp {
                 egui::Slider::new(&mut ws, 0.1_f32..=8.0_f32)
                     .show_value(false),
             ).on_hover_text("Waterfall scroll speed").changed() {
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(ws));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetWaterfallSpeed(ws).into());
                 self.config.ui.waterfall_speed = ws;
                 self.config_dirty = true;
             }
@@ -285,7 +285,7 @@ impl SdrApp {
                     for sz in [512_usize, 1024, 2048, 4096, 8192] {
                         let sel = cur_fft_size == sz;
                         if ui.selectable_label(sel, sz.to_string()).clicked() && !sel {
-                            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFftSize(sz));
+                            let _ = self.cmd_tx.try_send(DisplayCmd::SetFftSize(sz).into());
                             self.config.ui.fft_size = sz;
                             self.config_dirty = true;
                         }
@@ -302,7 +302,7 @@ impl SdrApp {
                     for wf in [FftWindow::Rectangular, FftWindow::Hann, FftWindow::Hamming, FftWindow::BlackmanHarris] {
                         let sel = cur_fft_window == wf;
                         if ui.selectable_label(sel, wf.label()).clicked() && !sel {
-                            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFftWindow(wf));
+                            let _ = self.cmd_tx.try_send(DisplayCmd::SetFftWindow(wf).into());
                             self.config.ui.fft_window = format!("{wf:?}");
                             self.config_dirty = true;
                         }
@@ -315,7 +315,7 @@ impl SdrApp {
             if ui.add(
                 egui::Slider::new(&mut avg, 1..=16).show_value(true)
             ).on_hover_text("FFT averaging: frames blended via exponential moving average. 1 = off.").changed() {
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFftAveraging(avg as u8));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetFftAveraging(avg as u8).into());
                 self.config.ui.fft_averaging = avg as u8;
                 self.config_dirty = true;
             }
@@ -327,7 +327,7 @@ impl SdrApp {
                 .clicked()
             {
                 let new_val = !band_plan_enabled;
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetBandPlanEnabled(new_val));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetBandPlanEnabled(new_val).into());
                 self.config.ui.band_plan_enabled = new_val;
                 self.config_dirty = true;
             }
@@ -358,7 +358,7 @@ impl SdrApp {
                 let low = freq.saturating_sub(span) as f64;
                 let high = freq as f64 + span as f64;
                 let new_freq = (low + t as f64 * (high - low)).round() as u64;
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
@@ -372,7 +372,7 @@ impl SdrApp {
             if wf_ctrl {
                 let factor = if wf_scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
                 let new_z = (zoom_level * factor).clamp(0.005, 1.0);
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_z));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_z).into());
                 self.config.ui.zoom_level = new_z;
                 self.config_dirty = true;
             } else {
@@ -382,7 +382,7 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(step).max(1)
                 };
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;

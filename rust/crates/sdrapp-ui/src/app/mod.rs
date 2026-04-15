@@ -19,14 +19,13 @@ use std::sync::Arc;
 use sdrapp_core::{
     config::AppConfig,
     registry::ModuleRegistry,
-    signal_path::{DemodMode, SharedState, SignalPathCommand},
+    signal_path::{ReceiverCmd, SharedState, SignalPathCommand},
 };
 use sdrapp_recorder::RecorderCommand;
 
 use crate::{
     frequency::FrequencyWidget,
     help::HelpPanel,
-    spectrum::SpectrumWidget,
     theme,
     waterfall::WaterfallWidget,
 };
@@ -198,7 +197,7 @@ impl eframe::App for SdrApp {
             } else {
                 freq.saturating_sub((-delta) as u64).max(1)
             };
-            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
             self.config.ui.frequency_hz = new_freq;
             self.frequency_widget = FrequencyWidget::new(new_freq);
             self.config_dirty = true;

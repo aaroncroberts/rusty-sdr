@@ -4,7 +4,7 @@ use egui::{RichText, Stroke, Ui, Vec2};
 
 use sdrapp_core::{
     config::BookmarkConfig,
-    signal_path::{DemodMode, RecordingMode, SharedState, SignalPathCommand},
+    signal_path::{BookmarkCmd, DemodMode, HardwareCommand, ReceiverCmd, ScanCmd, SignalPathCommand},
 };
 
 use crate::{
@@ -108,7 +108,7 @@ impl SdrApp {
 
         let (_, new_freq) = self.frequency_widget.show(ui);
         if let Some(freq) = new_freq {
-            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(freq));
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq).into());
             self.config.ui.frequency_hz = freq;
             self.config_dirty = true;
         }
@@ -133,7 +133,7 @@ impl SdrApp {
                 let text = RichText::new(label).small();
                 let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
                 if ui.selectable_label(selected, text).clicked() {
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetTuneStep(hz));
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetTuneStep(hz).into());
                 }
             }
         });
@@ -155,7 +155,7 @@ impl SdrApp {
                         .fill(theme::WIDGET_BG),
                 ).on_hover_text(tip).clicked() {
                     let new_freq = (freq as i64 + delta).max(1) as u64;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                     self.config.ui.frequency_hz = new_freq;
                     self.frequency_widget = FrequencyWidget::new(new_freq);
                     self.config_dirty = true;
@@ -183,7 +183,7 @@ impl SdrApp {
                 let text = RichText::new(label).small();
                 let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
                 if ui.selectable_label(selected, text).on_hover_text(tooltip).clicked() && !selected {
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
                 }
             }
         });
@@ -199,7 +199,7 @@ impl SdrApp {
                 let text = RichText::new(label).small();
                 let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
                 if ui.selectable_label(selected, text).on_hover_text(tooltip).clicked() && !selected {
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
                 }
             }
         });
@@ -225,7 +225,7 @@ impl SdrApp {
                         .on_hover_text("NFM channel bandwidth. 12.5 kHz for modern PMR/amateur, 25 kHz for legacy systems.")
                         .clicked() && !selected
                     {
-                        let _ = self.cmd_tx.try_send(SignalPathCommand::SetNfmBandwidth(bw));
+                        let _ = self.cmd_tx.try_send(ReceiverCmd::SetNfmBandwidth(bw).into());
                         self.config.ui.nfm_bandwidth_hz = bw;
                         self.config_dirty = true;
                     }
@@ -255,7 +255,7 @@ impl SdrApp {
             {
                 let _ = self
                     .cmd_tx
-                    .try_send(SignalPathCommand::SetSquelchThreshold(sq_threshold));
+                    .try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
             }
 
             ui.add_space(4.0);
@@ -283,7 +283,7 @@ impl SdrApp {
                     .clicked()
                 {
                     let new_enabled = !ctcss_enabled;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetCtcssEnabled(new_enabled));
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetCtcssEnabled(new_enabled).into());
                     self.config.ui.ctcss_enabled = new_enabled;
                     self.config_dirty = true;
                 }
@@ -449,15 +449,15 @@ impl SdrApp {
                 let bm = &s.bookmarks[i];
                 (bm.freq_hz, bm.mode)
             };
-            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(bm_freq));
-            let _ = self.cmd_tx.try_send(SignalPathCommand::SetDemodMode(bm_mode));
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(bm_freq).into());
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(bm_mode).into());
             self.config.ui.frequency_hz = bm_freq;
             self.frequency_widget = FrequencyWidget::new(bm_freq);
             self.config_dirty = true;
         }
         if let Some(i) = remove_idx {
             self.bookmark_edit_idx = None;
-            let _ = self.cmd_tx.try_send(SignalPathCommand::RemoveBookmark(i));
+            let _ = self.cmd_tx.try_send(BookmarkCmd::Remove(i).into());
             if i < self.config.bookmarks.len() {
                 self.config.bookmarks.remove(i);
                 self.config_dirty = true;
@@ -482,7 +482,7 @@ impl SdrApp {
                 let name = self.bookmark_edit_buf.0.clone();
                 let mode = self.bookmark_edit_buf.2;
                 let cat = self.bookmark_edit_buf.3.clone();
-                let _ = self.cmd_tx.try_send(SignalPathCommand::EditBookmark(i, name.clone(), freq, mode, cat.clone()));
+                let _ = self.cmd_tx.try_send(BookmarkCmd::Edit(i, name.clone(), freq, mode, cat.clone()).into());
                 if i < self.config.bookmarks.len() {
                     let mode_str = match mode {
                         DemodMode::Nfm => "Nfm", DemodMode::Am => "Am",
@@ -511,7 +511,7 @@ impl SdrApp {
                     (s.center_freq_hz, s.demod.demod_mode)
                 };
                 let name = format!("{:.3} MHz", freq as f64 / 1_000_000.0);
-                let _ = self.cmd_tx.try_send(SignalPathCommand::AddBookmark(name.clone()));
+                let _ = self.cmd_tx.try_send(BookmarkCmd::Add(name.clone()).into());
                 let mode_str = match mode {
                     DemodMode::Nfm => "Nfm", DemodMode::Am => "Am",
                     DemodMode::Usb => "Usb", DemodMode::Lsb => "Lsb",
@@ -600,7 +600,7 @@ impl SdrApp {
                 .suffix(" s").show_value(true))
                 .changed()
             {
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetScanDwell(self.scan_dwell_ui));
+                let _ = self.cmd_tx.try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
             }
         });
 
@@ -610,18 +610,18 @@ impl SdrApp {
                 let stop_btn = egui::Button::new(RichText::new("■  Stop").color(theme::DANGER).strong())
                     .fill(theme::WIDGET_BG);
                 if ui.add_sized(Vec2::new(70.0, 22.0), stop_btn).clicked() {
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::StopScan);
+                    let _ = self.cmd_tx.try_send(ScanCmd::Stop.into());
                 }
                 if ui.small_button(RichText::new("▶▶ Next").color(theme::TEXT_MUTED)).clicked() {
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::ScanNext);
+                    let _ = self.cmd_tx.try_send(ScanCmd::Next.into());
                 }
                 ui.label(RichText::new("SCAN").color(theme::STATUS_OK).small().strong());
             } else {
                 let start_btn = egui::Button::new(RichText::new("▶  Scan").color(theme::STATUS_OK).strong())
                     .fill(theme::WIDGET_BG);
                 if ui.add_sized(Vec2::new(70.0, 22.0), start_btn).clicked() {
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetScanDwell(self.scan_dwell_ui));
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::StartScan(self.scan_cat_ui.clone()));
+                    let _ = self.cmd_tx.try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
+                    let _ = self.cmd_tx.try_send(ScanCmd::Start(self.scan_cat_ui.clone()).into());
                 }
             }
         });
@@ -654,7 +654,7 @@ impl SdrApp {
                         self.config.source.antenna = port.into();
                         self.config_dirty = true;
                         let port_num: u8 = match port { "B" => 1, "C" => 2, _ => 0 };
-                        let _ = self.cmd_tx.try_send(SignalPathCommand::SetAntenna(port_num));
+                        let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port_num).into());
                     }
                 }
             });
@@ -707,7 +707,7 @@ impl SdrApp {
                 if ui.selectable_label(*agc, label).clicked() {
                     *agc = !*agc;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetAgcEnabled(*agc));
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAgcEnabled(*agc).into());
                 }
             });
         });
@@ -723,7 +723,7 @@ impl SdrApp {
                 {
                     self.config.source.lna_state = lna as u8;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetLnaState(lna as u8));
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetLnaState(lna as u8).into());
                 }
             });
 
@@ -737,7 +737,7 @@ impl SdrApp {
                 {
                     self.config.source.if_gain_dbfs = gain;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetIfGain(gain));
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetIfGain(gain).into());
                 }
             });
         }
@@ -753,7 +753,7 @@ impl SdrApp {
                 {
                     self.config.source.agc_setpoint_dbfs = sp;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetAgcSetpoint(sp));
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAgcSetpoint(sp).into());
                 }
             });
         }
@@ -774,7 +774,7 @@ impl SdrApp {
                 {
                     self.config.source.bias_t_enabled = !bias_t;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetBiasT(!bias_t));
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetBiasT(!bias_t).into());
                 }
 
                 ui.add_space(6.0);
@@ -789,7 +789,7 @@ impl SdrApp {
                 {
                     self.config.source.hdr_mode = !hdr;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetHdrMode(!hdr));
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetHdrMode(!hdr).into());
                 }
             });
 
@@ -804,7 +804,7 @@ impl SdrApp {
                 {
                     self.config.source.am_notch_enabled = !am;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetAmNotch(!am));
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAmNotch(!am).into());
                 }
 
                 ui.add_space(6.0);
@@ -818,7 +818,7 @@ impl SdrApp {
                 {
                     self.config.source.fm_notch_enabled = !fm;
                     self.config_dirty = true;
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetFmNotch(!fm));
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetFmNotch(!fm).into());
                 }
             });
         }

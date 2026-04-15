@@ -277,43 +277,29 @@ pub enum HardwareCommand {
     SetAntenna(u8),
 }
 
-/// Commands from the UI to the signal path.
-#[derive(Debug)]
-pub enum SignalPathCommand {
+/// Core receiver tuning and demodulation commands.
+#[derive(Debug, Clone)]
+pub enum ReceiverCmd {
     SetFrequency(u64),
     SetVolume(f32),
     SetDemodMode(DemodMode),
     /// Set NFM squelch threshold in dBFS (ignored outside NFM mode).
     SetSquelchThreshold(f32),
-    StartRecording,
-    StopRecording,
-    /// Adjust zoom level (1.0 = full BW, lower = zoomed in).
-    SetZoom(f32),
-    /// Adjust waterfall scroll speed multiplier.
-    SetWaterfallSpeed(f32),
     /// Set keyboard/scroll tuning step in Hz.
     SetTuneStep(u64),
-    /// Add a bookmark at the current frequency and mode.
-    AddBookmark(String),
-    /// Remove bookmark at the given index.
-    RemoveBookmark(usize),
     /// Set NFM channel bandwidth in Hz (12500 or 25000).
     SetNfmBandwidth(u32),
     /// Enable or disable CTCSS tone squelch in NFM mode.
     SetCtcssEnabled(bool),
-    // ── Bookmark management ───────────────────────────────────────────────────
-    /// Edit an existing bookmark at index: new (name, freq_hz, mode, category).
-    EditBookmark(usize, String, u64, DemodMode, String),
-    // ── Scanner ───────────────────────────────────────────────────────────────
-    /// Start cycling through bookmarks in the given category (empty = all).
-    StartScan(String),
-    /// Stop the scanner.
-    StopScan,
-    /// Skip to the next bookmark immediately (also works during scan).
-    ScanNext,
-    /// Set scanner dwell time in seconds (0.5–30 s).
-    SetScanDwell(f32),
-    // ── FFT / spectrum display settings ──────────────────────────────────────
+}
+
+/// Spectrum/waterfall display commands.
+#[derive(Debug, Clone)]
+pub enum DisplayCmd {
+    /// Adjust zoom level (1.0 = full BW, lower = zoomed in).
+    SetZoom(f32),
+    /// Adjust waterfall scroll speed multiplier.
+    SetWaterfallSpeed(f32),
     /// Change the FFT bin count (must be a power of two: 512–8192).
     SetFftSize(usize),
     /// Change the FFT window function.
@@ -322,18 +308,69 @@ pub enum SignalPathCommand {
     SetFftAveraging(u8),
     /// Toggle band plan overlay.
     SetBandPlanEnabled(bool),
-    // ── Hardware controls (forwarded to device thread via HardwareCommand) ───
-    SetLnaState(u8),
-    SetIfGain(i32),
-    SetAgcEnabled(bool),
-    SetAgcSetpoint(i32),
-    SetBiasT(bool),
-    SetHdrMode(bool),
-    SetAmNotch(bool),
-    SetFmNotch(bool),
-    /// Antenna port: 0 = A, 1 = B, 2 = C.
-    SetAntenna(u8),
+}
+
+/// Bookmark management commands.
+#[derive(Debug, Clone)]
+pub enum BookmarkCmd {
+    /// Add a bookmark at the current frequency and mode.
+    Add(String),
+    /// Remove bookmark at the given index.
+    Remove(usize),
+    /// Edit an existing bookmark at index: new (name, freq_hz, mode, category).
+    Edit(usize, String, u64, DemodMode, String),
+}
+
+/// Bookmark scanner commands.
+#[derive(Debug, Clone)]
+pub enum ScanCmd {
+    /// Start cycling through bookmarks in the given category (empty = all).
+    Start(String),
+    /// Stop the scanner.
     Stop,
+    /// Skip to the next bookmark immediately (also works during scan).
+    Next,
+    /// Set scanner dwell time in seconds (0.5–30 s).
+    SetDwell(f32),
+}
+
+/// Commands from the UI to the signal path.
+///
+/// Each variant wraps a domain-specific sub-enum so the match handler can
+/// delegate to focused sub-handlers.  Use `.into()` at call sites (all sub-enum
+/// types implement `From<_> for SignalPathCommand`):
+///
+/// ```rust,ignore
+/// cmd_tx.try_send(ReceiverCmd::SetFrequency(101_700_000).into()).ok();
+/// cmd_tx.try_send(HardwareCommand::SetLnaState(3).into()).ok();
+/// ```
+#[derive(Debug)]
+pub enum SignalPathCommand {
+    Receiver(ReceiverCmd),
+    /// Hardware device settings — forwarded verbatim to the device thread.
+    Hardware(HardwareCommand),
+    Display(DisplayCmd),
+    Bookmark(BookmarkCmd),
+    Scan(ScanCmd),
+    StartRecording,
+    StopRecording,
+    Stop,
+}
+
+impl From<ReceiverCmd> for SignalPathCommand {
+    fn from(c: ReceiverCmd) -> Self { Self::Receiver(c) }
+}
+impl From<HardwareCommand> for SignalPathCommand {
+    fn from(c: HardwareCommand) -> Self { Self::Hardware(c) }
+}
+impl From<DisplayCmd> for SignalPathCommand {
+    fn from(c: DisplayCmd) -> Self { Self::Display(c) }
+}
+impl From<BookmarkCmd> for SignalPathCommand {
+    fn from(c: BookmarkCmd) -> Self { Self::Bookmark(c) }
+}
+impl From<ScanCmd> for SignalPathCommand {
+    fn from(c: ScanCmd) -> Self { Self::Scan(c) }
 }
 
 /// Manages the running signal path tasks.
@@ -454,220 +491,188 @@ impl SignalPath {
                 // Drain any pending commands (non-blocking)
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
-                        SignalPathCommand::SetFrequency(hz) => {
-                            shared_clone.write().center_freq_hz = hz;
-                            // Push new frequency to hardware (device thread polls every 50ms)
-                            if let Some(ref atomic) = freq_atomic_clone {
-                                atomic.store(hz, Ordering::Relaxed);
+                        SignalPathCommand::Receiver(c) => match c {
+                            ReceiverCmd::SetFrequency(hz) => {
+                                shared_clone.write().center_freq_hz = hz;
+                                if let Some(ref atomic) = freq_atomic_clone {
+                                    atomic.store(hz, Ordering::Relaxed);
+                                }
+                                demod.reset();
+                                rds.reset();
+                                {
+                                    let mut s = shared_clone.write();
+                                    s.rds.ps_name = None;
+                                    s.rds.pty = None;
+                                    s.rds.ta = false;
+                                    s.rds.rt = None;
+                                }
                             }
-                            demod.reset();
-                            rds.reset();
-                            {
+                            ReceiverCmd::SetVolume(v) => {
+                                vol.set(v);
+                                shared_clone.write().demod.volume = v;
+                            }
+                            ReceiverCmd::SetDemodMode(mode) => {
+                                demod = make_demod(mode, sr, nfm_bw_hz);
+                                squelch.reset();
+                                audio_bp.reset();
+                                ctcss.reset();
+                                rds.reset();
                                 let mut s = shared_clone.write();
+                                s.demod.demod_mode = mode;
+                                s.rds.is_stereo = false;
                                 s.rds.ps_name = None;
                                 s.rds.pty = None;
                                 s.rds.ta = false;
                                 s.rds.rt = None;
+                                tracing::info!(?mode, "demod mode changed");
+                            }
+                            ReceiverCmd::SetSquelchThreshold(t) => {
+                                squelch.set_threshold_dbfs(t);
+                                shared_clone.write().demod.squelch_threshold = t;
+                            }
+                            ReceiverCmd::SetTuneStep(step) => {
+                                shared_clone.write().demod.tune_step_hz = step;
+                            }
+                            ReceiverCmd::SetNfmBandwidth(bw) => {
+                                nfm_bw_hz = bw;
+                                if matches!(demod, Demod::Nfm(_)) {
+                                    demod = Demod::Nfm(FmDemodulator::new(sr, 48_000, bw as f32, 0.0));
+                                    audio_bp.reset();
+                                    ctcss.reset();
+                                }
+                                shared_clone.write().demod.nfm_bandwidth_hz = bw;
+                            }
+                            ReceiverCmd::SetCtcssEnabled(enabled) => {
+                                ctcss_enabled = enabled;
+                                ctcss.reset();
+                                shared_clone.write().demod.ctcss_squelch_enabled = enabled;
+                                shared_clone.write().demod.ctcss_tone_detected = false;
                             }
                         }
-                        SignalPathCommand::SetVolume(v) => {
-                            vol.set(v);
-                            shared_clone.write().demod.volume = v;
+                        SignalPathCommand::Hardware(hw) => {
+                            // Update SharedState to mirror the hardware change
+                            {
+                                let mut s = shared_clone.write();
+                                match &hw {
+                                    HardwareCommand::SetLnaState(n)    => s.hardware.lna_state = *n,
+                                    HardwareCommand::SetIfGain(g)      => s.hardware.if_gain_dbfs = *g,
+                                    HardwareCommand::SetAgcEnabled(en) => s.hardware.agc_enabled = *en,
+                                    HardwareCommand::SetAgcSetpoint(sp)=> s.hardware.agc_setpoint_dbfs = *sp,
+                                    HardwareCommand::SetBiasT(en)      => s.hardware.bias_t_enabled = *en,
+                                    HardwareCommand::SetHdrMode(en)    => s.hardware.hdr_mode = *en,
+                                    HardwareCommand::SetAmNotch(en)    => s.hardware.am_notch_enabled = *en,
+                                    HardwareCommand::SetFmNotch(en)    => s.hardware.fm_notch_enabled = *en,
+                                    HardwareCommand::SetAntenna(port)  => s.hardware.antenna_port = *port,
+                                }
+                            }
+                            // Forward verbatim to the device thread
+                            if let Some(ref tx) = hw_cmd_tx {
+                                let _ = tx.try_send(hw);
+                            }
                         }
-                        SignalPathCommand::SetDemodMode(mode) => {
-                            demod = make_demod(mode, sr, nfm_bw_hz);
-                            squelch.reset();
-                            audio_bp.reset();
-                            ctcss.reset();
-                            rds.reset();
-                            let mut s = shared_clone.write();
-                            s.demod.demod_mode = mode;
-                            s.rds.is_stereo = false;
-                            s.rds.ps_name = None;
-                            s.rds.pty = None;
-                            s.rds.ta = false;
-                            s.rds.rt = None;
-                            tracing::info!(?mode, "demod mode changed");
+                        SignalPathCommand::Display(c) => match c {
+                            DisplayCmd::SetZoom(z) => {
+                                shared_clone.write().zoom_level = z.clamp(0.01, 1.0);
+                            }
+                            DisplayCmd::SetWaterfallSpeed(spd) => {
+                                shared_clone.write().waterfall_speed = spd.clamp(0.1, 10.0);
+                            }
+                            DisplayCmd::SetFftSize(sz) => {
+                                if sz.is_power_of_two() && sz >= 512 && sz <= 8192 {
+                                    fft_size = sz;
+                                    fft = FftProcessor::new(fft_size, fft_window);
+                                    fft_avg_buf = vec![-120.0; fft_size];
+                                    iq_accumulator.clear();
+                                    shared_clone.write().fft.fft_size = sz;
+                                    shared_clone.write().fft.fft_magnitudes = vec![-120.0; sz];
+                                }
+                            }
+                            DisplayCmd::SetFftWindow(wf) => {
+                                fft_window = wf;
+                                fft = FftProcessor::new(fft_size, fft_window);
+                                shared_clone.write().fft.fft_window = wf;
+                            }
+                            DisplayCmd::SetFftAveraging(n) => {
+                                fft_averaging = n.max(1).min(16);
+                                fft_avg_buf = vec![-120.0; fft_size];
+                                shared_clone.write().fft.fft_averaging = fft_averaging;
+                            }
+                            DisplayCmd::SetBandPlanEnabled(en) => {
+                                shared_clone.write().fft.band_plan_enabled = en;
+                            }
                         }
-                        SignalPathCommand::SetSquelchThreshold(t) => {
-                            squelch.set_threshold_dbfs(t);
-                            shared_clone.write().demod.squelch_threshold = t;
+                        SignalPathCommand::Bookmark(c) => match c {
+                            BookmarkCmd::Add(name) => {
+                                let (freq, mode) = {
+                                    let s = shared_clone.read();
+                                    (s.center_freq_hz, s.demod.demod_mode)
+                                };
+                                shared_clone.write().bookmarks.push(Bookmark::new(name, freq, mode));
+                            }
+                            BookmarkCmd::Remove(idx) => {
+                                let mut s = shared_clone.write();
+                                if idx < s.bookmarks.len() {
+                                    s.bookmarks.remove(idx);
+                                    if s.bookmark_cursor >= s.bookmarks.len() && !s.bookmarks.is_empty() {
+                                        s.bookmark_cursor = s.bookmarks.len() - 1;
+                                    }
+                                }
+                            }
+                            BookmarkCmd::Edit(idx, name, freq, mode, cat) => {
+                                let mut s = shared_clone.write();
+                                if idx < s.bookmarks.len() {
+                                    s.bookmarks[idx] = Bookmark { name, freq_hz: freq, mode, category: cat };
+                                }
+                            }
+                        }
+                        SignalPathCommand::Scan(c) => match c {
+                            ScanCmd::Start(cat) => {
+                                scan_category = cat.clone();
+                                scan_running = true;
+                                scan_cursor = 0;
+                                scan_dwell_samples = 0;
+                                {
+                                    let mut s = shared_clone.write();
+                                    s.scanner.scan_running = true;
+                                    s.scanner.scan_category = cat;
+                                    s.scanner.scan_cursor = 0;
+                                }
+                                let first = {
+                                    let s = shared_clone.read();
+                                    scan_next_bookmark(&s.bookmarks, &scan_category, scan_cursor)
+                                };
+                                if let Some((idx, bm_freq, bm_mode)) = first {
+                                    scan_cursor = idx;
+                                    shared_clone.write().scanner.scan_cursor = idx;
+                                    shared_clone.write().center_freq_hz = bm_freq;
+                                    if let Some(ref atomic) = freq_atomic_clone {
+                                        atomic.store(bm_freq, Ordering::Relaxed);
+                                    }
+                                    demod = make_demod(bm_mode, sr, nfm_bw_hz);
+                                    shared_clone.write().demod.demod_mode = bm_mode;
+                                    demod.reset();
+                                    rds.reset();
+                                }
+                            }
+                            ScanCmd::Stop => {
+                                scan_running = false;
+                                shared_clone.write().scanner.scan_running = false;
+                            }
+                            ScanCmd::Next => {
+                                if scan_running {
+                                    scan_dwell_samples = u64::MAX;
+                                }
+                            }
+                            ScanCmd::SetDwell(secs) => {
+                                scan_dwell_secs = secs.clamp(0.5, 30.0);
+                                shared_clone.write().scanner.scan_dwell_secs = scan_dwell_secs;
+                            }
                         }
                         SignalPathCommand::StartRecording => {
                             shared_clone.write().is_recording = true;
                         }
                         SignalPathCommand::StopRecording => {
                             shared_clone.write().is_recording = false;
-                        }
-                        SignalPathCommand::SetZoom(z) => {
-                            shared_clone.write().zoom_level = z.clamp(0.01, 1.0);
-                        }
-                        SignalPathCommand::SetWaterfallSpeed(s) => {
-                            shared_clone.write().waterfall_speed = s.clamp(0.1, 10.0);
-                        }
-                        SignalPathCommand::SetTuneStep(step) => {
-                            shared_clone.write().demod.tune_step_hz = step;
-                        }
-                        SignalPathCommand::AddBookmark(name) => {
-                            let (freq, mode) = {
-                                let s = shared_clone.read();
-                                (s.center_freq_hz, s.demod.demod_mode)
-                            };
-                            shared_clone.write().bookmarks.push(Bookmark::new(name, freq, mode));
-                        }
-                        SignalPathCommand::RemoveBookmark(idx) => {
-                            let mut s = shared_clone.write();
-                            if idx < s.bookmarks.len() {
-                                s.bookmarks.remove(idx);
-                                if s.bookmark_cursor >= s.bookmarks.len() && !s.bookmarks.is_empty() {
-                                    s.bookmark_cursor = s.bookmarks.len() - 1;
-                                }
-                            }
-                        }
-                        SignalPathCommand::SetNfmBandwidth(bw) => {
-                            nfm_bw_hz = bw;
-                            // Rebuild NFM demod with new bandwidth if currently in NFM
-                            if matches!(demod, Demod::Nfm(_)) {
-                                demod = Demod::Nfm(FmDemodulator::new(sr, 48_000, bw as f32, 0.0));
-                                audio_bp.reset();
-                                ctcss.reset();
-                            }
-                            shared_clone.write().demod.nfm_bandwidth_hz = bw;
-                        }
-                        SignalPathCommand::SetCtcssEnabled(enabled) => {
-                            ctcss_enabled = enabled;
-                            ctcss.reset();
-                            shared_clone.write().demod.ctcss_squelch_enabled = enabled;
-                            shared_clone.write().demod.ctcss_tone_detected = false;
-                        }
-                        // ── Hardware control commands ─────────────────────────
-                        SignalPathCommand::SetLnaState(n) => {
-                            shared_clone.write().hardware.lna_state = n;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetLnaState(n));
-                            }
-                        }
-                        SignalPathCommand::SetIfGain(g) => {
-                            shared_clone.write().hardware.if_gain_dbfs = g;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetIfGain(g));
-                            }
-                        }
-                        SignalPathCommand::SetAgcEnabled(en) => {
-                            shared_clone.write().hardware.agc_enabled = en;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetAgcEnabled(en));
-                            }
-                        }
-                        SignalPathCommand::SetAgcSetpoint(sp) => {
-                            shared_clone.write().hardware.agc_setpoint_dbfs = sp;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetAgcSetpoint(sp));
-                            }
-                        }
-                        SignalPathCommand::SetBiasT(en) => {
-                            shared_clone.write().hardware.bias_t_enabled = en;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetBiasT(en));
-                            }
-                        }
-                        SignalPathCommand::SetHdrMode(en) => {
-                            shared_clone.write().hardware.hdr_mode = en;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetHdrMode(en));
-                            }
-                        }
-                        SignalPathCommand::SetAmNotch(en) => {
-                            shared_clone.write().hardware.am_notch_enabled = en;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetAmNotch(en));
-                            }
-                        }
-                        SignalPathCommand::SetFmNotch(en) => {
-                            shared_clone.write().hardware.fm_notch_enabled = en;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetFmNotch(en));
-                            }
-                        }
-                        SignalPathCommand::SetAntenna(port) => {
-                            shared_clone.write().hardware.antenna_port = port;
-                            if let Some(ref tx) = hw_cmd_tx {
-                                let _ = tx.try_send(HardwareCommand::SetAntenna(port));
-                            }
-                        }
-                        // ── Bookmark editing ─────────────────────────────────
-                        SignalPathCommand::EditBookmark(idx, name, freq, mode, cat) => {
-                            let mut s = shared_clone.write();
-                            if idx < s.bookmarks.len() {
-                                s.bookmarks[idx] = Bookmark { name, freq_hz: freq, mode, category: cat };
-                            }
-                        }
-                        // ── Scanner ───────────────────────────────────────────
-                        SignalPathCommand::StartScan(cat) => {
-                            scan_category = cat.clone();
-                            scan_running = true;
-                            scan_cursor = 0;
-                            scan_dwell_samples = 0;
-                            {
-                                let mut s = shared_clone.write();
-                                s.scanner.scan_running = true;
-                                s.scanner.scan_category = cat;
-                                s.scanner.scan_cursor = 0;
-                            }
-                            // Jump to first matching bookmark immediately.
-                            let first = {
-                                let s = shared_clone.read();
-                                scan_next_bookmark(&s.bookmarks, &scan_category, scan_cursor)
-                            };
-                            if let Some((idx, bm_freq, bm_mode)) = first {
-                                scan_cursor = idx;
-                                shared_clone.write().scanner.scan_cursor = idx;
-                                shared_clone.write().center_freq_hz = bm_freq;
-                                if let Some(ref atomic) = freq_atomic_clone {
-                                    atomic.store(bm_freq, Ordering::Relaxed);
-                                }
-                                demod = make_demod(bm_mode, sr, nfm_bw_hz);
-                                shared_clone.write().demod.demod_mode = bm_mode;
-                                demod.reset();
-                                rds.reset();
-                            }
-                        }
-                        SignalPathCommand::StopScan => {
-                            scan_running = false;
-                            shared_clone.write().scanner.scan_running = false;
-                        }
-                        SignalPathCommand::ScanNext => {
-                            if scan_running {
-                                scan_dwell_samples = u64::MAX; // force advance on next tick
-                            }
-                        }
-                        SignalPathCommand::SetScanDwell(secs) => {
-                            scan_dwell_secs = secs.clamp(0.5, 30.0);
-                            shared_clone.write().scanner.scan_dwell_secs = scan_dwell_secs;
-                        }
-                        // ── FFT / spectrum display settings ──────────────────
-                        SignalPathCommand::SetFftSize(sz) => {
-                            if sz.is_power_of_two() && sz >= 512 && sz <= 8192 {
-                                fft_size = sz;
-                                fft = FftProcessor::new(fft_size, fft_window);
-                                fft_avg_buf = vec![-120.0; fft_size];
-                                iq_accumulator.clear();
-                                shared_clone.write().fft.fft_size = sz;
-                                shared_clone.write().fft.fft_magnitudes = vec![-120.0; sz];
-                            }
-                        }
-                        SignalPathCommand::SetFftWindow(wf) => {
-                            fft_window = wf;
-                            fft = FftProcessor::new(fft_size, fft_window);
-                            shared_clone.write().fft.fft_window = wf;
-                        }
-                        SignalPathCommand::SetFftAveraging(n) => {
-                            fft_averaging = n.max(1).min(16);
-                            fft_avg_buf = vec![-120.0; fft_size];
-                            shared_clone.write().fft.fft_averaging = fft_averaging;
-                        }
-                        SignalPathCommand::SetBandPlanEnabled(en) => {
-                            shared_clone.write().fft.band_plan_enabled = en;
                         }
                         SignalPathCommand::Stop => {
                             shared_clone.write().is_running = false;

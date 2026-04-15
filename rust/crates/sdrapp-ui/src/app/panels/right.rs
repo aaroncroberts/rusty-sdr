@@ -2,7 +2,7 @@
 
 use egui::{Color32, RichText, Stroke, Ui, Vec2};
 
-use sdrapp_core::signal_path::{RecordingMode, SignalPathCommand};
+use sdrapp_core::signal_path::{DisplayCmd, ReceiverCmd, RecordingMode, SignalPathCommand};
 use sdrapp_recorder::RecorderCommand;
 
 use crate::{
@@ -74,7 +74,7 @@ impl SdrApp {
             .changed()
         {
             self.config.ui.volume = vol;
-            let _ = self.cmd_tx.try_send(SignalPathCommand::SetVolume(vol));
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetVolume(vol).into());
             self.config_dirty = true;
         }
 
@@ -114,7 +114,7 @@ impl SdrApp {
         }
 
         if let Some((hz, span)) = tuned {
-            let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(hz));
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(hz).into());
             self.config.ui.frequency_hz = hz;
             self.config.ui.span_hz = span;
             self.frequency_widget = FrequencyWidget::new(hz);
@@ -122,7 +122,7 @@ impl SdrApp {
             let sr_half = self.shared.read().sample_rate_sps as u64 / 2;
             if sr_half > 0 {
                 let z = (span as f32 / sr_half as f32).clamp(0.005, 1.0);
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(z));
+                let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(z).into());
                 self.config.ui.zoom_level = z;
             }
             self.config_dirty = true;

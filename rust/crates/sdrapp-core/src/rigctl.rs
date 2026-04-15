@@ -24,7 +24,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-use crate::signal_path::{DemodMode, SharedState, SignalPathCommand};
+use crate::signal_path::{DemodMode, ReceiverCmd, SharedState, SignalPathCommand};
 
 /// Start the rigctl server and return a join handle.
 ///
@@ -110,7 +110,7 @@ fn process_command(
         "F" | "set_freq" => {
             if let Some(hz_str) = parts.get(1) {
                 if let Ok(hz) = hz_str.trim().parse::<u64>() {
-                    let _ = cmd_tx.try_send(SignalPathCommand::SetFrequency(hz));
+                    let _ = cmd_tx.try_send(ReceiverCmd::SetFrequency(hz).into());
                     return "RPRT 0\n".into();
                 }
             }
@@ -128,7 +128,7 @@ fn process_command(
         "M" | "set_mode" => {
             if let Some(mode_str) = parts.get(1) {
                 if let Some(mode) = hamlib_to_mode(mode_str.trim()) {
-                    let _ = cmd_tx.try_send(SignalPathCommand::SetDemodMode(mode));
+                    let _ = cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
                     return "RPRT 0\n".into();
                 }
             }
