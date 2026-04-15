@@ -61,30 +61,38 @@ impl<'a> SpectrumWidget<'a> {
         );
 
         // ── dBFS grid lines & Y-axis labels ──────────────────────────────────
-        let db_steps = [-20.0_f32, -40.0, -60.0, -80.0, -100.0];
-        for &db in &db_steps {
-            if db < db_min || db > db_max {
-                continue;
+        // Draw a grid line every 10 dB; major lines (divisible by 20) are brighter.
+        // Only draw lines that fall within the current display range.
+        {
+            let range_db = db_max - db_min;
+            // Pick tick spacing: 5 dB for narrow ranges, 10 dB for normal, 20 dB for wide
+            let tick_step = if range_db <= 40.0 { 5.0_f32 }
+                            else if range_db <= 100.0 { 10.0 }
+                            else { 20.0 };
+            let first = (db_min / tick_step).ceil() as i32;
+            let last  = (db_max / tick_step).floor() as i32;
+            for k in first..=last {
+                let db = k as f32 * tick_step;
+                let y = db_to_y(db, db_min, db_max, plot_rect);
+                let is_major = (db as i32) % 20 == 0;
+                let grid_color = if is_major {
+                    Color32::from_rgba_premultiplied(60, 80, 90, 200)
+                } else {
+                    Color32::from_rgba_premultiplied(35, 50, 60, 130)
+                };
+                let line_w = if is_major { 1.0 } else { 0.5 };
+                painter.line_segment(
+                    [Pos2::new(plot_rect.left(), y), Pos2::new(plot_rect.right(), y)],
+                    Stroke::new(line_w, grid_color),
+                );
+                painter.text(
+                    Pos2::new(rect.left() + y_label_w - 4.0, y - 1.0),
+                    egui::Align2::RIGHT_CENTER,
+                    format!("{db:.0}"),
+                    egui::FontId::proportional(9.0),
+                    if is_major { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED },
+                );
             }
-            let y = db_to_y(db, db_min, db_max, plot_rect);
-
-            // Grid line
-            painter.line_segment(
-                [
-                    Pos2::new(plot_rect.left(), y),
-                    Pos2::new(plot_rect.right(), y),
-                ],
-                Stroke::new(1.0, theme::SPECTRUM_GRID),
-            );
-
-            // Y label
-            painter.text(
-                Pos2::new(rect.left() + y_label_w - 4.0, y - 1.0),
-                egui::Align2::RIGHT_CENTER,
-                format!("{db:.0}"),
-                egui::FontId::proportional(9.0),
-                theme::TEXT_MUTED,
-            );
         }
 
         // ── Plot border ───────────────────────────────────────────────────────
@@ -134,12 +142,13 @@ impl<'a> SpectrumWidget<'a> {
             }
 
             // ── Neon glow trace ───────────────────────────────────────────────
-            // Widest/dimmest layer first so narrow/bright layers paint on top.
+            // Four stacked passes: wide dim halo → narrow bright edge.
+            // The extra thin white highlight at top gives a crisp "top of signal" line.
             let glow_layers: &[(f32, u8)] = &[
-                (6.0, 5),   // wide halo
-                (3.0, 18),  // inner glow
-                (1.8, 65),  // bright edge
-                (1.0, 210), // sharp trace
+                (5.0,  8),   // wide halo
+                (2.5, 25),   // inner glow
+                (1.5, 90),   // bright edge
+                (0.8, 240),  // sharp trace
             ];
             for &(width, alpha) in glow_layers {
                 painter.add(egui::Shape::line(
@@ -147,6 +156,11 @@ impl<'a> SpectrumWidget<'a> {
                     Stroke::new(width, Color32::from_rgba_premultiplied(30, 215, 170, alpha)),
                 ));
             }
+            // Crisp white highlight on top edge for definition
+            painter.add(egui::Shape::line(
+                trace_pts.clone(),
+                Stroke::new(0.6, Color32::from_rgba_premultiplied(200, 255, 240, 120)),
+            ));
 
             // ── Peak-hold line ────────────────────────────────────────────────
             if let Some(peak) = self.peak_hold {

@@ -92,16 +92,20 @@ pub struct SdrApp {
     vu_peak: f32,
     /// Peak-hold buffer: tracks per-bin maximum with slow decay
     peak_hold: Vec<f32>,
-    // ── dBFS range ────────────────────────────────────────────────────────────
-    /// Lower bound of display range (dBFS)
-    db_floor: f32,
-    /// Upper bound of display range (dBFS)
-    db_ceil: f32,
-    /// Whether auto-range is active
-    auto_range: bool,
-    /// Slow EMA of 10th-percentile FFT bin — noise floor estimate
+    // ── Display range ─────────────────────────────────────────────────────────
+    /// Top of the spectrum display in dBFS (like "max" or "ref level" in SDR# / GQRX).
+    /// db_ceil = ref_level;  db_floor = ref_level - dyn_range.
+    ref_level: f32,
+    /// How many dB of range to show (vertical span of spectrum/waterfall).
+    dyn_range: f32,
+    /// When true, ref_level tracks the signal ceiling automatically.
+    auto_ref: bool,
+    /// Waterfall brightness offset (positive = brighter / more sensitive).
+    /// Applied only to waterfall colourmap; does not affect spectrum.
+    wf_gain: f32,
+    /// Slow EMA of 10th-percentile FFT bin — noise floor estimate for auto-ref.
     noise_floor_ema: f32,
-    /// Slow EMA of 99th-percentile FFT bin — signal ceiling estimate
+    /// Slow EMA of 99th-percentile FFT bin — signal ceiling estimate for auto-ref.
     signal_ceil_ema: f32,
     /// Fractional row accumulator for waterfall speed control.
     /// Incremented by waterfall_speed each frame; push_row fires once per integer crossed.
@@ -141,9 +145,10 @@ impl SdrApp {
             config_dirty: false,
             vu_peak: 0.0,
             peak_hold: Vec::new(),
-            db_floor: -120.0,
-            db_ceil: 0.0,
-            auto_range: true,
+            ref_level: -20.0,
+            dyn_range: 80.0,
+            auto_ref: true,
+            wf_gain: 20.0,
             noise_floor_ema: -90.0,
             signal_ceil_ema: -30.0,
             waterfall_row_frac: 0.0,
@@ -254,29 +259,53 @@ impl SdrApp {
             self.config_dirty = true;
         }
 
-        // Step size cycle button
+        // ── Tuning step controls ──────────────────────────────────────────────
         let step_hz = self.shared.read().tune_step_hz;
-        let step_label = match step_hz {
-            100 => "Step: 100 Hz",
-            1_000 => "Step: 1 kHz",
-            10_000 => "Step: 10 kHz",
-            100_000 => "Step: 100 kHz",
-            _ => "Step: custom",
-        };
         ui.add_space(4.0);
+
+        // Step size selector row
+        ui.label(RichText::new("STEP").color(theme::TEXT_MUTED).small());
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
+            for (hz, label) in [
+                (100_u64,       "100 Hz"),
+                (1_000,         "1 kHz"),
+                (10_000,        "10 kHz"),
+                (100_000,       "100 kHz"),
+                (1_000_000,     "1 MHz"),
+                (10_000_000,    "10 MHz"),
+            ] {
+                let selected = step_hz == hz;
+                let text = RichText::new(label).small();
+                let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
+                if ui.selectable_label(selected, text).clicked() {
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetTuneStep(hz));
+                }
+            }
+        });
+
+        // Nudge buttons: ◄◄ ◄ ► ►► (×10 / ×1 step)
+        ui.add_space(4.0);
+        let freq = self.config.ui.frequency_hz;
         ui.horizontal(|ui| {
-            if ui
-                .small_button(RichText::new(step_label).color(theme::TEXT_MUTED))
-                .on_hover_text("Click to cycle step size (↑↓ keys, scroll wheel)")
-                .clicked()
-            {
-                let next = match step_hz {
-                    100 => 1_000,
-                    1_000 => 10_000,
-                    10_000 => 100_000,
-                    _ => 100,
-                };
-                let _ = self.cmd_tx.try_send(SignalPathCommand::SetTuneStep(next));
+            let btn_w = (ui.available_width() - 16.0) / 4.0;
+            for (label, delta, tip) in [
+                ("◄◄", -(step_hz as i64 * 10), "−10 × step"),
+                ("◄",  -(step_hz as i64),       "−1 × step  (or ↓ / ↑ arrow keys)"),
+                ("►",   step_hz as i64,          "+1 × step  (or ↑ arrow key)"),
+                ("►►",  step_hz as i64 * 10,    "+10 × step"),
+            ] {
+                if ui.add_sized(
+                    Vec2::new(btn_w, 22.0),
+                    egui::Button::new(RichText::new(label).color(theme::TEXT_PRIMARY))
+                        .fill(theme::WIDGET_BG),
+                ).on_hover_text(tip).clicked() {
+                    let new_freq = (freq as i64 + delta).max(1) as u64;
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                    self.config.ui.frequency_hz = new_freq;
+                    self.frequency_widget = FrequencyWidget::new(new_freq);
+                    self.config_dirty = true;
+                }
             }
         });
 
@@ -679,7 +708,7 @@ impl SdrApp {
             // Apply zoom: zoom_level 1.0 = full hardware bandwidth, 0.05 = tightest zoom.
             // Prefer SharedState zoom when sample rate is known; fall back to config span_hz.
             let effective_span = if sr_half > 0 {
-                let z = s.zoom_level.clamp(0.05, 1.0);
+                let z = s.zoom_level.clamp(0.005, 1.0);
                 (sr_half as f64 * z as f64) as u64
             } else {
                 self.config.ui.span_hz
@@ -703,8 +732,8 @@ impl SdrApp {
                 }
             }
 
-            // Auto-range: slow EMA on 10th/99th percentiles of FFT bins
-            if self.auto_range && n >= 10 {
+            // Auto-ref: slow EMA on 10th/99th percentiles to track signal ceiling
+            if self.auto_ref && n >= 10 {
                 let mut sorted = fft_data.to_vec();
                 sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let floor_sample = sorted[n / 10];
@@ -712,17 +741,15 @@ impl SdrApp {
                 const ALPHA: f32 = 0.95;
                 self.noise_floor_ema = ALPHA * self.noise_floor_ema + (1.0 - ALPHA) * floor_sample;
                 self.signal_ceil_ema = ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
-                // 20 dB below noise floor … 10 dB above signal ceiling
-                self.db_floor = (self.noise_floor_ema - 20.0).max(-140.0);
-                self.db_ceil = (self.signal_ceil_ema + 10.0).min(20.0);
-                // Ensure minimum 30 dB span to avoid degenerate zoom
-                if self.db_ceil - self.db_floor < 30.0 {
-                    self.db_ceil = self.db_floor + 30.0;
-                }
+                // Target: ref_level sits ~10 dB above signal ceiling; clamp to [-10, 10]
+                self.ref_level = (self.signal_ceil_ema + 10.0).clamp(-120.0, 10.0);
             }
+            let db_floor = self.ref_level - self.dyn_range;
+            let db_ceil = self.ref_level;
 
-            let db_range = (self.db_floor, self.db_ceil);
-            self.waterfall.set_db_range(db_range);
+            // Waterfall uses a shifted range for independent brightness control.
+            // Positive wf_gain shifts the mapping down, revealing weaker signals.
+            self.waterfall.set_db_range((db_floor - self.wf_gain, db_ceil - self.wf_gain));
             // Fractional accumulator: push_row fires once per integer crossed.
             // Speed 1.0 = 1 row/frame, 2.0 = 2 rows/frame, 0.5 = every other frame.
             self.waterfall_row_frac += waterfall_speed.clamp(0.1, 10.0);
@@ -732,7 +759,9 @@ impl SdrApp {
             }
         }
 
-        let db_range = (self.db_floor, self.db_ceil);
+        let db_floor = self.ref_level - self.dyn_range;
+        let db_ceil  = self.ref_level;
+        let db_range = (db_floor, db_ceil);
 
         let available_h = ui.available_height();
         // Spectrum gets a fixed portion; waterfall fills the rest
@@ -767,7 +796,7 @@ impl SdrApp {
             if ctrl_held {
                 // Ctrl+scroll → zoom
                 let factor = if scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
-                let new_zoom = (zoom_level * factor).clamp(0.05, 1.0);
+                let new_zoom = (zoom_level * factor).clamp(0.005, 1.0);
                 let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_zoom));
                 self.config.ui.zoom_level = new_zoom;
                 self.config_dirty = true;
@@ -802,92 +831,107 @@ impl SdrApp {
         }
         .show(&mut spectrum_ui);
 
-        // ── dBFS range control ────────────────────────────────────────────────
-        ui.add_space(2.0);
+        // ── Display controls toolbar ──────────────────────────────────────────
+        ui.add_space(3.0);
+
+        // Row 1: Ref Level + Auto toggle
         ui.horizontal(|ui| {
-            // Auto button (toggle)
-            let auto_label = if self.auto_range { "↕ Auto ✓" } else { "↕ Auto" };
-            let auto_color = if self.auto_range {
-                theme::ACCENT
-            } else {
-                theme::TEXT_MUTED
-            };
-            if ui
-                .small_button(RichText::new(auto_label).color(auto_color))
+            let auto_color = if self.auto_ref { theme::ACCENT } else { theme::TEXT_MUTED };
+            if ui.small_button(RichText::new(if self.auto_ref { "Auto ✓" } else { "Auto" }).color(auto_color))
+                .on_hover_text("Auto-track signal ceiling (auto reference level)")
                 .clicked()
             {
-                self.auto_range = !self.auto_range;
+                self.auto_ref = !self.auto_ref;
             }
-
-            if self.auto_range {
-                // Display current auto-computed range
-                ui.label(
-                    RichText::new(format!(
-                        "  {:.0} → {:.0} dBFS",
-                        self.db_floor, self.db_ceil
-                    ))
-                    .color(theme::TEXT_MUTED)
-                    .small(),
-                );
-            } else {
-                // Manual: compact floor/ceil sliders
-                ui.add_space(4.0);
-                ui.label(RichText::new("Floor").color(theme::TEXT_MUTED).small());
-                let mut floor = self.db_floor;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut floor, -140.0_f32..=-20.0_f32)
-                            .show_value(true)
-                            .integer(),
-                    )
-                    .changed()
-                {
-                    self.db_floor = floor.min(self.db_ceil - 10.0);
-                }
-                ui.add_space(4.0);
-                ui.label(RichText::new("Ceil").color(theme::TEXT_MUTED).small());
-                let mut ceil = self.db_ceil;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut ceil, -60.0_f32..=20.0_f32)
-                            .show_value(true)
-                            .integer(),
-                    )
-                    .changed()
-                {
-                    self.db_ceil = ceil.max(self.db_floor + 10.0);
-                }
+            ui.label(RichText::new("Ref").color(theme::TEXT_MUTED).small());
+            let mut rl = self.ref_level;
+            if ui.add(
+                egui::Slider::new(&mut rl, -120.0_f32..=20.0_f32)
+                    .show_value(true)
+                    .suffix(" dB")
+                    .integer(),
+            ).on_hover_text("Reference level: top of spectrum display (dBFS). Drag down to see weaker signals.").changed() {
+                self.ref_level = rl;
+                self.auto_ref = false; // manual override disables auto
+            }
+            ui.label(RichText::new("Range").color(theme::TEXT_MUTED).small());
+            let mut dr = self.dyn_range;
+            if ui.add(
+                egui::Slider::new(&mut dr, 20.0_f32..=160.0_f32)
+                    .show_value(true)
+                    .suffix(" dB")
+                    .integer(),
+            ).on_hover_text("Dynamic range: how many dB the spectrum shows. Narrow = high contrast on weak signals.").changed() {
+                self.dyn_range = dr;
             }
         });
 
-        // ── Zoom & waterfall speed toolbar ────────────────────────────────────
-        ui.add_space(2.0);
+        // Row 2: WF Gain + Zoom (with bandwidth label) + WF Speed
+        ui.add_space(1.0);
         ui.horizontal(|ui| {
+            ui.label(RichText::new("WF Gain").color(theme::TEXT_MUTED).small())
+                .on_hover_text("Waterfall brightness offset — positive reveals weaker signals in the waterfall");
+            let mut wg = self.wf_gain;
+            if ui.add(
+                egui::Slider::new(&mut wg, -40.0_f32..=40.0_f32)
+                    .show_value(true)
+                    .suffix(" dB")
+                    .integer(),
+            ).changed() {
+                self.wf_gain = wg;
+            }
+
+            ui.add_space(6.0);
+
+            // Bandwidth label derived from current zoom
+            let bw_hz = (span * 2) as f64;
+            let bw_label = if bw_hz >= 1_000_000.0 {
+                format!("{:.2} MHz", bw_hz / 1_000_000.0)
+            } else {
+                format!("{:.0} kHz", bw_hz / 1_000.0)
+            };
+
             ui.label(RichText::new("Zoom").color(theme::TEXT_MUTED).small());
-            let mut z = zoom_level;
-            if ui
-                .add(
-                    egui::Slider::new(&mut z, 0.05_f32..=1.0_f32)
-                        .show_value(true)
-                        .logarithmic(true),
-                )
-                .changed()
+            // [-] slider [+] pattern for fine control
+            let z_step = zoom_level * 0.15;
+            if ui.small_button(RichText::new("−").color(theme::TEXT_MUTED))
+                .on_hover_text("Zoom in (or Ctrl+scroll up on spectrum)")
+                .clicked()
             {
+                let new_z = (zoom_level - z_step).clamp(0.005, 1.0);
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_z));
+                self.config.ui.zoom_level = new_z;
+                self.config_dirty = true;
+            }
+            let mut z = zoom_level;
+            if ui.add(
+                egui::Slider::new(&mut z, 0.005_f32..=1.0_f32)
+                    .show_value(false)
+                    .logarithmic(true),
+            ).changed() {
                 let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(z));
                 self.config.ui.zoom_level = z;
                 self.config_dirty = true;
             }
-
-            ui.add_space(8.0);
-            ui.label(RichText::new("WF Speed").color(theme::TEXT_MUTED).small());
-            let mut ws = waterfall_speed;
-            if ui
-                .add(
-                    egui::Slider::new(&mut ws, 0.1_f32..=5.0_f32)
-                        .show_value(true),
-                )
-                .changed()
+            if ui.small_button(RichText::new("+").color(theme::TEXT_MUTED))
+                .on_hover_text("Zoom out (or Ctrl+scroll down on spectrum)")
+                .clicked()
             {
+                let new_z = (zoom_level + z_step).clamp(0.005, 1.0);
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_z));
+                self.config.ui.zoom_level = new_z;
+                self.config_dirty = true;
+            }
+            ui.label(RichText::new(&bw_label).color(theme::ACCENT).small())
+                .on_hover_text("Displayed bandwidth (zoom × hardware bandwidth)");
+
+            ui.add_space(4.0);
+            ui.label(RichText::new("WF").color(theme::TEXT_MUTED).small());
+            let mut ws = waterfall_speed;
+            if ui.add(
+                egui::Slider::new(&mut ws, 0.1_f32..=8.0_f32)
+                    .show_value(false),
+            ).on_hover_text("Waterfall scroll speed").changed() {
                 let _ = self.cmd_tx.try_send(SignalPathCommand::SetWaterfallSpeed(ws));
                 self.config.ui.waterfall_speed = ws;
                 self.config_dirty = true;
@@ -905,6 +949,30 @@ impl SdrApp {
                 let low = freq.saturating_sub(span) as f64;
                 let high = freq as f64 + span as f64;
                 let new_freq = (low + t as f64 * (high - low)).round() as u64;
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
+                self.config.ui.frequency_hz = new_freq;
+                self.frequency_widget = FrequencyWidget::new(new_freq);
+                self.config_dirty = true;
+            }
+        }
+
+        // Scroll on waterfall: tune (plain) or zoom (Ctrl)
+        let wf_scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if waterfall_resp.hovered() && wf_scroll.abs() > 0.5 {
+            let (wf_scroll_delta, wf_ctrl) = ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.ctrl));
+            if wf_ctrl {
+                let factor = if wf_scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
+                let new_z = (zoom_level * factor).clamp(0.005, 1.0);
+                let _ = self.cmd_tx.try_send(SignalPathCommand::SetZoom(new_z));
+                self.config.ui.zoom_level = new_z;
+                self.config_dirty = true;
+            } else {
+                let step = self.shared.read().tune_step_hz;
+                let new_freq = if wf_scroll_delta > 0.0 {
+                    freq.saturating_add(step)
+                } else {
+                    freq.saturating_sub(step).max(1)
+                };
                 let _ = self.cmd_tx.try_send(SignalPathCommand::SetFrequency(new_freq));
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
