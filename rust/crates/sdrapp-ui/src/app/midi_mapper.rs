@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::too_many_arguments)]
 
 //! MIDI controller mapper window.
 //!
@@ -22,6 +23,7 @@
 use egui::{Color32, Painter, Pos2, Rect, RichText, Rounding, Sense, Stroke, Vec2};
 use parking_lot::RwLock;
 use std::sync::Arc;
+use serde_json;
 
 use sdrapp_core::signal_path::SharedState;
 use sdrapp_midi::{ControlType, ControllerLayout, MidiKey, MidiKeyKind, NanoKontrol2Layout};
@@ -37,15 +39,32 @@ pub struct MidiMapperWindow {
     min_canvas_w: f32,
     /// Currently selected page tab index.
     selected_page: usize,
+    /// True when reset-confirmation dialog is open.
+    confirm_reset: bool,
+    /// Path field for export.
+    export_path: String,
+    /// Path field for import.
+    import_path: String,
+    /// One-frame status message for export/import feedback.
+    io_status: Option<(String, bool)>, // (message, is_error)
 }
 
 impl MidiMapperWindow {
     /// Create a mapper window for the Korg nanoKONTROL2.
     pub fn new_nanokontrol2() -> Self {
+        let default_path = dirs::home_dir()
+            .unwrap_or_default()
+            .join("midi_map.json")
+            .to_string_lossy()
+            .into_owned();
         Self {
             layout: Box::new(NanoKontrol2Layout::new()),
             min_canvas_w: 700.0,
             selected_page: 0,
+            confirm_reset: false,
+            export_path: default_path.clone(),
+            import_path: default_path,
+            io_status: None,
         }
     }
 
@@ -217,6 +236,133 @@ impl MidiMapperWindow {
             ui.add_space(8.0);
             legend_dot(ui, theme::AMBER, theme::AMBER);
             ui.label(RichText::new("Pending bind").color(theme::TEXT_MUTED).small());
+        });
+
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+
+        // ── Toolbar ───────────────────────────────────────────────────────────
+        self.show_toolbar(ui, shared);
+    }
+
+    fn show_toolbar(&mut self, ui: &mut egui::Ui, shared: &Arc<RwLock<SharedState>>) {
+        // IO status message (shown at the top of toolbar)
+        if let Some((ref msg, is_err)) = self.io_status.clone() {
+            let color = if is_err { theme::DANGER } else { theme::STATUS_OK };
+            ui.label(RichText::new(msg).color(color).small());
+            ui.add_space(2.0);
+        }
+
+        // ── Reset confirmation dialog ─────────────────────────────────────────
+        if self.confirm_reset {
+            egui::Frame::none()
+                .fill(Color32::from_rgba_premultiplied(80, 10, 10, 200))
+                .stroke(Stroke::new(1.0, theme::DANGER))
+                .inner_margin(egui::Margin::same(6.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("This will clear all MIDI-learn bindings. Continue?")
+                            .color(theme::DANGER)
+                            .small(),
+                    );
+                    ui.horizontal(|ui| {
+                        let yes = egui::Button::new(RichText::new("Yes, reset").color(theme::DANGER))
+                            .fill(theme::WIDGET_BG)
+                            .stroke(Stroke::new(1.0, theme::DANGER));
+                        if ui.add(yes).clicked() {
+                            shared.write().midi_cc_to_knob.clear();
+                            shared.write().midi_map_pending = None;
+                            self.confirm_reset = false;
+                            self.io_status = Some(("MIDI-learn bindings cleared.".into(), false));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.confirm_reset = false;
+                        }
+                    });
+                });
+            ui.add_space(4.0);
+        }
+
+        // ── Main toolbar row ──────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            // Reset button
+            let reset_btn = egui::Button::new(
+                RichText::new("⟳ Reset bindings").color(theme::DANGER).small(),
+            )
+            .fill(theme::WIDGET_BG)
+            .stroke(Stroke::new(1.0, theme::DANGER));
+            if ui
+                .add(reset_btn)
+                .on_hover_text("Clear all MIDI-learn CC→knob bindings")
+                .clicked()
+            {
+                self.confirm_reset = true;
+                self.io_status = None;
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            // Export row
+            ui.label(RichText::new("Export:").color(theme::TEXT_MUTED).small());
+            ui.add(
+                egui::TextEdit::singleline(&mut self.export_path)
+                    .desired_width(200.0)
+                    .hint_text("/path/to/midi_map.json"),
+            );
+            let save_btn = egui::Button::new(RichText::new("⬇ Save").small())
+                .fill(theme::WIDGET_BG)
+                .stroke(Stroke::new(1.0, theme::BORDER));
+            if ui.add(save_btn).on_hover_text("Export current MIDI-learn bindings to JSON").clicked() {
+                let bindings: std::collections::HashMap<String, u8> = shared
+                    .read()
+                    .midi_cc_to_knob
+                    .iter()
+                    .map(|(&cc, id)| (id.clone(), cc))
+                    .collect();
+                match serde_json::to_string_pretty(&bindings) {
+                    Ok(json) => match std::fs::write(&self.export_path, json) {
+                        Ok(()) => self.io_status = Some((format!("Saved to {}", self.export_path), false)),
+                        Err(e) => self.io_status = Some((format!("Save failed: {e}"), true)),
+                    },
+                    Err(e) => self.io_status = Some((format!("Serialize error: {e}"), true)),
+                }
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            // Import row
+            ui.label(RichText::new("Import:").color(theme::TEXT_MUTED).small());
+            ui.add(
+                egui::TextEdit::singleline(&mut self.import_path)
+                    .desired_width(200.0)
+                    .hint_text("/path/to/midi_map.json"),
+            );
+            let load_btn = egui::Button::new(RichText::new("⬆ Load").small())
+                .fill(theme::WIDGET_BG)
+                .stroke(Stroke::new(1.0, theme::BORDER));
+            if ui.add(load_btn).on_hover_text("Import MIDI-learn bindings from JSON").clicked() {
+                match std::fs::read_to_string(&self.import_path) {
+                    Err(e) => self.io_status = Some((format!("Read failed: {e}"), true)),
+                    Ok(text) => {
+                        match serde_json::from_str::<std::collections::HashMap<String, u8>>(&text) {
+                            Err(e) => self.io_status = Some((format!("Invalid JSON: {e}"), true)),
+                            Ok(map) => {
+                                let cc_to_knob: std::collections::HashMap<u8, String> = map
+                                    .into_iter()
+                                    .map(|(id, cc)| (cc, id))
+                                    .collect();
+                                shared.write().midi_cc_to_knob = cc_to_knob;
+                                self.io_status = Some(("Bindings loaded.".into(), false));
+                            }
+                        }
+                    }
+                }
+            }
         });
     }
 }
