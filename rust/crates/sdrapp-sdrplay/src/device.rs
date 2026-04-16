@@ -352,6 +352,14 @@ fn try_run_sdrplay_session(
 
     let dev_handle = devices[device_idx].dev;
 
+    // Enable verbose API logging so Init failures produce a detailed reason in stderr.
+    unsafe {
+        sys::sdrplay_api_DebugEnable(
+            dev_handle,
+            sys::sdrplay_api_DbgLvl_t_sdrplay_api_DbgLvl_Verbose,
+        );
+    }
+
     // RAII: Uninit + ReleaseDevice when this function returns.
     struct DeviceGuard(sys::sdrplay_api_DeviceT);
     impl Drop for DeviceGuard {

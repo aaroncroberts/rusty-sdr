@@ -337,20 +337,42 @@ impl<'a> SpectrumWidget<'a> {
         }
 
         // ── Frequency grid lines + axis labels ───────────────────────────────
-        // Full-height vertical lines at each tick give the spectrum a "tuning dial"
-        // feel — major lines (every 4th, including edges) are brighter than minor.
+        // Lines are at absolute frequency intervals (not proportional screen positions)
+        // so they slide past as you tune — giving a real "dial" feel.
+        // The step size adapts to the visible bandwidth to maintain ~6-10 lines.
         if freq_hi > freq_lo {
-            let tick_count = 8_usize;
-            for i in 0..=tick_count {
-                let t = i as f64 / tick_count as f64;
-                let freq_hz = freq_lo + t * (freq_hi - freq_lo);
-                let x = plot_rect.left() + t as f32 * plot_rect.width();
+            let span_hz = freq_hi - freq_lo;
 
-                let is_major = i % 4 == 0;
-                let grid_alpha = if is_major { 35u8 } else { 18u8 };
-                let tick_alpha = if is_major { 120u8 } else { 60u8 };
+            // Pick a round step that gives roughly 6-10 divisions.
+            let raw_step = span_hz / 8.0;
+            let magnitude = 10_f64.powf(raw_step.log10().floor());
+            let nice_step = if raw_step / magnitude >= 5.0 {
+                5.0 * magnitude
+            } else if raw_step / magnitude >= 2.0 {
+                2.0 * magnitude
+            } else {
+                magnitude
+            };
+            let step = nice_step.max(1.0);
 
-                // Full-height vertical grid line (drawn behind the trace)
+            // First grid line at or just below freq_lo
+            let first_n = (freq_lo / step).floor() as i64;
+            let last_n  = (freq_hi / step).ceil()  as i64;
+
+            for n in first_n..=last_n {
+                let freq_hz = n as f64 * step;
+                if freq_hz < freq_lo || freq_hz > freq_hi {
+                    continue;
+                }
+                let t = ((freq_hz - freq_lo) / span_hz) as f32;
+                let x = plot_rect.left() + t * plot_rect.width();
+
+                // Major lines at every 5th step (round multiples of 5×step)
+                let is_major = (n % 5) == 0;
+                let grid_alpha: u8 = if is_major { 35 } else { 18 };
+                let tick_alpha: u8 = if is_major { 120 } else { 60 };
+
+                // Full-height vertical grid line
                 painter.line_segment(
                     [
                         Pos2::new(x, plot_rect.top()),
@@ -368,14 +390,16 @@ impl<'a> SpectrumWidget<'a> {
                     Stroke::new(1.0, Color32::from_rgba_unmultiplied(180, 200, 220, tick_alpha)),
                 );
 
-                // Frequency label
-                painter.text(
-                    Pos2::new(x, rect.bottom() - 2.0),
-                    egui::Align2::CENTER_BOTTOM,
-                    format_freq_short(freq_hz as u64),
-                    egui::FontId::proportional(9.0),
-                    theme::TEXT_MUTED,
-                );
+                // Frequency label — only on major lines (or first/last) to avoid crowding
+                if is_major || n == first_n || n == last_n {
+                    painter.text(
+                        Pos2::new(x, rect.bottom() - 2.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        format_freq_short(freq_hz as u64),
+                        egui::FontId::proportional(9.0),
+                        theme::TEXT_MUTED,
+                    );
+                }
             }
         }
 
