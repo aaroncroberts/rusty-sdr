@@ -130,8 +130,27 @@ fn main() -> anyhow::Result<()> {
     let hotplug_source: std::sync::Arc<parking_lot::Mutex<Option<sdrapp_sdrplay::RspdxSource>>> =
         std::sync::Arc::new(parking_lot::Mutex::new(None));
 
+    // Probe for hardware on a background thread with a timeout so a hung
+    // sdrplay_api_GetDevices call never blocks the main thread (and eframe).
+    let sdrplay_available = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(sdrapp_sdrplay::RspdxSource::is_device_available());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or(false)
+    };
+    let rtlsdr_available = if !sdrplay_available {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(sdrapp_rtlsdr::RtlSdrSource::is_device_available());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or(false)
+    } else {
+        false
+    };
+
     let (iq_rx, iq_recorder_rx, freq_atomic, hardware_cmd_tx) =
-        if sdrapp_sdrplay::RspdxSource::is_device_available() {
+        if sdrplay_available {
             tracing::info!("SDRplay device found — starting in hardware mode");
             shared.write().source_name = Some("SDRplay RSPdx-R2".to_string());
 
@@ -201,7 +220,7 @@ fn main() -> anyhow::Result<()> {
             drop(src.start());
             _sdrplay_source = Some(src);
             (rx, iq_rec_rx, fa, Some(hw_tx))
-        } else if sdrapp_rtlsdr::RtlSdrSource::is_device_available() {
+        } else if rtlsdr_available {
             tracing::info!("RTL-SDR device found — starting in RTL-SDR mode");
             let rtl_cfg = sdrapp_rtlsdr::RtlSdrConfig {
                 frequency_hz: config.ui.frequency_hz,

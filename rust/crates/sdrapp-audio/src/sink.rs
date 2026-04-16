@@ -195,6 +195,15 @@ fn run_audio_thread(
         None, // no timeout
     )?;
 
+    // Pre-fill the ring buffer with 100 ms of silence so the cpal callback
+    // never underruns during the brief startup window before the DSP produces
+    // its first audio frames.
+    {
+        let prefill = stream_config.sample_rate.0 as usize / 10 * 2; // 100 ms × 2 ch
+        let mut buf = ring.lock();
+        buf.extend(std::iter::repeat(0.0f32).take(prefill));
+    }
+
     stream.play()?;
     tracing::info!("audio sink playing");
 
