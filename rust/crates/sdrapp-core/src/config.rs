@@ -163,6 +163,10 @@ pub struct UiConfig {
     /// colour.  Positive wf_gain values shift this down to reveal weaker signals.
     #[serde(default = "default_wf_level")]
     pub wf_level: f32,
+    /// Set to true after the first-run onboarding overlay is dismissed.
+    /// When false (or absent from config), the overlay is shown on next launch.
+    #[serde(default)]
+    pub seen_onboarding: bool,
 }
 
 fn default_zoom_level() -> f32 {
@@ -216,6 +220,7 @@ impl Default for UiConfig {
             font_scale: 1.0,
             spectrum_split: 0.45,
             wf_level: -80.0,
+            seen_onboarding: false,
         }
     }
 }

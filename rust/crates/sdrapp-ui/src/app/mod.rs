@@ -98,6 +98,14 @@ pub struct SdrApp {
     wf_auto_armed: bool,
     /// egui time of the last manual WF Level slider interaction.
     wf_last_manual_drag: f64,
+    /// Show first-run onboarding overlay (true until dismissed once).
+    show_onboarding: bool,
+    /// Frequency buckets (freq_hz / 500_000) where demod auto-suggest was dismissed.
+    demod_suggest_dismissed: std::collections::HashSet<u64>,
+    /// Last frequency bucket seen — used to clear dismissed set when user moves >500 kHz.
+    last_freq_bucket: u64,
+    /// Whether the ? keyboard shortcut overlay is open.
+    show_shortcut_overlay: bool,
 }
 
 impl SdrApp {
@@ -128,6 +136,7 @@ impl SdrApp {
 
         let freq = config.ui.frequency_hz;
         let wf_level = config.ui.wf_level;
+        let seen_onboarding = config.ui.seen_onboarding;
         let mut waterfall_widget = WaterfallWidget::new_with_colormap(1024, (-120.0, 0.0));
         waterfall_widget.set_colormap(wf_colormap.build());
 
@@ -170,6 +179,10 @@ impl SdrApp {
             last_clipping_time: None,
             wf_auto_armed: true,
             wf_last_manual_drag: 0.0,
+            show_onboarding: !seen_onboarding,
+            demod_suggest_dismissed: std::collections::HashSet::new(),
+            last_freq_bucket: 0,
+            show_shortcut_overlay: false,
         }
     }
 }

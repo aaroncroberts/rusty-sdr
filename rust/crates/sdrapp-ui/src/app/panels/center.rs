@@ -5,7 +5,13 @@ use egui::{RichText, Ui, Vec2};
 use sdrapp_core::signal_path::{min_zoom_for_mode, DemodMode, DisplayCmd, ReceiverCmd};
 
 use super::super::SdrApp;
-use crate::{frequency::FrequencyWidget, knob::KnobWidget, spectrum::SpectrumWidget, theme};
+use crate::{
+    frequency::FrequencyWidget,
+    hints::{self, HintAction, HintCtx},
+    knob::KnobWidget,
+    spectrum::SpectrumWidget,
+    theme,
+};
 
 impl SdrApp {
     pub(in crate::app) fn center_panel(&mut self, ui: &mut Ui) {
@@ -132,6 +138,80 @@ impl SdrApp {
         let db_floor = self.ref_level - self.dyn_range;
         let db_ceil = self.ref_level;
         let db_range = (db_floor, db_ceil);
+
+        // ── Hint strip ───────────────────────────────────────────────────────
+        // Evaluate all hint conditions and render the highest-priority active
+        // hint as a 1-line strip.  Hidden (zero height) when nothing is wrong.
+        let hint_ctx = HintCtx {
+            is_running,
+            demod_mode,
+            span_hz: span,
+            snr_db,
+            audio_level: self.vu_peak * self.config.ui.volume,
+            volume: self.config.ui.volume,
+            fft_clipping,
+            fm_notch_enabled: self.config.source.fm_notch_enabled,
+            frequency_hz: self.config.ui.frequency_hz,
+            scanner_running,
+        };
+        if let Some(hint) = hints::evaluate(&hint_ctx) {
+            let strip_color = if hint.priority == 0 {
+                egui::Color32::from_rgb(220, 50, 50) // red for critical
+            } else if hint.priority <= 2 {
+                egui::Color32::from_rgb(240, 165, 0) // amber for warnings
+            } else {
+                theme::TEXT_MUTED // muted for informational
+            };
+            ui.add_space(1.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(hint.message).color(strip_color).small());
+                if let Some((label, action)) = hint.action {
+                    if ui.small_button(label).clicked() {
+                        match action {
+                            HintAction::ZoomOut => {
+                                let min_zoom = sdrapp_core::signal_path::min_zoom_for_mode(demod_mode);
+                                let new_z = (zoom_level * 1.8).clamp(min_zoom, 1.0);
+                                let _ = self.cmd_tx.try_send(
+                                    sdrapp_core::signal_path::DisplayCmd::SetZoom(new_z).into(),
+                                );
+                                self.config.ui.zoom_level = new_z;
+                                self.config_dirty = true;
+                            }
+                            HintAction::SetVolume(v) => {
+                                self.config.ui.volume = v;
+                                let _ = self.cmd_tx.try_send(
+                                    sdrapp_core::signal_path::ReceiverCmd::SetVolume(v).into(),
+                                );
+                                self.config_dirty = true;
+                            }
+                            HintAction::SetDemodMode(mode) => {
+                                let _ = self.cmd_tx.try_send(
+                                    sdrapp_core::signal_path::ReceiverCmd::SetDemodMode(mode).into(),
+                                );
+                            }
+                            HintAction::DisableFmNotch => {
+                                self.config.source.fm_notch_enabled = false;
+                                self.config_dirty = true;
+                                let _ = self.cmd_tx.try_send(
+                                    sdrapp_core::signal_path::HardwareCommand::SetFmNotch(false).into(),
+                                );
+                            }
+                            HintAction::MaxAttenuation => {
+                                self.config.source.agc_setpoint_dbfs = -60;
+                                self.config_dirty = true;
+                                let _ = self.cmd_tx.try_send(
+                                    sdrapp_core::signal_path::HardwareCommand::SetLnaState(9).into(),
+                                );
+                                let _ = self.cmd_tx.try_send(
+                                    sdrapp_core::signal_path::HardwareCommand::SetAgcSetpoint(-60).into(),
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+            ui.add_space(1.0);
+        }
 
         let available_h = ui.available_height();
         // Spectrum height driven by the user-adjustable split ratio.
@@ -325,6 +405,79 @@ impl SdrApp {
             peak_marker_hz: &peak_freqs_hz,
         }
         .show(&mut spectrum_ui);
+
+        // ── Frequency context band label ──────────────────────────────────────
+        // Show the band name in the top-left corner of the spectrum when tuned
+        // into a known band.
+        if let Some(band) = crate::bands::band_for_freq(freq) {
+            let label_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("band_label"),
+            ));
+            label_painter.text(
+                egui::Pos2::new(spectrum_rect.left() + 6.0, spectrum_rect.top() + 6.0),
+                egui::Align2::LEFT_TOP,
+                band.name,
+                egui::FontId::proportional(10.0),
+                egui::Color32::from_rgba_premultiplied(180, 180, 180, 100),
+            );
+        }
+
+        // ── Demod mode auto-suggest ───────────────────────────────────────────
+        // When tuned to a known band with the wrong demod mode, suggest switching.
+        // Dismissed per 500-kHz bucket; clears when moving >500 kHz.
+        {
+            let bucket = freq / 500_000;
+            if bucket != self.last_freq_bucket {
+                // Moved significantly — clear old dismissals
+                self.demod_suggest_dismissed.clear();
+                self.last_freq_bucket = bucket;
+            }
+            if let Some(band) = crate::bands::band_for_freq(freq) {
+                if let Some(expected) = band.expected_demod {
+                    if expected != demod_mode
+                        && !self.demod_suggest_dismissed.contains(&bucket)
+                        && is_running
+                    {
+                        let suggest_id = egui::Id::new("demod_suggest_open");
+                        let is_open = ui.ctx().data(|d| d.get_temp::<bool>(suggest_id).unwrap_or(true));
+                        if is_open {
+                            let pos = egui::Pos2::new(
+                                spectrum_rect.center_top().x - 130.0,
+                                spectrum_rect.top() + 22.0,
+                            );
+                            egui::Window::new("Switch demod mode?")
+                                .id(egui::Id::new("demod_suggest_window"))
+                                .fixed_pos(pos)
+                                .resizable(false)
+                                .collapsible(false)
+                                .show(ui.ctx(), |ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "This looks like {} — switch to {:?}?",
+                                            band.name, expected
+                                        ))
+                                        .small(),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Switch").clicked() {
+                                            let _ = self.cmd_tx.try_send(
+                                                sdrapp_core::signal_path::ReceiverCmd::SetDemodMode(expected).into(),
+                                            );
+                                            self.demod_suggest_dismissed.insert(bucket);
+                                            ui.ctx().data_mut(|d| d.insert_temp(suggest_id, false));
+                                        }
+                                        if ui.button("Dismiss").clicked() {
+                                            self.demod_suggest_dismissed.insert(bucket);
+                                            ui.ctx().data_mut(|d| d.insert_temp(suggest_id, false));
+                                        }
+                                    });
+                                });
+                        }
+                    }
+                }
+            }
+        }
 
         // ── ADC saturation badge ──────────────────────────────────────────────
         // Track the last time clipping was detected and hold the badge for 2 s.
@@ -714,6 +867,49 @@ impl SdrApp {
                 self.wf_auto_armed = false;
                 self.wf_last_manual_drag = ui.ctx().input(|i| i.time);
             }
+
+            // ── Audio health VU bar ──────────────────────────────────────────
+            // Compact segmented bar showing post-demod audio output level.
+            // Color: gray=silent/stopped, green=healthy, amber=loud, red=clipping.
+            ui.add_space(6.0);
+            let audio_level = self.vu_peak * self.config.ui.volume;
+            let (vu_rect, vu_resp) = ui.allocate_exact_size(
+                egui::Vec2::new(8.0, 40.0),
+                egui::Sense::hover(),
+            );
+            let vu_painter = ui.painter_at(vu_rect);
+            let seg_count = 8_u8;
+            let seg_h = 3.0_f32;
+            let seg_gap = 1.5_f32;
+            // Convert linear peak [0,1] to segment count
+            let segs_lit = if !is_running || audio_level < 0.01 {
+                0
+            } else {
+                ((audio_level.sqrt() * seg_count as f32).ceil() as u8).min(seg_count)
+            };
+            for i in 0..seg_count {
+                let y = vu_rect.bottom() - (i as f32 + 1.0) * (seg_h + seg_gap) + seg_gap;
+                let seg_rect = egui::Rect::from_min_size(
+                    egui::Pos2::new(vu_rect.left(), y),
+                    egui::Vec2::new(vu_rect.width(), seg_h),
+                );
+                let color = if i >= segs_lit {
+                    egui::Color32::from_gray(40)
+                } else if i >= 6 {
+                    egui::Color32::from_rgb(200, 50, 50) // top 2 = red
+                } else if i >= 5 {
+                    egui::Color32::from_rgb(240, 165, 0) // seg 6 = amber
+                } else {
+                    theme::STATUS_OK // lower segments = green
+                };
+                vu_painter.rect_filled(seg_rect, 1.0, color);
+            }
+            let dbfs_label = if audio_level < 0.001 {
+                "−∞ dBFS".into()
+            } else {
+                format!("{:.0} dBFS", 20.0 * audio_level.log10())
+            };
+            vu_resp.on_hover_text(format!("Audio output level: {dbfs_label}"));
         });
         // Handle MIDI Learn actions deferred from the horizontal closure
         if zoom_learn_req {
@@ -853,22 +1049,85 @@ impl SdrApp {
                 }
             }
 
-            // SNR display
-            if let Some(snr) = snr_db {
-                let snr_color = if snr > 20.0 {
+            // ── Signal quality bar ─────────────────────────────────────────
+            // 5-segment meter + POOR/FAIR/GOOD/EXCELLENT label.
+            // Thresholds are mode-aware: WBFM needs more SNR than NFM/AM.
+            ui.add_space(4.0);
+            {
+                // Mode-dependent thresholds (SNR in dB)
+                let (th_fair, th_good, th_excellent) = match demod_mode {
+                    DemodMode::Wbfm => (8.0_f32, 15.0, 22.0),
+                    DemodMode::Nfm => (5.0, 10.0, 16.0),
+                    DemodMode::Am => (6.0, 12.0, 18.0),
+                    _ => (5.0, 10.0, 15.0), // SSB / CW
+                };
+                let snr = snr_db.unwrap_or(0.0);
+                let segments_lit = if !is_running || snr_db.is_none() {
+                    0
+                } else if snr >= th_excellent {
+                    5
+                } else if snr >= th_good {
+                    4
+                } else if snr >= th_fair {
+                    3
+                } else if snr >= 2.0 {
+                    2
+                } else {
+                    1
+                };
+                let bar_color = if !is_running || snr_db.is_none() {
+                    theme::TEXT_MUTED
+                } else if segments_lit >= 4 {
                     theme::STATUS_OK
-                } else if snr > 10.0 {
+                } else if segments_lit >= 3 {
                     theme::AMBER
                 } else {
-                    theme::TEXT_MUTED
+                    egui::Color32::from_rgb(200, 50, 50)
                 };
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!("SNR {:.0} dB", snr))
-                        .color(snr_color)
-                        .small(),
-                )
-                .on_hover_text("Estimated signal-to-noise ratio in the active demod channel");
+                let quality_label = if !is_running || snr_db.is_none() {
+                    ""
+                } else if segments_lit >= 5 {
+                    "EXCELLENT"
+                } else if segments_lit >= 4 {
+                    "GOOD"
+                } else if segments_lit >= 3 {
+                    "FAIR"
+                } else {
+                    "POOR"
+                };
+
+                // Draw 5 small vertical segments manually via painter
+                let (bar_rect, bar_resp) = ui.allocate_exact_size(
+                    egui::Vec2::new(22.0, 14.0),
+                    egui::Sense::hover(),
+                );
+                let painter = ui.painter_at(bar_rect);
+                let seg_w = 3.0_f32;
+                let seg_gap = 1.0_f32;
+                for i in 0..5_u8 {
+                    let seg_h = 4.0 + i as f32 * 2.0; // each segment taller than last
+                    let x = bar_rect.left() + i as f32 * (seg_w + seg_gap);
+                    let seg_rect = egui::Rect::from_min_size(
+                        egui::Pos2::new(x, bar_rect.bottom() - seg_h),
+                        egui::Vec2::new(seg_w, seg_h),
+                    );
+                    let color = if i < segments_lit {
+                        bar_color
+                    } else {
+                        egui::Color32::from_gray(50)
+                    };
+                    painter.rect_filled(seg_rect, 0.5, color);
+                }
+
+                if !quality_label.is_empty() {
+                    ui.label(RichText::new(quality_label).color(bar_color).small());
+                }
+                let hover_text = if let Some(snr) = snr_db {
+                    format!("Signal: {:.0} dBFS  SNR: {:.1} dB", signal_level_dbfs, snr)
+                } else {
+                    "Signal quality (SNR not yet measured)".into()
+                };
+                bar_resp.on_hover_text(hover_text);
             }
 
             // Palette picker (merged from old Row 4)
@@ -1092,6 +1351,164 @@ impl SdrApp {
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
+            }
+        }
+
+        // ── First-run onboarding overlay ──────────────────────────────────────
+        if self.show_onboarding {
+            let overlay_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("onboarding_overlay"),
+            ));
+            // Semi-transparent tint over the combined spectrum+waterfall area
+            let combined = spectrum_rect.union(waterfall_resp.rect);
+            overlay_painter.rect_filled(
+                combined,
+                0.0,
+                egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
+            );
+
+            // Callout helper: box with arrow pointing to a target point
+            let callout = |painter: &egui::Painter,
+                           tip: egui::Pos2,
+                           text: &str,
+                           offset: egui::Vec2| {
+                let box_pos = tip + offset;
+                let galley = painter.layout_no_wrap(
+                    text.into(),
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                );
+                let box_rect = egui::Rect::from_center_size(box_pos, galley.size() + egui::Vec2::splat(10.0));
+                painter.rect_filled(box_rect, 4.0, egui::Color32::from_rgba_premultiplied(30, 80, 160, 220));
+                painter.rect_stroke(box_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 140, 220)));
+                painter.line_segment([tip, box_rect.center()], egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 140, 220)));
+                painter.galley(box_rect.center() - galley.size() / 2.0, galley, egui::Color32::WHITE);
+            };
+
+            // Callout 1: spectrum area — click to tune
+            callout(
+                &overlay_painter,
+                egui::Pos2::new(combined.center().x, combined.top() + 20.0),
+                "Click spectrum to jump to a frequency",
+                egui::Vec2::new(60.0, 40.0),
+            );
+            // Callout 2: waterfall
+            callout(
+                &overlay_painter,
+                egui::Pos2::new(combined.center().x - 80.0, combined.bottom() - 30.0),
+                "Waterfall shows signal history over time",
+                egui::Vec2::new(80.0, -35.0),
+            );
+            // Callout 3: hint strip area (top of center panel)
+            callout(
+                &overlay_painter,
+                egui::Pos2::new(combined.left() + 40.0, combined.top() - 12.0),
+                "Hint bar: guidance appears here when something needs attention",
+                egui::Vec2::new(140.0, -5.0),
+            );
+
+            // Dismiss instruction
+            overlay_painter.text(
+                combined.center_bottom() - egui::Vec2::new(0.0, 16.0),
+                egui::Align2::CENTER_CENTER,
+                "Click anywhere to dismiss",
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
+            );
+
+            // Detect any click or key to dismiss
+            let dismissed = ui.ctx().input(|i| {
+                i.pointer.any_click() || i.keys_down.iter().any(|_| true)
+            });
+            if dismissed {
+                self.show_onboarding = false;
+                self.config.ui.seen_onboarding = true;
+                self.config_dirty = true;
+            }
+            ui.ctx().request_repaint();
+        }
+
+        // ── Keyboard shortcut overlay (?) ─────────────────────────────────────
+        let pressed_question = ui.ctx().input(|i| i.key_pressed(egui::Key::Questionmark));
+        if pressed_question {
+            self.show_shortcut_overlay = !self.show_shortcut_overlay;
+        }
+        if self.show_shortcut_overlay {
+            let ctx = ui.ctx().clone();
+            egui::Window::new("Keyboard Shortcuts")
+                .id(egui::Id::new("shortcut_overlay"))
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .resizable(false)
+                .collapsible(false)
+                .show(&ctx, |ui| {
+                    ui.columns(3, |cols| {
+                        cols[0].label(RichText::new("Keyboard").strong().small());
+                        cols[0].separator();
+                        for (key, action) in [
+                            ("Space", "Start / Stop"),
+                            ("↑ / ↓", "Tune up / down"),
+                            ("Ctrl+↑/↓", "Tune by 10×"),
+                            ("PgUp/PgDn", "Tune coarse"),
+                            ("F1–F6", "Demod mode"),
+                            ("?", "This overlay"),
+                            ("Ctrl+,", "Settings"),
+                            ("Ctrl+Z", "Zoom in"),
+                            ("Ctrl+X", "Zoom out"),
+                        ] {
+                            cols[0].horizontal(|ui| {
+                                ui.label(RichText::new(key).monospace().small().color(theme::ACCENT));
+                                ui.label(RichText::new(action).small());
+                            });
+                        }
+
+                        cols[1].label(RichText::new("Mouse").strong().small());
+                        cols[1].separator();
+                        for (gesture, action) in [
+                            ("Click spectrum", "Jump to frequency"),
+                            ("Scroll", "Tune step"),
+                            ("Ctrl+Scroll", "Zoom"),
+                            ("Drag spectrum", "Pan frequency"),
+                            ("Drag waterfall", "Pan frequency"),
+                            ("Drag divider", "Resize panels"),
+                            ("Right-click knob", "MIDI learn"),
+                        ] {
+                            cols[1].horizontal(|ui| {
+                                ui.label(RichText::new(gesture).monospace().small().color(theme::ACCENT));
+                                ui.label(RichText::new(action).small());
+                            });
+                        }
+
+                        cols[2].label(RichText::new("MIDI (nanoKontrol2)").strong().small());
+                        cols[2].separator();
+                        for (ctrl, action) in [
+                            ("CYCLE btn", "Next page"),
+                            ("▶ Play", "Play toggle"),
+                            ("■ Stop", "Stop"),
+                            ("● Rec", "Record toggle"),
+                            ("Page 0 knobs", "Tune (4 speeds)"),
+                            ("Page 1 faders", "Display controls"),
+                            ("Page 2 S-btns", "Record start/stop"),
+                            ("|◄  ►|", "Bookmark prev/next"),
+                        ] {
+                            cols[2].horizontal(|ui| {
+                                ui.label(RichText::new(ctrl).monospace().small().color(theme::ACCENT));
+                                ui.label(RichText::new(action).small());
+                            });
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Press ? or Escape to close").small().color(theme::TEXT_MUTED));
+                        if ui.button("Close").clicked() {
+                            self.show_shortcut_overlay = false;
+                        }
+                    });
+                });
+            let escape_pressed = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
+            if escape_pressed {
+                self.show_shortcut_overlay = false;
             }
         }
     }
