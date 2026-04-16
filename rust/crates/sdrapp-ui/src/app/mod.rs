@@ -351,7 +351,7 @@ impl eframe::App for SdrApp {
         // ── MIDI Mapper window ────────────────────────────────────────────────
         if self.show_midi_mapper {
             self.midi_mapper
-                .show(ctx, &mut self.show_midi_mapper, &self.shared);
+                .show(ctx, &mut self.show_midi_mapper, &self.shared, &self.midi_bindings);
         }
 
         // Keep the UI live at ~30 fps unconditionally.

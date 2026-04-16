@@ -10,10 +10,14 @@
 //!
 //! Controls are colour-coded by mapping state:
 //! - **Idle** (no binding):     dim fill, subtle border
-//! - **Mapped** (has a MIDI-learn binding): accent fill
-//! - **Pending** (learn mode active for any target): amber pulsing border
+//! - **Mapped** (has a MIDI-learn binding): accent fill + action label
+//! - **Pending** (selected, waiting for UI click): pulsing amber fill + border
 //!
-//! No click interaction in this feature — that is Feature 3 (sdrpp-bml).
+//! Interaction:
+//! - Left-click CC control → sets `midi_map_pending`; next knob click completes the bind
+//! - Right-click any control → context menu with Unmap / Map to…
+//! - Hover → tooltip with full action description
+//! - Page tabs → switch which page's bindings are shown
 
 use egui::{Color32, Painter, Pos2, Rect, RichText, Rounding, Sense, Stroke, Vec2};
 use parking_lot::RwLock;
@@ -31,6 +35,8 @@ pub struct MidiMapperWindow {
     layout: Box<dyn ControllerLayout>,
     /// Minimum rendered width of the canvas area (px).  Window auto-resizes.
     min_canvas_w: f32,
+    /// Currently selected page tab index.
+    selected_page: usize,
 }
 
 impl MidiMapperWindow {
@@ -39,15 +45,18 @@ impl MidiMapperWindow {
         Self {
             layout: Box::new(NanoKontrol2Layout::new()),
             min_canvas_w: 700.0,
+            selected_page: 0,
         }
     }
 
     /// Draw the window.  `open` is toggled when the user closes the window via its ✕ button.
+    /// `midi_bindings` is the list of `(page, key_name, action_name)` from the live config.
     pub fn show(
-        &self,
+        &mut self,
         ctx: &egui::Context,
         open: &mut bool,
         shared: &Arc<RwLock<SharedState>>,
+        midi_bindings: &[(usize, String, String)],
     ) {
         let window_title = format!("MIDI Mapper — {}", self.layout.name());
 
@@ -57,18 +66,48 @@ impl MidiMapperWindow {
             .min_width(self.min_canvas_w + 24.0)
             .min_height(120.0)
             .show(ctx, |ui| {
-                self.show_contents(ui, shared);
+                self.show_contents(ui, shared, midi_bindings);
             });
     }
 
-    fn show_contents(&self, ui: &mut egui::Ui, shared: &Arc<RwLock<SharedState>>) {
+    fn show_contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        shared: &Arc<RwLock<SharedState>>,
+        midi_bindings: &[(usize, String, String)],
+    ) {
         let (mapped_ccs, learn_active, pending_cc) = {
             let s = shared.read();
-            let mapped: std::collections::HashSet<u8> =
-                s.midi_cc_to_knob.keys().copied().collect();
+            let mapped: std::collections::HashMap<u8, String> = s
+                .midi_cc_to_knob
+                .iter()
+                .map(|(&k, v)| (k, v.clone()))
+                .collect();
             let learn = s.midi_learn_target.is_some();
             (mapped, learn, s.midi_map_pending)
         };
+
+        // ── Page tabs ─────────────────────────────────────────────────────────
+        let page_names = self.layout.page_names();
+        ui.horizontal(|ui| {
+            for (i, &name) in page_names.iter().enumerate() {
+                let selected = self.selected_page == i;
+                let color = theme::midi_page_color(i);
+                let text = RichText::new(name)
+                    .small()
+                    .color(if selected { color } else { theme::TEXT_MUTED });
+                let btn = egui::Button::new(text)
+                    .fill(if selected { theme::WIDGET_ACTIVE } else { theme::WIDGET_BG })
+                    .stroke(Stroke::new(
+                        if selected { 1.5 } else { 1.0 },
+                        if selected { color } else { theme::BORDER },
+                    ));
+                if ui.add(btn).clicked() {
+                    self.selected_page = i;
+                }
+            }
+        });
+        ui.add_space(4.0);
 
         // ── Canvas painter ────────────────────────────────────────────────────
         let (canvas_w, canvas_h) = self.layout.canvas_size();
@@ -76,9 +115,9 @@ impl MidiMapperWindow {
         let scale = available_w / canvas_w;
         let canvas_px_h = canvas_h * scale;
 
-        let (rect, _response) = ui.allocate_exact_size(
+        let (rect, _canvas_resp) = ui.allocate_exact_size(
             Vec2::new(available_w, canvas_px_h),
-            Sense::click(),
+            Sense::hover(),
         );
 
         let painter = ui.painter_at(rect);
@@ -90,10 +129,10 @@ impl MidiMapperWindow {
         let t = ui.input(|i| i.time);
         let pulse = ((t * 3.0).sin() as f32 * 0.5 + 0.5).clamp(0.0, 1.0);
 
-        // ── Draw controls + click detection ──────────────────────────────────
-        // Each CC control gets its own click region for binding.
-        // NoteOn controls (buttons) are not part of the MIDI-learn CC system.
-        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+        // ── Draw + interact controls ──────────────────────────────────────────
+        // Collect any state changes to apply after the loop (avoid borrow conflicts).
+        let mut new_pending: Option<Option<u8>> = None; // Some(Some(cc)) = set, Some(None) = clear
+        let mut unmap_cc: Option<u8> = None;
 
         for ctrl in self.layout.controls() {
             let r = &ctrl.rect;
@@ -102,34 +141,65 @@ impl MidiMapperWindow {
             let ph = r.h * scale;
             let screen_rect = Rect::from_min_size(px, Vec2::new(pw, ph));
 
-            // Only CC controls can be clicked to start a bind.
             let is_cc = ctrl.midi_key.kind == MidiKeyKind::ControlChange;
             let cc_num = ctrl.midi_key.number;
             let is_pending = pending_cc == Some(cc_num);
 
-            // Check for click on this specific control.
-            if is_cc {
-                let hovered = pointer_pos.is_some_and(|p| screen_rect.contains(p));
-                if hovered && ui.input(|i| i.pointer.primary_clicked()) {
-                    shared.write().midi_map_pending = Some(cc_num);
-                    ui.ctx().request_repaint();
-                }
-            }
+            // Look up the action binding for this control on the selected page.
+            let action_label = find_action(ctrl.midi_key.kind.clone(), ctrl.midi_key.number, self.selected_page, midi_bindings);
+            let knob_binding = if is_cc { mapped_ccs.get(&cc_num).cloned() } else { None };
 
-            let state = control_state(&ctrl.midi_key, &mapped_ccs);
-            let (fill, stroke) = colors_for_state_ex(state, learn_active, is_pending, pulse);
+            let state = derive_state(&ctrl.midi_key, &mapped_ccs, action_label.is_some());
+            let (fill, stroke) = colors_for_state(state, learn_active, is_pending, pulse);
 
             match ctrl.control_type {
-                ControlType::Knob => {
-                    draw_knob(&painter, screen_rect, fill, stroke, ctrl.label);
-                }
-                ControlType::Fader => {
-                    draw_fader(&painter, screen_rect, fill, stroke, ctrl.label);
-                }
-                ControlType::Button => {
-                    draw_button(&painter, screen_rect, fill, stroke, ctrl.label);
-                }
+                ControlType::Knob => draw_knob(&painter, screen_rect, fill, stroke, ctrl.label, action_label.as_deref()),
+                ControlType::Fader => draw_fader(&painter, screen_rect, fill, stroke, ctrl.label, action_label.as_deref()),
+                ControlType::Button => draw_button(&painter, screen_rect, fill, stroke, ctrl.label, action_label.as_deref()),
             }
+
+            // ── Per-control interaction via ui.interact ───────────────────────
+            let ctrl_id = ui.id().with(ctrl.id);
+            let sense = if is_cc { Sense::click() } else { Sense::hover() };
+            let resp = ui.interact(screen_rect, ctrl_id, sense);
+
+            // Tooltip — chain consumes resp and returns it
+            let tooltip = build_tooltip(ctrl, &action_label, &knob_binding, self.selected_page);
+            let resp = resp.on_hover_text_at_pointer(tooltip);
+
+            // Left-click on CC control → start bind
+            if is_cc && resp.clicked() {
+                new_pending = Some(Some(cc_num));
+            }
+
+            // Right-click context menu
+            resp.context_menu(|ui| {
+                if let Some(ref _binding) = knob_binding {
+                    if ui.button("Unmap (MIDI learn)").clicked() {
+                        unmap_cc = Some(cc_num);
+                        ui.close_menu();
+                    }
+                }
+                if is_cc {
+                    let label = if pending_cc == Some(cc_num) { "Cancel pending bind" } else { "Map to UI control…" };
+                    if ui.button(label).clicked() {
+                        if pending_cc == Some(cc_num) {
+                            new_pending = Some(None); // cancel
+                        } else {
+                            new_pending = Some(Some(cc_num));
+                        }
+                        ui.close_menu();
+                    }
+                }
+            });
+        }
+
+        // Apply deferred state changes.
+        if let Some(val) = new_pending {
+            shared.write().midi_map_pending = val;
+        }
+        if let Some(cc) = unmap_cc {
+            shared.write().midi_cc_to_knob.remove(&cc);
         }
 
         ui.add_space(6.0);
@@ -140,12 +210,55 @@ impl MidiMapperWindow {
             ui.label(RichText::new("Unassigned").color(theme::TEXT_MUTED).small());
             ui.add_space(8.0);
             legend_dot(ui, theme::ACCENT_DIM, theme::ACCENT);
-            ui.label(RichText::new("Mapped").color(theme::TEXT_MUTED).small());
+            ui.label(RichText::new("Mapped (learn)").color(theme::TEXT_MUTED).small());
+            ui.add_space(8.0);
+            legend_dot(ui, Color32::from_rgb(30, 70, 50), theme::STATUS_OK);
+            ui.label(RichText::new("Action bound").color(theme::TEXT_MUTED).small());
             ui.add_space(8.0);
             legend_dot(ui, theme::AMBER, theme::AMBER);
-            ui.label(RichText::new("Pending").color(theme::TEXT_MUTED).small());
+            ui.label(RichText::new("Pending bind").color(theme::TEXT_MUTED).small());
         });
     }
+}
+
+// ── Binding helpers ───────────────────────────────────────────────────────────
+
+/// Find the action name for a given MIDI key + page in the binding table.
+fn find_action(
+    kind: MidiKeyKind,
+    number: u8,
+    page: usize,
+    bindings: &[(usize, String, String)],
+) -> Option<String> {
+    let key_name = match kind {
+        MidiKeyKind::ControlChange => format!("CC {number}"),
+        MidiKeyKind::NoteOn => format!("Note {number}"),
+    };
+    bindings
+        .iter()
+        .find(|(p, k, _)| *p == page && k == &key_name)
+        .map(|(_, _, action)| action.clone())
+}
+
+fn build_tooltip(
+    ctrl: &sdrapp_midi::ControlDef,
+    action_label: &Option<String>,
+    knob_binding: &Option<String>,
+    page: usize,
+) -> String {
+    let mut parts = vec![format!("{} ({})", ctrl.id, ctrl.label)];
+    let key_desc = match ctrl.midi_key.kind {
+        MidiKeyKind::ControlChange => format!("CC {}", ctrl.midi_key.number),
+        MidiKeyKind::NoteOn => format!("Note {}", ctrl.midi_key.number),
+    };
+    parts.push(format!("MIDI: ch0 {key_desc}"));
+    if let Some(action) = action_label {
+        parts.push(format!("Action (page {}): {action}", page));
+    }
+    if let Some(knob) = knob_binding {
+        parts.push(format!("UI knob binding: {knob}"));
+    }
+    parts.join("\n")
 }
 
 // ── State helpers ─────────────────────────────────────────────────────────────
@@ -153,65 +266,78 @@ impl MidiMapperWindow {
 #[derive(Clone, Copy, PartialEq)]
 enum ControlState {
     Idle,
-    Mapped,
+    ActionBound, // has an action in the nanoKontrol2 profile for this page
+    Mapped,      // has a MIDI-learn CC→knob binding
 }
 
-fn control_state(
+fn derive_state(
     key: &MidiKey,
-    mapped_ccs: &std::collections::HashSet<u8>,
+    mapped_ccs: &std::collections::HashMap<u8, String>,
+    has_action: bool,
 ) -> ControlState {
-    // Only CC keys participate in MIDI-learn knob binding right now.
-    if key.kind == MidiKeyKind::ControlChange && mapped_ccs.contains(&key.number) {
+    if key.kind == MidiKeyKind::ControlChange && mapped_ccs.contains_key(&key.number) {
         ControlState::Mapped
+    } else if has_action {
+        ControlState::ActionBound
     } else {
         ControlState::Idle
     }
 }
 
-fn colors_for_state_ex(
+fn colors_for_state(
     state: ControlState,
     learn_active: bool,
     is_pending: bool,
     pulse: f32,
 ) -> (Color32, Stroke) {
     if is_pending {
-        // This control is currently selected — solid bright amber + fill
         let alpha = (pulse * 180.0 + 75.0) as u8;
         let fill = Color32::from_rgba_premultiplied(80, 60, 0, alpha);
         return (fill, Stroke::new(2.0, theme::AMBER));
     }
     match state {
-        ControlState::Mapped => (
-            theme::ACCENT_DIM,
-            Stroke::new(1.5, theme::ACCENT),
+        ControlState::Mapped => (theme::ACCENT_DIM, Stroke::new(1.5, theme::ACCENT)),
+        ControlState::ActionBound => (
+            Color32::from_rgb(30, 70, 50),
+            Stroke::new(1.5, theme::STATUS_OK),
         ),
         ControlState::Idle if learn_active => {
-            // Pulse the border amber to draw attention during learn mode
             let alpha = (pulse * 255.0) as u8;
             let border = Color32::from_rgba_premultiplied(255, 190, 40, alpha.max(60));
             (theme::WIDGET_BG, Stroke::new(1.5, border))
         }
-        ControlState::Idle => (
-            theme::WIDGET_BG,
-            Stroke::new(1.0, theme::BORDER),
-        ),
+        ControlState::Idle => (theme::WIDGET_BG, Stroke::new(1.0, theme::BORDER)),
     }
 }
 
 // ── Shape renderers ───────────────────────────────────────────────────────────
 
+/// Shorten an action name to at most `max` characters for display inside a control.
+fn short_action(action: &str, max: usize) -> &str {
+    if action.len() <= max {
+        action
+    } else {
+        &action[..max]
+    }
+}
+
 /// Draw a rotary knob: circle with a small label below.
-fn draw_knob(painter: &Painter, rect: Rect, fill: Color32, stroke: Stroke, label: &str) {
+fn draw_knob(
+    painter: &Painter,
+    rect: Rect,
+    fill: Color32,
+    stroke: Stroke,
+    label: &str,
+    action: Option<&str>,
+) {
     let center = rect.center();
     let radius = rect.width().min(rect.height()) * 0.45;
 
     painter.circle(center, radius, fill, stroke);
 
-    // Indicator pip at the bottom of the knob
     let pip = center + Vec2::new(0.0, radius * 0.65);
     painter.circle_filled(pip, 1.5, stroke.color);
 
-    // Label text below the circle
     let text_pos = Pos2::new(center.x, rect.max.y + 2.0);
     painter.text(
         text_pos,
@@ -220,21 +346,35 @@ fn draw_knob(painter: &Painter, rect: Rect, fill: Color32, stroke: Stroke, label
         egui::FontId::proportional(7.5),
         theme::TEXT_MUTED,
     );
+
+    if let Some(act) = action {
+        painter.text(
+            Pos2::new(center.x, rect.max.y + 10.0),
+            egui::Align2::CENTER_TOP,
+            short_action(act, 8),
+            egui::FontId::proportional(6.0),
+            theme::STATUS_OK,
+        );
+    }
 }
 
 /// Draw a vertical fader: tall rounded rect with a small cap.
-fn draw_fader(painter: &Painter, rect: Rect, fill: Color32, stroke: Stroke, label: &str) {
-    let rounding = Rounding::same(2.0);
-    painter.rect(rect, rounding, fill, stroke);
+fn draw_fader(
+    painter: &Painter,
+    rect: Rect,
+    fill: Color32,
+    stroke: Stroke,
+    label: &str,
+    action: Option<&str>,
+) {
+    painter.rect(rect, Rounding::same(2.0), fill, stroke);
 
-    // Track centre line
     let mid_x = rect.center().x;
     painter.line_segment(
         [Pos2::new(mid_x, rect.min.y + 3.0), Pos2::new(mid_x, rect.max.y - 3.0)],
         Stroke::new(0.5, theme::BORDER),
     );
 
-    // Label below the fader
     let text_pos = Pos2::new(rect.center().x, rect.max.y + 2.0);
     painter.text(
         text_pos,
@@ -243,18 +383,35 @@ fn draw_fader(painter: &Painter, rect: Rect, fill: Color32, stroke: Stroke, labe
         egui::FontId::proportional(7.5),
         theme::TEXT_MUTED,
     );
+
+    if let Some(act) = action {
+        painter.text(
+            Pos2::new(rect.center().x, rect.max.y + 10.0),
+            egui::Align2::CENTER_TOP,
+            short_action(act, 6),
+            egui::FontId::proportional(6.0),
+            theme::STATUS_OK,
+        );
+    }
 }
 
 /// Draw a push button: rounded rect with centred label.
-fn draw_button(painter: &Painter, rect: Rect, fill: Color32, stroke: Stroke, label: &str) {
-    let rounding = Rounding::same(3.0);
-    painter.rect(rect, rounding, fill, stroke);
+fn draw_button(
+    painter: &Painter,
+    rect: Rect,
+    fill: Color32,
+    stroke: Stroke,
+    label: &str,
+    action: Option<&str>,
+) {
+    painter.rect(rect, Rounding::same(3.0), fill, stroke);
 
     let font_size = (rect.height() * 0.5).clamp(6.0, 9.0);
+    let display_label = action.map_or(label, |a| short_action(a, 5));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        label,
+        display_label,
         egui::FontId::proportional(font_size),
         theme::TEXT_PRIMARY,
     );
