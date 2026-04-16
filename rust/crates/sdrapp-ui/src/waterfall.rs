@@ -110,7 +110,7 @@ impl WaterfallWidget {
         // appearance of slower scrolling and eliminates the dead zone below.
         let display_h = ui.available_height().max(60.0);
         let desired_size = Vec2::new(ui.available_width(), display_h);
-        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
 
         if ui.is_rect_visible(rect) {
             ui.painter_at(rect).image(

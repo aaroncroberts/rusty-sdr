@@ -99,14 +99,14 @@ impl SdrApp {
                 // Place ref_level so the noise floor is ~10% up from the bottom.
                 self.ref_level = (self.noise_floor_ema + self.dyn_range * 0.9).clamp(-120.0, 20.0);
             }
-            let db_floor = self.ref_level - self.dyn_range;
-            let db_ceil = self.ref_level;
+            let _db_floor = self.ref_level - self.dyn_range;
+            let _db_ceil = self.ref_level;
 
-            // Waterfall range: floor is shifted down by wf_gain to reveal weaker signals;
-            // ceiling has 30 dB of fixed headroom above the spectrum ceiling so strong
-            // signals don't saturate to white.
-            self.waterfall
-                .set_db_range((db_floor - self.wf_gain, db_ceil + 30.0));
+            // Waterfall range: wf_level is the absolute dBFS floor (darkest colour);
+            // wf_gain shifts that floor down to reveal weaker signals.
+            // The ceiling is wf_level + 80 dB, giving a consistent 80 dB window.
+            let wf_floor = self.wf_level - self.wf_gain;
+            self.waterfall.set_db_range((wf_floor, self.wf_level + 80.0));
             // Fractional accumulator: push_row fires once per integer crossed.
             // Speed 1.0 = 1 row/frame, 2.0 = 2 rows/frame, 0.5 = every other frame.
             self.waterfall_row_frac += waterfall_speed.clamp(0.1, 10.0);
@@ -121,8 +121,10 @@ impl SdrApp {
         let db_range = (db_floor, db_ceil);
 
         let available_h = ui.available_height();
-        // Spectrum gets a fixed portion; waterfall fills the rest
-        let spectrum_height = (available_h * 0.36).clamp(120.0, 380.0);
+        // Spectrum height driven by the user-adjustable split ratio.
+        // Clamped so both spectrum (≥ 100 px) and waterfall (≥ 80 px) always have room.
+        let spectrum_height = (available_h * self.config.ui.spectrum_split)
+            .clamp(100.0, available_h - 80.0);
 
         // ── Spectrum ──────────────────────────────────────────────────────────
         let (spectrum_rect, spectrum_resp) = ui.allocate_exact_size(
@@ -783,19 +785,163 @@ impl SdrApp {
                 )
                 .on_hover_text("Estimated signal-to-noise ratio in the active demod channel");
             }
+
+            // Waterfall visibility controls
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Colormap picker
+                let colormap_label = self.config.ui.waterfall_colormap.as_str();
+                egui::ComboBox::from_id_salt("wf_colormap")
+                    .selected_text(RichText::new(colormap_label).small())
+                    .width(72.0)
+                    .show_ui(ui, |ui| {
+                        for name in ["Thermal", "Inferno", "Grayscale", "Classic"] {
+                            let sel = self.config.ui.waterfall_colormap == name;
+                            if ui.selectable_label(sel, name).clicked() && !sel {
+                                let cm: crate::theme::WaterfallColormap = match name {
+                                    "Grayscale" => crate::theme::WaterfallColormap::Grayscale,
+                                    "Inferno" => crate::theme::WaterfallColormap::Inferno,
+                                    "Classic" => crate::theme::WaterfallColormap::Classic,
+                                    _ => crate::theme::WaterfallColormap::Thermal,
+                                };
+                                self.waterfall.set_colormap(cm.build());
+                                self.config.ui.waterfall_colormap = name.into();
+                                self.config_dirty = true;
+                            }
+                        }
+                    });
+                ui.label(RichText::new("Palette").color(theme::TEXT_MUTED).small());
+
+                ui.add_space(8.0);
+
+                // WF Level slider
+                let mut wf_lv = self.wf_level;
+                let wf_resp = ui
+                    .add(
+                        egui::Slider::new(&mut wf_lv, -120.0_f32..=-40.0_f32)
+                            .step_by(1.0)
+                            .text(RichText::new("WF Level").small())
+                            .clamping(egui::SliderClamping::Always),
+                    )
+                    .on_hover_text("Waterfall floor level in dBFS — shift down to reveal weaker signals");
+                if wf_resp.changed() {
+                    self.wf_level = wf_lv;
+                    self.config.ui.wf_level = wf_lv;
+                    self.config_dirty = true;
+                }
+            });
         });
+
+        // ── Resizable split divider ───────────────────────────────────────────
+        let divider_w = ui.available_width();
+        let (div_rect, div_resp) = ui.allocate_exact_size(
+            Vec2::new(divider_w, 6.0),
+            egui::Sense::drag(),
+        );
+        if div_resp.hovered() || div_resp.dragged() {
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if div_resp.dragged() {
+            let dy = div_resp.drag_delta().y;
+            if available_h > 0.0 {
+                let new_split = self.config.ui.spectrum_split + dy / available_h;
+                self.config.ui.spectrum_split = new_split.clamp(0.15, 0.80);
+                self.config_dirty = true;
+            }
+        }
+        if ui.is_rect_visible(div_rect) {
+            let mid_y = div_rect.center().y;
+            let painter = ui.painter();
+            let line_color = if div_resp.hovered() || div_resp.dragged() {
+                theme::ACCENT
+            } else {
+                theme::TEXT_DISABLED
+            };
+            painter.line_segment(
+                [
+                    egui::pos2(div_rect.left(), mid_y),
+                    egui::pos2(div_rect.right(), mid_y),
+                ],
+                egui::Stroke::new(1.0, line_color),
+            );
+            // Grip dots at centre
+            for i in [-12.0_f32, -6.0, 0.0, 6.0, 12.0] {
+                painter.circle_filled(
+                    egui::pos2(div_rect.center().x + i, mid_y),
+                    1.5,
+                    theme::TEXT_MUTED,
+                );
+            }
+        }
 
         // ── Waterfall ─────────────────────────────────────────────────────────
         let waterfall_resp = self.waterfall.show(ui, &ctx);
 
-        // Click-to-tune on waterfall (same x→Hz conversion as spectrum)
+        // ── Waterfall hover crosshair + frequency tooltip ─────────────────────
+        {
+            let wf_rect = waterfall_resp.rect;
+            if let Some(hover_pos) = ctx.pointer_hover_pos() {
+                if wf_rect.contains(hover_pos) {
+                    let t = ((hover_pos.x - wf_rect.left()) / wf_rect.width()).clamp(0.0, 1.0);
+                    let low = freq.saturating_sub(span) as f64;
+                    let high = freq as f64 + span as f64;
+                    let hover_hz = (low + t as f64 * (high - low)).round() as u64;
+                    let painter = ui.painter_at(wf_rect);
+                    // Vertical crosshair line
+                    painter.line_segment(
+                        [
+                            egui::pos2(hover_pos.x, wf_rect.top()),
+                            egui::pos2(hover_pos.x, wf_rect.bottom()),
+                        ],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 80)),
+                    );
+                    // Frequency label just above the cursor
+                    let mhz = hover_hz as f64 / 1_000_000.0;
+                    let label = format!("{:.4} MHz", mhz);
+                    let font = egui::FontId::proportional(11.0);
+                    let label_pos = egui::pos2(hover_pos.x + 4.0, wf_rect.top() + 4.0);
+                    painter.text(
+                        label_pos,
+                        egui::Align2::LEFT_TOP,
+                        &label,
+                        font,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                    );
+                }
+            }
+        }
+
+        // Click-to-tune on waterfall with snap-to-peak (same logic as spectrum)
         if waterfall_resp.clicked() {
             if let Some(click_pos) = waterfall_resp.interact_pointer_pos() {
-                let rect = waterfall_resp.rect;
-                let t = ((click_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                let wf_rect = waterfall_resp.rect;
+                let t = ((click_pos.x - wf_rect.left()) / wf_rect.width()).clamp(0.0, 1.0);
                 let low = freq.saturating_sub(span) as f64;
                 let high = freq as f64 + span as f64;
-                let new_freq = (low + t as f64 * (high - low)).round() as u64;
+
+                // Snap-to-peak: search ±5 bins around the click for a local FFT maximum
+                let new_freq = if !fft_data.is_empty() && wf_rect.width() > 0.0 {
+                    let n = fft_data.len();
+                    let raw_bin = (t * (n - 1) as f32).round() as usize;
+                    let lo = raw_bin.saturating_sub(5);
+                    let hi = (raw_bin + 5).min(n - 1);
+                    let (peak_bin, peak_db) = (lo..=hi).fold(
+                        (raw_bin, fft_data[raw_bin]),
+                        |(best_b, best_v), b| {
+                            if fft_data[b] > best_v {
+                                (b, fft_data[b])
+                            } else {
+                                (best_b, best_v)
+                            }
+                        },
+                    );
+                    let snapped = peak_db > fft_data[raw_bin] + 3.0;
+                    let bin = if snapped { peak_bin } else { raw_bin };
+                    let bin_t = bin as f64 / (n - 1) as f64;
+                    (low + bin_t * (high - low)).round() as u64
+                } else {
+                    (low + t as f64 * (high - low)).round() as u64
+                };
+
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);

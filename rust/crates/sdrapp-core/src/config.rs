@@ -34,7 +34,7 @@ pub struct AppConfig {
 }
 
 fn default_bookmarks() -> Vec<BookmarkConfig> {
-    vec![BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm")]
+    vec![BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm")]
 }
 
 /// Hamlib-compatible rigctl TCP server configuration.
@@ -155,6 +155,14 @@ pub struct UiConfig {
     /// UI font scale factor (0.5–3.0, default 1.0).
     #[serde(default = "default_font_scale")]
     pub font_scale: f32,
+    /// Fraction of center-panel height allocated to the spectrum (0.15–0.85).
+    /// The waterfall fills the remainder below the toolbar.
+    #[serde(default = "default_spectrum_split")]
+    pub spectrum_split: f32,
+    /// Waterfall absolute dBFS floor — the dBFS level that maps to the darkest
+    /// colour.  Positive wf_gain values shift this down to reveal weaker signals.
+    #[serde(default = "default_wf_level")]
+    pub wf_level: f32,
 }
 
 fn default_zoom_level() -> f32 {
@@ -181,11 +189,17 @@ fn default_waterfall_colormap() -> String {
 fn default_font_scale() -> f32 {
     1.0
 }
+fn default_spectrum_split() -> f32 {
+    0.45
+}
+fn default_wf_level() -> f32 {
+    -80.0
+}
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            frequency_hz: 100_000_000,
+            frequency_hz: 105_700_000, // WMJI 105.7 FM – Cleveland/Mentor OH
             span_hz: 1_000_000,
             volume: 0.8,
             window_width: 1280.0,
@@ -200,6 +214,8 @@ impl Default for UiConfig {
             band_plan_enabled: false,
             waterfall_colormap: "Thermal".into(),
             font_scale: 1.0,
+            spectrum_split: 0.45,
+            wf_level: -80.0,
         }
     }
 }
@@ -235,7 +251,7 @@ impl Default for AppConfig {
             active_sink: ActiveSink::default(),
             ui: UiConfig::default(),
             source: SourceConfig::default(),
-            bookmarks: vec![BookmarkConfig::new("BBC Radio 4", 93_500_000, "Wbfm")],
+            bookmarks: vec![BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm")],
             rigctl: RigctlConfig::default(),
             midi_learn: std::collections::HashMap::new(),
         }
@@ -308,7 +324,7 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         let restored: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.version, CONFIG_VERSION);
-        assert_eq!(restored.ui.frequency_hz, 100_000_000);
+        assert_eq!(restored.ui.frequency_hz, 105_700_000);
     }
 
     #[test]

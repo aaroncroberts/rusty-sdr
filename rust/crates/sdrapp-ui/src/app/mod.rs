@@ -49,9 +49,12 @@ pub struct SdrApp {
     dyn_range: f32,
     /// When true, ref_level tracks the signal ceiling automatically.
     auto_ref: bool,
-    /// Waterfall brightness offset (positive = brighter / more sensitive).
-    /// Applied only to waterfall colourmap; does not affect spectrum.
+    /// Waterfall brightness offset in dB (positive = brighter / more sensitive).
+    /// Shifts the effective floor down by this many dB; does not affect spectrum.
     wf_gain: f32,
+    /// Absolute dBFS floor for waterfall colouring — the value that maps to the
+    /// darkest colour in the palette.  Persisted in AppConfig.ui.wf_level.
+    wf_level: f32,
     /// Slow EMA of 10th-percentile FFT bin — noise floor estimate for auto-ref.
     noise_floor_ema: f32,
     /// Slow EMA of 99th-percentile FFT bin — signal ceiling estimate for auto-ref.
@@ -119,6 +122,7 @@ impl SdrApp {
         };
 
         let freq = config.ui.frequency_hz;
+        let wf_level = config.ui.wf_level;
         let mut waterfall_widget = WaterfallWidget::new_with_colormap(1024, (-120.0, 0.0));
         waterfall_widget.set_colormap(wf_colormap.build());
 
@@ -137,6 +141,7 @@ impl SdrApp {
             dyn_range: 60.0,
             auto_ref: true,
             wf_gain: 0.0,
+            wf_level,
             noise_floor_ema: -85.0,
             signal_ceil_ema: -40.0,
             waterfall_row_frac: 0.0,
