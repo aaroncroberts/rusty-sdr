@@ -209,7 +209,6 @@ impl SdrApp {
             let mut lna_learn_req = false;
             let mut lna_learn_cancel = false;
             let mut lna_clear: Option<u8> = None;
-            let mut lna_bind = false;
             let mut ifg_learn_req = false;
             let mut ifg_learn_cancel = false;
             let mut ifg_clear: Option<u8> = None;
@@ -222,54 +221,56 @@ impl SdrApp {
                 )
                 .on_hover_text("Disable AGC to adjust LNA and IF gain manually");
             } else {
-            ui.horizontal(|ui| {
-                let knob_w = (ui.available_width() / 2.0).min(60.0);
-                ui.allocate_ui(egui::Vec2::new(knob_w, 72.0), |ui| {
-                    ui.vertical_centered(|ui| {
-                        let mut lna = self.config.source.lna_state as f32;
-                        let resp = KnobWidget {
-                            value: &mut lna,
-                            range: 0.0..=(lna_max as f32),
-                            default_value: 4.0,
-                            step: 1.0,
-                            diameter: 40.0,
-                            label: Some("LNA"),
-                            unit: "",
-                            midi_cc: lna_cc,
-                            learn_active: lna_learn || map_pending,
+            // LNA: slider with ± buttons — much easier than a rotary for integer steps.
+            {
+                ui.label(RichText::new("LNA State").color(theme::TEXT_MUTED).small());
+                ui.horizontal(|ui| {
+                    let cur = self.config.source.lna_state as i32;
+                    if ui.small_button("−").clicked() && cur > 0 {
+                        let new_lna = (cur - 1) as u8;
+                        self.config.source.lna_state = new_lna;
+                        self.config_dirty = true;
+                        let _ = self.cmd_tx.try_send(HardwareCommand::SetLnaState(new_lna).into());
+                    }
+                    let mut lna = self.config.source.lna_state as i32;
+                    let resp = ui.add(
+                        egui::Slider::new(&mut lna, 0..=lna_max)
+                            .show_value(true)
+                            .clamping(egui::SliderClamping::Always)
+                    );
+                    if resp.changed() {
+                        let new_lna = lna as u8;
+                        self.config.source.lna_state = new_lna;
+                        self.config_dirty = true;
+                        let _ = self.cmd_tx.try_send(HardwareCommand::SetLnaState(new_lna).into());
+                    }
+                    if ui.small_button("+").clicked() && cur < lna_max {
+                        let new_lna = (cur + 1) as u8;
+                        self.config.source.lna_state = new_lna;
+                        self.config_dirty = true;
+                        let _ = self.cmd_tx.try_send(HardwareCommand::SetLnaState(new_lna).into());
+                    }
+                    resp.context_menu(|ui| {
+                        if lna_learn {
+                            if ui.button("Cancel MIDI Learn").clicked() {
+                                lna_learn_cancel = true;
+                                ui.close_menu();
+                            }
+                        } else if ui.button("Assign MIDI CC").clicked() {
+                            lna_learn_req = true;
+                            ui.close_menu();
                         }
-                        .show(ui);
-                        if map_pending && resp.clicked() {
-                            lna_bind = true;
-                        } else {
-                            resp.context_menu(|ui| {
-                                if lna_learn {
-                                    if ui.button("Cancel MIDI Learn").clicked() {
-                                        lna_learn_cancel = true;
-                                        ui.close_menu();
-                                    }
-                                } else if ui.button("Assign MIDI CC").clicked() {
-                                    lna_learn_req = true;
-                                    ui.close_menu();
-                                }
-                                if let Some(cc) = lna_cc {
-                                    if ui.button(format!("Clear CC {cc} binding")).clicked() {
-                                        lna_clear = Some(cc);
-                                        ui.close_menu();
-                                    }
-                                }
-                            });
-                        }
-                        if resp.changed() {
-                            let new_lna = lna.round() as u8;
-                            self.config.source.lna_state = new_lna;
-                            self.config_dirty = true;
-                            let _ = self
-                                .cmd_tx
-                                .try_send(HardwareCommand::SetLnaState(new_lna).into());
+                        if let Some(cc) = lna_cc {
+                            if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                                lna_clear = Some(cc);
+                                ui.close_menu();
+                            }
                         }
                     });
                 });
+            }
+            {
+                let knob_w = ui.available_width().min(60.0);
                 ui.allocate_ui(egui::Vec2::new(knob_w, 72.0), |ui| {
                     ui.vertical_centered(|ui| {
                         let mut gain = self.config.source.if_gain_dbfs as f32;
@@ -316,14 +317,8 @@ impl SdrApp {
                         }
                     });
                 });
-            }); // ui.horizontal
+            } // IF gain block
             } // else (AGC off)
-            if lna_bind {
-                if let Some(cc) = self.shared.write().midi_map_pending.take() {
-                    self.shared.write().midi_cc_to_knob.insert(cc, "lna".into());
-                    self.config_dirty = true;
-                }
-            }
             if ifg_bind {
                 if let Some(cc) = self.shared.write().midi_map_pending.take() {
                     self.shared.write().midi_cc_to_knob.insert(cc, "if_gain".into());
@@ -691,80 +686,30 @@ impl SdrApp {
             });
         }
 
-        // Signal path status + RDS display
-        let (center_freq, is_recording, rds_ps_name, rds_pty, rds_ta, rds_rt) = {
+        // Signal path status
+        let (center_freq, is_recording) = {
             let s = self.shared.read();
-            (
-                s.center_freq_hz,
-                s.is_recording,
-                s.rds.ps_name.clone(),
-                s.rds
-                    .pty
-                    .map(|c| sdrapp_core::dsp::rds::pty_to_str(c).to_string()),
-                s.rds.ta,
-                s.rds.rt.clone(),
-            )
+            (s.center_freq_hz, s.is_recording)
         };
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let status_dot_color = if is_running {
-                theme::STATUS_OK
-            } else {
-                theme::TEXT_DISABLED
-            };
-            ui.label(RichText::new("●").color(status_dot_color));
+            let dot_color = if is_running { theme::STATUS_OK } else { theme::TEXT_DISABLED };
+            ui.label(RichText::new("●").color(dot_color));
             ui.label(
                 RichText::new(if is_running { "Running" } else { "Stopped" })
                     .color(theme::TEXT_PRIMARY),
             );
-        });
-
-        if center_freq > 0 {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("RDS").color(theme::TEXT_MUTED));
-                ui.label(
-                    RichText::new(format_frequency(center_freq))
-                        .color(theme::TEXT_MUTED)
-                        .small(),
-                );
-            });
-        }
-
-        if rds_ps_name.is_some() || rds_rt.is_some() {
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(2.0);
-
-            // PS name row: "RDS" badge · station name · PTY · TA badge
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("RDS").color(theme::ACCENT).small().strong());
-                if let Some(ref ps) = rds_ps_name {
-                    ui.label(RichText::new(ps).color(theme::TEXT_PRIMARY).strong());
-                }
-                if let Some(ref pty) = rds_pty {
-                    ui.label(RichText::new(pty).color(theme::TEXT_MUTED).small());
-                }
-                if rds_ta {
-                    ui.label(RichText::new("TA").color(theme::AMBER).small().strong());
-                }
-            });
-
-            // RadioText row
-            if let Some(ref rt) = rds_rt {
-                ui.horizontal(|ui| {
-                    let avail = ui.available_width();
-                    let rt_display = if rt.len() > 32 {
-                        format!("{}…", &rt[..31])
-                    } else {
-                        rt.clone()
-                    };
-                    ui.label(RichText::new(rt_display).color(theme::TEXT_MUTED).small())
-                        .on_hover_text(rt.as_str());
-                    let _ = avail; // suppress unused warning
+            if center_freq > 0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format_frequency(center_freq))
+                            .color(theme::TEXT_MUTED)
+                            .small(),
+                    );
                 });
             }
-        }
+        });
 
         if is_recording {
             ui.add_space(4.0);

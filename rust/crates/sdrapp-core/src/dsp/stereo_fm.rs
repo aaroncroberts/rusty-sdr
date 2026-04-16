@@ -61,13 +61,13 @@ pub struct StereoFmDecoder {
     /// EMA coefficient for slow level smoothing.
     pilot_slow_alpha: f32,
 
-    // ── L+R low-pass filter (2-stage 1st-order IIR, ≈15 kHz cutoff) ──────────
-    lpr_s1: f32,
-    lpr_s2: f32,
+    // ── L+R low-pass filter (5-stage 1st-order IIR cascade, ≈15 kHz cutoff) ──
+    // 5 stages gives ~43 dB attenuation at 38 kHz, preventing the DSB-SC
+    // stereo subcarrier from aliasing into the audio band after decimation.
+    lpr: [f32; 5],
 
     // ── L-R low-pass filter (same design) ────────────────────────────────────
-    lmr_s1: f32,
-    lmr_s2: f32,
+    lmr: [f32; 5],
 
     /// Coefficient for both LP filters: `exp(-2π · 15000 / sample_rate)`.
     lp_alpha: f32,
@@ -122,10 +122,8 @@ impl StereoFmDecoder {
             pilot_level: 0.0,
             pilot_slow_alpha,
 
-            lpr_s1: 0.0,
-            lpr_s2: 0.0,
-            lmr_s1: 0.0,
-            lmr_s2: 0.0,
+            lpr: [0.0; 5],
+            lmr: [0.0; 5],
             lp_alpha,
 
             deemph_alpha,
@@ -182,18 +180,24 @@ impl StereoFmDecoder {
             self.pilot_level = self.pilot_slow_alpha * self.pilot_level
                 + (1.0 - self.pilot_slow_alpha) * instantaneous_amplitude;
 
-            // ── L+R: low-pass composite to audio baseband ─────────────────────
-            self.lpr_s1 = self.lp_alpha * self.lpr_s1 + (1.0 - self.lp_alpha) * composite;
-            self.lpr_s2 = self.lp_alpha * self.lpr_s2 + (1.0 - self.lp_alpha) * self.lpr_s1;
-            let lpr = self.lpr_s2;
+            // ── L+R: low-pass composite to audio baseband (5-stage IIR) ──────
+            let mut v = composite;
+            for s in &mut self.lpr {
+                *s = self.lp_alpha * *s + (1.0 - self.lp_alpha) * v;
+                v = *s;
+            }
+            let lpr = v;
 
-            // ── L-R: mix with 2× pilot reference, then low-pass ──────────────
+            // ── L-R: mix with 2× pilot reference, then low-pass (5-stage) ────
             // 38 kHz reference: cos(2θ) = 2cos²(θ) − 1
             let cos2 = 2.0 * cos_p * cos_p - 1.0;
             let mixed = composite * 2.0 * cos2;
-            self.lmr_s1 = self.lp_alpha * self.lmr_s1 + (1.0 - self.lp_alpha) * mixed;
-            self.lmr_s2 = self.lp_alpha * self.lmr_s2 + (1.0 - self.lp_alpha) * self.lmr_s1;
-            let lmr = self.lmr_s2;
+            let mut v = mixed;
+            for s in &mut self.lmr {
+                *s = self.lp_alpha * *s + (1.0 - self.lp_alpha) * v;
+                v = *s;
+            }
+            let lmr = v;
 
             // ── Resampler: emit one audio frame per integer phase crossing ────
             self.phase_acc += self.phase_step;
@@ -267,17 +271,23 @@ impl StereoFmDecoder {
             self.pilot_level = self.pilot_slow_alpha * self.pilot_level
                 + (1.0 - self.pilot_slow_alpha) * instantaneous_amplitude;
 
-            // ── L+R ───────────────────────────────────────────────────────────
-            self.lpr_s1 = self.lp_alpha * self.lpr_s1 + (1.0 - self.lp_alpha) * composite;
-            self.lpr_s2 = self.lp_alpha * self.lpr_s2 + (1.0 - self.lp_alpha) * self.lpr_s1;
-            let lpr = self.lpr_s2;
+            // ── L+R (5-stage IIR LP) ──────────────────────────────────────────
+            let mut v = composite;
+            for s in &mut self.lpr {
+                *s = self.lp_alpha * *s + (1.0 - self.lp_alpha) * v;
+                v = *s;
+            }
+            let lpr = v;
 
-            // ── L-R ───────────────────────────────────────────────────────────
+            // ── L-R (5-stage IIR LP) ──────────────────────────────────────────
             let cos2 = 2.0 * cos_p * cos_p - 1.0;
             let mixed = composite * 2.0 * cos2;
-            self.lmr_s1 = self.lp_alpha * self.lmr_s1 + (1.0 - self.lp_alpha) * mixed;
-            self.lmr_s2 = self.lp_alpha * self.lmr_s2 + (1.0 - self.lp_alpha) * self.lmr_s1;
-            let lmr = self.lmr_s2;
+            let mut v = mixed;
+            for s in &mut self.lmr {
+                *s = self.lp_alpha * *s + (1.0 - self.lp_alpha) * v;
+                v = *s;
+            }
+            let lmr = v;
 
             self.phase_acc += self.phase_step;
             while self.phase_acc >= 1.0 {
@@ -308,10 +318,8 @@ impl StereoFmDecoder {
         self.pilot_phase = 0.0;
         self.pilot_i = 0.0;
         self.pilot_level = 0.0;
-        self.lpr_s1 = 0.0;
-        self.lpr_s2 = 0.0;
-        self.lmr_s1 = 0.0;
-        self.lmr_s2 = 0.0;
+        self.lpr = [0.0; 5];
+        self.lmr = [0.0; 5];
         self.deemph_l = 0.0;
         self.deemph_r = 0.0;
         self.phase_acc = 0.0;

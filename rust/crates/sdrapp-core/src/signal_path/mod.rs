@@ -41,7 +41,9 @@ use crate::dsp::{
 use crate::sample::{IqSample, StereoFrame};
 
 pub(super) const FFT_SIZE: usize = 2048;
-const AUDIO_FRAME_SIZE: usize = 1024;
+// Smaller frame size = more frequent ring-buffer refills = fewer underruns.
+// 256 samples @ 48 kHz = 5.3 ms per chunk (was 1024 = 21.3 ms).
+const AUDIO_FRAME_SIZE: usize = 256;
 
 /// Manages the running signal path tasks.
 pub struct SignalPath {
@@ -503,6 +505,11 @@ impl SignalPath {
                     Ok(b) => b,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(dropped = n, "signal path lagged — dropped batches");
+                        // Reset demodulator state so stale `prev` doesn't produce
+                        // a huge phase-jump click on the next received batch.
+                        demod.reset();
+                        rds.reset();
+                        audio_accumulator.clear();
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {

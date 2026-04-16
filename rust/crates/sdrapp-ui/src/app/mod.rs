@@ -312,12 +312,13 @@ impl eframe::App for SdrApp {
 
         // Right panel (scrollable so controls are always reachable)
         egui::SidePanel::right("right_panel")
-            .min_width(170.0)
-            .max_width(220.0)
+            .min_width(190.0)
+            .max_width(260.0)
             .frame(
                 egui::Frame::none()
                     .fill(theme::PANEL_BG)
-                    .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
+                    // Extra right margin keeps text clear of the scrollbar track
+                    .inner_margin(egui::Margin { left: 8.0, right: 18.0, top: 6.0, bottom: 6.0 }),
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()

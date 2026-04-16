@@ -2,7 +2,7 @@
 
 use egui::{Color32, RichText, Stroke, Ui, Vec2};
 
-use sdrapp_core::signal_path::{DisplayCmd, ReceiverCmd, RecordingMode, SignalPathCommand};
+use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd, RecordingMode, SignalPathCommand};
 use sdrapp_recorder::RecorderCommand;
 
 use super::super::SdrApp;
@@ -137,6 +137,55 @@ impl SdrApp {
         // Peak level decays each frame; in real wiring this reads from AudioSink
         let level = self.vu_peak * self.config.ui.volume;
         self.draw_vu_meter(ui, level, level * 0.92); // slight L/R difference for visual interest
+
+        // ── RDS (FM only) ─────────────────────────────────────────────────────
+        let (demod_mode, rds_ps, rds_pty, rds_ta, rds_rt) = {
+            let s = self.shared.read();
+            let pty = s.rds.pty.map(|c| sdrapp_core::dsp::rds::pty_to_str(c).to_string());
+            (s.demod.demod_mode, s.rds.ps_name.clone(), pty, s.rds.ta, s.rds.rt.clone())
+        };
+
+        if demod_mode == DemodMode::Wbfm {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            ui.label(RichText::new("RDS").color(theme::TEXT_MUTED).small());
+            ui.add_space(4.0);
+
+            if rds_ps.is_some() || rds_rt.is_some() {
+                // Station name + PTY + TA badge
+                ui.horizontal(|ui| {
+                    if let Some(ref ps) = rds_ps {
+                        ui.label(RichText::new(ps).color(theme::TEXT_PRIMARY).strong());
+                    }
+                    if let Some(ref pty) = rds_pty {
+                        ui.label(RichText::new(pty).color(theme::TEXT_MUTED).small());
+                    }
+                    if rds_ta {
+                        ui.label(RichText::new("TA").color(theme::AMBER).small().strong());
+                    }
+                });
+                // RadioText (scrolling song/program text)
+                if let Some(ref rt) = rds_rt {
+                    let rt_display = if rt.len() > 28 {
+                        format!("{}…", &rt[..27])
+                    } else {
+                        rt.clone()
+                    };
+                    ui.label(
+                        RichText::new(rt_display).color(theme::TEXT_MUTED).small(),
+                    )
+                    .on_hover_text(rt.as_str());
+                }
+            } else {
+                ui.label(
+                    RichText::new("Waiting for signal…")
+                        .color(theme::TEXT_DISABLED)
+                        .small(),
+                );
+            }
+        }
 
         ui.add_space(8.0);
         ui.separator();
@@ -387,14 +436,16 @@ impl SdrApp {
         };
 
         if let Some(ref device_name) = midi_device {
-            // Connected
+            // Connected — draw a real circle (● glyph is missing from the embedded font)
             ui.horizontal(|ui| {
-                ui.label(RichText::new("●").color(theme::STATUS_OK));
-                ui.label(
-                    RichText::new(device_name)
-                        .color(theme::TEXT_PRIMARY)
-                        .small(),
-                );
+                status_dot(ui, theme::STATUS_OK);
+                // Truncate long device names so they don't overflow past the scrollbar
+                let name = if device_name.len() > 22 {
+                    format!("{}…", &device_name[..21])
+                } else {
+                    device_name.clone()
+                };
+                ui.label(RichText::new(name).color(theme::TEXT_PRIMARY).small());
             });
 
             // Page display with navigation buttons
@@ -414,12 +465,8 @@ impl SdrApp {
             });
         } else {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("●").color(theme::TEXT_DISABLED));
-                ui.label(
-                    RichText::new("Not connected")
-                        .color(theme::TEXT_MUTED)
-                        .small(),
-                );
+                status_dot(ui, theme::TEXT_DISABLED);
+                ui.label(RichText::new("Not connected").color(theme::TEXT_MUTED).small());
             });
             ui.label(
                 RichText::new("Connect nanoKontrol2 via USB")
@@ -567,4 +614,10 @@ impl SdrApp {
                 "Peak: {peak_db:.1} dBFS\nRMS: {rms_db:.1} dBFS"
             ));
     }
+}
+
+/// Draw a small inline status dot (avoids the ● glyph missing from the embedded font).
+fn status_dot(ui: &mut egui::Ui, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.0, color);
 }
