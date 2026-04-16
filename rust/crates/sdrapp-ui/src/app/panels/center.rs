@@ -786,49 +786,53 @@ impl SdrApp {
                 .on_hover_text("Estimated signal-to-noise ratio in the active demod channel");
             }
 
-            // Waterfall visibility controls
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Colormap picker
-                let colormap_label = self.config.ui.waterfall_colormap.as_str();
-                egui::ComboBox::from_id_salt("wf_colormap")
-                    .selected_text(RichText::new(colormap_label).small())
-                    .width(72.0)
-                    .show_ui(ui, |ui| {
-                        for name in ["Thermal", "Inferno", "Grayscale", "Classic"] {
-                            let sel = self.config.ui.waterfall_colormap == name;
-                            if ui.selectable_label(sel, name).clicked() && !sel {
-                                let cm: crate::theme::WaterfallColormap = match name {
-                                    "Grayscale" => crate::theme::WaterfallColormap::Grayscale,
-                                    "Inferno" => crate::theme::WaterfallColormap::Inferno,
-                                    "Classic" => crate::theme::WaterfallColormap::Classic,
-                                    _ => crate::theme::WaterfallColormap::Thermal,
-                                };
-                                self.waterfall.set_colormap(cm.build());
-                                self.config.ui.waterfall_colormap = name.into();
-                                self.config_dirty = true;
-                            }
+        });
+
+        // Row 4: Waterfall visibility controls
+        ui.add_space(1.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("WF").color(theme::TEXT_MUTED).small());
+
+            // WF Level slider
+            let mut wf_lv = self.wf_level;
+            let wf_resp = ui
+                .add(
+                    egui::Slider::new(&mut wf_lv, -120.0_f32..=-40.0_f32)
+                        .step_by(1.0)
+                        .text(RichText::new("Level").small())
+                        .clamping(egui::SliderClamping::Always),
+                )
+                .on_hover_text("Waterfall floor level in dBFS — shift down to reveal weaker signals");
+            if wf_resp.changed() {
+                self.wf_level = wf_lv;
+                self.config.ui.wf_level = wf_lv;
+                self.config_dirty = true;
+            }
+
+            ui.add_space(8.0);
+            ui.label(RichText::new("Palette").color(theme::TEXT_MUTED).small());
+
+            // Colormap picker
+            let colormap_label = self.config.ui.waterfall_colormap.clone();
+            egui::ComboBox::from_id_salt("wf_colormap")
+                .selected_text(RichText::new(colormap_label.as_str()).small())
+                .width(72.0)
+                .show_ui(ui, |ui| {
+                    for name in ["Thermal", "Inferno", "Grayscale", "Classic"] {
+                        let sel = self.config.ui.waterfall_colormap == name;
+                        if ui.selectable_label(sel, name).clicked() && !sel {
+                            let cm: crate::theme::WaterfallColormap = match name {
+                                "Grayscale" => crate::theme::WaterfallColormap::Grayscale,
+                                "Inferno" => crate::theme::WaterfallColormap::Inferno,
+                                "Classic" => crate::theme::WaterfallColormap::Classic,
+                                _ => crate::theme::WaterfallColormap::Thermal,
+                            };
+                            self.waterfall.set_colormap(cm.build());
+                            self.config.ui.waterfall_colormap = name.into();
+                            self.config_dirty = true;
                         }
-                    });
-                ui.label(RichText::new("Palette").color(theme::TEXT_MUTED).small());
-
-                ui.add_space(8.0);
-
-                // WF Level slider
-                let mut wf_lv = self.wf_level;
-                let wf_resp = ui
-                    .add(
-                        egui::Slider::new(&mut wf_lv, -120.0_f32..=-40.0_f32)
-                            .step_by(1.0)
-                            .text(RichText::new("WF Level").small())
-                            .clamping(egui::SliderClamping::Always),
-                    )
-                    .on_hover_text("Waterfall floor level in dBFS — shift down to reveal weaker signals");
-                if wf_resp.changed() {
-                    self.wf_level = wf_lv;
-                    self.config.ui.wf_level = wf_lv;
-                    self.config_dirty = true;
-                }
-            });
+                    }
+                });
         });
 
         // ── Resizable split divider ───────────────────────────────────────────
@@ -876,35 +880,66 @@ impl SdrApp {
         // ── Waterfall ─────────────────────────────────────────────────────────
         let waterfall_resp = self.waterfall.show(ui, &ctx);
 
-        // ── Waterfall hover crosshair + frequency tooltip ─────────────────────
+        // ── Synchronized crosshair: spectrum ↔ waterfall ─────────────────────
+        // Whichever view the cursor is in, project the same frequency line into both.
         {
             let wf_rect = waterfall_resp.rect;
-            if let Some(hover_pos) = ctx.pointer_hover_pos() {
-                if wf_rect.contains(hover_pos) {
-                    let t = ((hover_pos.x - wf_rect.left()) / wf_rect.width()).clamp(0.0, 1.0);
-                    let low = freq.saturating_sub(span) as f64;
-                    let high = freq as f64 + span as f64;
-                    let hover_hz = (low + t as f64 * (high - low)).round() as u64;
-                    let painter = ui.painter_at(wf_rect);
-                    // Vertical crosshair line
-                    painter.line_segment(
+            let low = freq.saturating_sub(span) as f64;
+            let high = freq as f64 + span as f64;
+
+            // Determine normalized [0,1] x from whichever rect the pointer is in.
+            let hover_t: Option<f32> = ctx.pointer_hover_pos().and_then(|p| {
+                if wf_rect.contains(p) {
+                    Some(((p.x - wf_rect.left()) / wf_rect.width()).clamp(0.0, 1.0))
+                } else if spectrum_rect.contains(p) {
+                    Some(((p.x - spectrum_rect.left()) / spectrum_rect.width()).clamp(0.0, 1.0))
+                } else {
+                    None
+                }
+            });
+
+            if let Some(t) = hover_t {
+                let hover_hz = (low + t as f64 * (high - low)).round() as u64;
+                let mhz = hover_hz as f64 / 1_000_000.0;
+                let label = format!("{:.4} MHz", mhz);
+                let font = egui::FontId::proportional(11.0);
+                let line_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 70);
+                let text_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200);
+
+                // Always draw the crosshair in the waterfall
+                let wf_x = wf_rect.left() + t * wf_rect.width();
+                let wf_painter = ui.painter_at(wf_rect);
+                wf_painter.line_segment(
+                    [egui::pos2(wf_x, wf_rect.top()), egui::pos2(wf_x, wf_rect.bottom())],
+                    egui::Stroke::new(1.0, line_color),
+                );
+                // Frequency label in top corner of waterfall
+                let label_x = if t > 0.75 { wf_x - 4.0 } else { wf_x + 4.0 };
+                let label_align = if t > 0.75 { egui::Align2::RIGHT_TOP } else { egui::Align2::LEFT_TOP };
+                wf_painter.text(
+                    egui::pos2(label_x, wf_rect.top() + 4.0),
+                    label_align,
+                    &label,
+                    font,
+                    text_color,
+                );
+
+                // When hovering over the waterfall, also draw a plain line in the spectrum.
+                // (When hovering the spectrum, the SpectrumWidget already draws its own
+                // full-featured crosshair via hover_pos.)
+                let cursor_in_spectrum = ctx
+                    .pointer_hover_pos()
+                    .map(|p| spectrum_rect.contains(p))
+                    .unwrap_or(false);
+                if !cursor_in_spectrum {
+                    let sp_x = spectrum_rect.left() + t * spectrum_rect.width();
+                    let sp_painter = ui.painter_at(spectrum_rect);
+                    sp_painter.line_segment(
                         [
-                            egui::pos2(hover_pos.x, wf_rect.top()),
-                            egui::pos2(hover_pos.x, wf_rect.bottom()),
+                            egui::pos2(sp_x, spectrum_rect.top()),
+                            egui::pos2(sp_x, spectrum_rect.bottom()),
                         ],
-                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 80)),
-                    );
-                    // Frequency label just above the cursor
-                    let mhz = hover_hz as f64 / 1_000_000.0;
-                    let label = format!("{:.4} MHz", mhz);
-                    let font = egui::FontId::proportional(11.0);
-                    let label_pos = egui::pos2(hover_pos.x + 4.0, wf_rect.top() + 4.0);
-                    painter.text(
-                        label_pos,
-                        egui::Align2::LEFT_TOP,
-                        &label,
-                        font,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                        egui::Stroke::new(1.0, line_color),
                     );
                 }
             }

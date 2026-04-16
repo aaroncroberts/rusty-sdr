@@ -20,7 +20,7 @@ pub enum MidiKeyKind {
 /// Mirrors MidiAction but is serde-friendly as a string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MidiActionTag {
-    // ── Tuning ────────────────────────────────────────────────────────────────
+    // ── Tuning (button) ───────────────────────────────────────────────────────
     TuneCoarseUp,
     TuneCoarseDown,
     TuneMediumUp,
@@ -29,6 +29,12 @@ pub enum MidiActionTag {
     TuneFineDown,
     TuneUltraFineUp,
     TuneUltraFineDown,
+
+    // ── Tuning (knob/fader — relative delta) ─────────────────────────────────
+    TuneKnobCoarse,    // 1 MHz / CC unit
+    TuneKnobMedium,    // 100 kHz / CC unit
+    TuneKnobFine,      // 10 kHz / CC unit
+    TuneKnobUltraFine, // 1 kHz / CC unit
 
     // ── Demod & signal ────────────────────────────────────────────────────────
     DemodModeCycle,

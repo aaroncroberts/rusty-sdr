@@ -3,7 +3,7 @@
 /// Every action the MIDI controller can trigger.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidiAction {
-    // ── Tuning ────────────────────────────────────────────────────────────────
+    // ── Tuning (button — fixed step) ─────────────────────────────────────────
     TuneCoarseUp,      // +1 MHz
     TuneCoarseDown,    // -1 MHz
     TuneMediumUp,      // +100 kHz
@@ -12,6 +12,13 @@ pub enum MidiAction {
     TuneFineDown,      // -10 kHz
     TuneUltraFineUp,   // +1 kHz
     TuneUltraFineDown, // -1 kHz
+
+    // ── Tuning (knob/fader — relative delta × hz_per_unit) ───────────────────
+    // Controller tracks last CC value; delta = new − old → tune by delta × scale.
+    TuneKnobCoarse,     // 1 000 000 Hz / CC unit
+    TuneKnobMedium,     //   100 000 Hz / CC unit
+    TuneKnobFine,       //    10 000 Hz / CC unit
+    TuneKnobUltraFine,  //     1 000 Hz / CC unit
 
     // ── Demod & signal ────────────────────────────────────────────────────────
     DemodModeCycle, // WBFM → NFM → AM → WBFM

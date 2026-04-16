@@ -103,6 +103,8 @@ impl MidiController {
             let mut current_page = config.current_page;
             // Tracks when MIDI Learn mode was armed, for 10-second auto-cancel.
             let mut learn_armed_at: Option<tokio::time::Instant> = None;
+            // Last seen value per CC number — used to compute relative delta for knob tuning.
+            let mut last_cc_value: std::collections::HashMap<u8, u8> = std::collections::HashMap::new();
 
             loop {
                 // When MIDI Learn is armed, poll every 250 ms so the timeout fires
@@ -216,6 +218,34 @@ impl MidiController {
                         MidiAction::TuneUltraFineDown => {
                             let freq = shared.read().center_freq_hz.saturating_sub(1_000).max(1);
                             let _ = signal_cmd_tx.try_send(ReceiverCmd::SetFrequency(freq).into());
+                        }
+
+                        // ── Knob/fader relative tuning ────────────────────────
+                        // Delta = current CC value − last seen value.
+                        // Positive delta → tune up; negative → tune down.
+                        MidiAction::TuneKnobCoarse
+                        | MidiAction::TuneKnobMedium
+                        | MidiAction::TuneKnobFine
+                        | MidiAction::TuneKnobUltraFine => {
+                            let hz_per_unit: i64 = match action {
+                                MidiAction::TuneKnobCoarse => 1_000_000,
+                                MidiAction::TuneKnobMedium => 100_000,
+                                MidiAction::TuneKnobFine => 10_000,
+                                _ => 1_000,
+                            };
+                            let last = last_cc_value.get(&key.number).copied().unwrap_or(value);
+                            let delta = value as i32 - last as i32;
+                            if delta != 0 {
+                                let tune_delta = delta as i64 * hz_per_unit;
+                                let freq = shared.read().center_freq_hz;
+                                let new_freq = if tune_delta >= 0 {
+                                    freq.saturating_add(tune_delta as u64)
+                                } else {
+                                    freq.saturating_sub((-tune_delta) as u64).max(1)
+                                };
+                                let _ = signal_cmd_tx
+                                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                            }
                         }
 
                         // ── Demod & step size cycling ─────────────────────────
@@ -388,6 +418,12 @@ impl MidiController {
                             tracing::trace!(?key, value, "unmapped MIDI input");
                         }
                     }
+
+                    // Track last CC value for relative-delta knob tuning.
+                    use crate::config::MidiKeyKind;
+                    if key.kind == MidiKeyKind::ControlChange {
+                        last_cc_value.insert(key.number, value);
+                    }
                 }
             }
         });
@@ -545,6 +581,10 @@ fn tag_to_action(tag: &MidiActionTag) -> MidiAction {
         MidiActionTag::TuneFineDown => MidiAction::TuneFineDown,
         MidiActionTag::TuneUltraFineUp => MidiAction::TuneUltraFineUp,
         MidiActionTag::TuneUltraFineDown => MidiAction::TuneUltraFineDown,
+        MidiActionTag::TuneKnobCoarse => MidiAction::TuneKnobCoarse,
+        MidiActionTag::TuneKnobMedium => MidiAction::TuneKnobMedium,
+        MidiActionTag::TuneKnobFine => MidiAction::TuneKnobFine,
+        MidiActionTag::TuneKnobUltraFine => MidiAction::TuneKnobUltraFine,
         MidiActionTag::DemodModeCycle => MidiAction::DemodModeCycle,
         MidiActionTag::StepSizeCycle => MidiAction::StepSizeCycle,
         MidiActionTag::VolumeSet => MidiAction::VolumeSet(0.0),

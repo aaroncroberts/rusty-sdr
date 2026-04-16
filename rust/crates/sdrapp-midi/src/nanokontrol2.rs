@@ -96,9 +96,23 @@ pub fn default_bindings() -> Vec<((usize, MidiKey), MidiActionTag)> {
     bind!(0, note(66), MidiActionTag::BookmarkSave);
     bind!(0, note(67), MidiActionTag::DemodModeCycle);
 
-    // Knobs (CC 16–23): fine tune nudges via absolute position
-    // Knob 0: ZoomSet (absolute spectrum zoom)
-    bind!(0, cc(16), MidiActionTag::ZoomSet);
+    // Faders (CC 0–7): absolute controls on Page 0
+    // Fader 0 already bound above (VolumeSet)
+    bind!(0, cc(1), MidiActionTag::ZoomSet);         // Fader 1: zoom
+    bind!(0, cc(2), MidiActionTag::WaterfallSpeedSet); // Fader 2: WF speed
+    bind!(0, cc(3), MidiActionTag::SquelchSet);      // Fader 3: squelch
+
+    // Knobs (CC 16–23): relative frequency tuning — each knob tunes at a different speed.
+    // Turning right = tune up, turning left = tune down.
+    // Speed is proportional to how fast/far you turn.
+    bind!(0, cc(16), MidiActionTag::TuneKnobCoarse);     // Knob 0: 1 MHz / unit
+    bind!(0, cc(17), MidiActionTag::TuneKnobMedium);     // Knob 1: 100 kHz / unit
+    bind!(0, cc(18), MidiActionTag::TuneKnobFine);       // Knob 2: 10 kHz / unit
+    bind!(0, cc(19), MidiActionTag::TuneKnobUltraFine);  // Knob 3: 1 kHz / unit
+    bind!(0, cc(20), MidiActionTag::VolumeSet);          // Knob 4: volume
+    bind!(0, cc(21), MidiActionTag::ZoomSet);            // Knob 5: zoom
+    bind!(0, cc(22), MidiActionTag::WaterfallSpeedSet);  // Knob 6: WF speed
+    bind!(0, cc(23), MidiActionTag::SquelchSet);         // Knob 7: squelch
 
     // ══════════════════════════════════════════════════════════════════════════
     // Page 1 — DISPLAY: spectrum zoom, waterfall speed, volume, squelch
