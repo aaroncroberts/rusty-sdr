@@ -9,7 +9,7 @@ use crate::{frequency::FrequencyWidget, knob::KnobWidget, spectrum::SpectrumWidg
 
 impl SdrApp {
     pub(in crate::app) fn center_panel(&mut self, ui: &mut Ui) {
-        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz, is_running, fft_clipping, peak_hold_enabled, peak_hold_decay_db, hw_center_freq, scanner_running, tune_step_hz) = {
+        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz, is_running, fft_clipping, peak_hold_enabled, peak_hold_decay_db, hw_center_freq, scanner_running, tune_step_hz, signal_level_dbfs) = {
             let s = self.shared.read();
             (
                 s.fft.fft_magnitudes.clone(),
@@ -24,6 +24,7 @@ impl SdrApp {
                 s.center_freq_hz,
                 s.scanner.scan_running,
                 s.demod.tune_step_hz,
+                s.fft.signal_level_dbfs,
             )
         };
 
@@ -138,9 +139,37 @@ impl SdrApp {
         };
 
         // Click-to-tune: point click sets VFO to clicked frequency.
+        // Snap-to-peak: if a local FFT maximum is within ±5 bins of the click
+        // AND is >3 dB stronger than the raw click bin, snap to the carrier.
         if spectrum_resp.clicked() {
             if let Some(click_pos) = spectrum_resp.interact_pointer_pos() {
-                let new_freq = x_to_freq(click_pos.x);
+                let raw_freq = x_to_freq(click_pos.x);
+                let new_freq = if !fft_data.is_empty() && spectrum_rect.width() > 0.0 {
+                    let n = fft_data.len();
+                    let t = ((click_pos.x - spectrum_rect.left()) / spectrum_rect.width())
+                        .clamp(0.0, 1.0);
+                    let raw_bin = (t * (n - 1) as f32).round() as usize;
+                    let lo = raw_bin.saturating_sub(5);
+                    let hi = (raw_bin + 5).min(n - 1);
+                    // Find the strongest bin in the search window
+                    let (peak_bin, peak_db) = (lo..=hi).fold(
+                        (raw_bin, fft_data[raw_bin]),
+                        |(best_b, best_v), b| {
+                            if fft_data[b] > best_v { (b, fft_data[b]) } else { (best_b, best_v) }
+                        },
+                    );
+                    if peak_db > fft_data[raw_bin] + 3.0 {
+                        // Snap to peak bin's center frequency
+                        let peak_t = peak_bin as f64 / (n - 1) as f64;
+                        let freq_lo = freq.saturating_sub(span) as f64;
+                        let freq_hi = (freq + span) as f64;
+                        (freq_lo + peak_t * (freq_hi - freq_lo)) as u64
+                    } else {
+                        raw_freq
+                    }
+                } else {
+                    raw_freq
+                };
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
@@ -226,6 +255,47 @@ impl SdrApp {
         } else {
             (freq, freq) // zero-width → hidden
         };
+
+        // ── Peak detection (once per frame) ──────────────────────────────────
+        // Finds local maxima above the noise floor and provides them to both the
+        // SpectrumWidget (for triangle markers) and the click-to-tune snap logic.
+        //
+        // Algorithm:
+        //  1. Noise floor estimate = 20th-percentile bin (robust against signals)
+        //  2. A bin is a peak if: value > both neighbours AND value > floor + 8 dB
+        //  3. Minimum inter-peak spacing = n/32 bins (prevents marking every ripple)
+        let freq_lo_hz = freq.saturating_sub(span) as f64;
+        let freq_hi_hz = (freq + span) as f64;
+        let peak_freqs_hz: Vec<u64> = if is_running && fft_data.len() > 2 {
+            let n = fft_data.len();
+            // Noise floor: 20th-percentile of bins
+            let mut sorted = fft_data.clone();
+            sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let noise_floor = sorted[n / 5];
+            let threshold = noise_floor + 8.0;
+            let min_spacing = (n / 32).max(2);
+
+            let mut peaks: Vec<u64> = Vec::new();
+            let mut last_peak_bin: Option<usize> = None;
+            for i in 1..n - 1 {
+                if fft_data[i] >= threshold
+                    && fft_data[i] > fft_data[i - 1]
+                    && fft_data[i] >= fft_data[i + 1]
+                {
+                    // Enforce minimum spacing
+                    if last_peak_bin.is_none_or(|lb| i - lb >= min_spacing) {
+                        let t = i as f64 / (n - 1) as f64;
+                        let hz = (freq_lo_hz + t * (freq_hi_hz - freq_lo_hz)) as u64;
+                        peaks.push(hz);
+                        last_peak_bin = Some(i);
+                    }
+                }
+            }
+            peaks
+        } else {
+            vec![]
+        };
+
         SpectrumWidget {
             fft_data: &fft_data,
             db_range,
@@ -237,6 +307,7 @@ impl SdrApp {
             show_band_plan: band_plan_enabled,
             hover_pos: spectrum_hover,
             tune_step_hz,
+            peak_marker_hz: &peak_freqs_hz,
         }
         .show(&mut spectrum_ui);
 
@@ -278,6 +349,76 @@ impl SdrApp {
             } else {
                 self.last_clipping_time = None;
             }
+        }
+
+        // ── S-meter: signal strength bar ─────────────────────────────────────
+        // Shows peak dBFS within the current filter passband. Only rendered
+        // when the signal path is running so it doesn't mislead on idle startup.
+        if is_running {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("SIG")
+                        .color(theme::TEXT_MUTED)
+                        .small()
+                        .monospace(),
+                );
+                // Bar occupies the remaining width minus the dBFS label on the right.
+                let dbfs_label = format!("{:+.0} dBFS", signal_level_dbfs.max(-120.0));
+                let label_w = 58.0_f32;
+                let bar_w = (ui.available_width() - label_w - 6.0).max(20.0);
+                let bar_h = 8.0_f32;
+                let (bar_rect, _) = ui.allocate_exact_size(
+                    egui::Vec2::new(bar_w, bar_h),
+                    egui::Sense::hover(),
+                );
+                if ui.is_rect_visible(bar_rect) {
+                    let painter = ui.painter();
+                    // Dark background track
+                    painter.rect_filled(bar_rect, 2.0, egui::Color32::from_rgb(18, 24, 30));
+                    // Filled portion: proportion = (level - floor) / range
+                    // We map -120 dBFS → 0% width, 0 dBFS → 100% width.
+                    let fill = ((signal_level_dbfs + 120.0) / 120.0).clamp(0.0, 1.0);
+                    let fill_w = fill * bar_rect.width();
+                    if fill_w >= 1.0 {
+                        let fill_color = if signal_level_dbfs >= -60.0 {
+                            egui::Color32::from_rgb(30, 200, 80)   // green — strong signal
+                        } else if signal_level_dbfs >= -80.0 {
+                            egui::Color32::from_rgb(210, 170, 0)   // yellow — marginal
+                        } else {
+                            egui::Color32::from_rgb(70, 85, 100)   // gray — noise floor
+                        };
+                        let fill_rect = egui::Rect::from_min_size(
+                            bar_rect.min,
+                            egui::Vec2::new(fill_w, bar_rect.height()),
+                        );
+                        painter.rect_filled(fill_rect, 2.0, fill_color);
+                    }
+                    // -60 dBFS threshold marker (green/yellow boundary)
+                    let marker_t = 60.0 / 120.0;
+                    let mx = bar_rect.left() + marker_t * bar_rect.width();
+                    painter.line_segment(
+                        [
+                            egui::Pos2::new(mx, bar_rect.top()),
+                            egui::Pos2::new(mx, bar_rect.bottom()),
+                        ],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)),
+                    );
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(dbfs_label)
+                        .color(if signal_level_dbfs >= -60.0 {
+                            egui::Color32::from_rgb(30, 200, 80)
+                        } else if signal_level_dbfs >= -80.0 {
+                            egui::Color32::from_rgb(210, 170, 0)
+                        } else {
+                            theme::TEXT_MUTED
+                        })
+                        .small()
+                        .monospace(),
+                );
+            });
         }
 
         // ── Display controls toolbar ──────────────────────────────────────────

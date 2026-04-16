@@ -524,10 +524,11 @@ impl SignalPath {
                         for (avg, &new) in fft_avg_buf.iter_mut().zip(mags.iter()) {
                             *avg = alpha * new + (1.0 - alpha) * *avg;
                         }
-                        // SNR: peak in center ±bw_bins vs median of remaining bins.
-                        // For WBFM the window is widened by 1.5× to capture
-                        // stereo-subcarrier sidebands that sit outside a narrow window.
-                        let snr = {
+                        // Passband metrics: SNR and signal level for S-meter.
+                        // half_bw_bins is the half-bandwidth of the active demod
+                        // channel expressed in FFT bins. For WBFM it's widened by
+                        // 1.5× to capture stereo-subcarrier sidebands.
+                        let (snr, signal_level_dbfs) = {
                             let n = fft_avg_buf.len();
                             let center = n / 2;
                             let (bw_hz, is_wbfm) = {
@@ -550,10 +551,17 @@ impl SignalPath {
                                     .max(2)
                                     .min(n / 4);
                             if is_wbfm {
-                                // Widen by 1.5× for WBFM to include stereo sidebands.
                                 half_bw_bins = (half_bw_bins * 3 / 2).min(n / 4);
                             }
-                            compute_snr_db(&fft_avg_buf, center, half_bw_bins)
+                            let snr = compute_snr_db(&fft_avg_buf, center, half_bw_bins);
+                            // Peak value within the passband → drives the S-meter.
+                            let lo = center.saturating_sub(half_bw_bins);
+                            let hi = (center + half_bw_bins + 1).min(n);
+                            let sig = fft_avg_buf[lo..hi]
+                                .iter()
+                                .cloned()
+                                .fold(f32::NEG_INFINITY, f32::max);
+                            (snr, sig)
                         };
                         let clipping = any_bin_clipping(&fft_avg_buf);
                         {
@@ -561,6 +569,7 @@ impl SignalPath {
                             s.fft.fft_magnitudes = fft_avg_buf.clone();
                             s.fft.snr_db = Some(snr);
                             s.fft.fft_clipping_detected = clipping;
+                            s.fft.signal_level_dbfs = signal_level_dbfs;
                         }
                         if let Some(ref ctx) = egui_ctx {
                             ctx.request_repaint();

@@ -155,6 +155,10 @@ pub struct FftDisplayState {
     pub peak_hold_enabled: bool,
     /// Peak-hold decay rate in dB per display frame (default 0.5).
     pub peak_hold_decay_db: f32,
+    /// Peak signal level (dBFS) within the current filter passband, updated
+    /// each FFT frame by the signal path. Used to drive the S-meter bar.
+    /// -120.0 when not running or no signal in passband.
+    pub signal_level_dbfs: f32,
 }
 
 /// RDS (Radio Data System) decoded state (WBFM only).

@@ -46,6 +46,10 @@ pub struct SpectrumWidget<'a> {
     /// operator can see the granularity of scroll-tuning at a glance.
     /// Pass 0 to suppress the step markers.
     pub tune_step_hz: u64,
+    /// Frequencies (Hz) of detected signal peaks — pre-computed by center.rs.
+    /// A small triangle marker is drawn above the spectrum trace at each position.
+    /// Empty slice = no markers drawn.
+    pub peak_marker_hz: &'a [u64],
 }
 
 impl<'a> SpectrumWidget<'a> {
@@ -255,6 +259,40 @@ impl<'a> SpectrumWidget<'a> {
                         Stroke::new(0.75, Color32::from_rgba_unmultiplied(200, 255, 230, 100)),
                     ));
                 }
+            }
+        }
+
+        // ── Peak signal markers ───────────────────────────────────────────────
+        // Small upward-pointing triangles above the trace at detected peak freqs.
+        // Drawn before the filter overlay so the overlay tint doesn't occlude them.
+        if !self.peak_marker_hz.is_empty() && freq_hi > freq_lo && n > 1 {
+            let freq_span = freq_hi - freq_lo;
+            let tri_h = 5.0_f32; // triangle height in pixels
+            let tri_w = 6.0_f32; // triangle base half-width
+            let marker_color = Color32::from_rgba_unmultiplied(80, 200, 255, 160);
+            for &peak_hz in self.peak_marker_hz {
+                if (peak_hz as f64) < freq_lo || (peak_hz as f64) > freq_hi {
+                    continue;
+                }
+                let t = ((peak_hz as f64 - freq_lo) / freq_span) as f32;
+                let cx = plot_rect.left() + t * plot_rect.width();
+
+                // Look up trace Y at this position to seat the marker on the signal.
+                let bin = (t * (n - 1) as f32).round() as usize;
+                let bin = bin.min(n - 1);
+                let trace_y = db_to_y(self.fft_data[bin], db_min, db_max, plot_rect);
+                let tip_y = (trace_y - 3.0).max(plot_rect.top() + 1.0);
+
+                // Upward triangle: tip at top, base below
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        Pos2::new(cx, tip_y),
+                        Pos2::new(cx - tri_w * 0.5, tip_y + tri_h),
+                        Pos2::new(cx + tri_w * 0.5, tip_y + tri_h),
+                    ],
+                    marker_color,
+                    Stroke::NONE,
+                ));
             }
         }
 
@@ -553,6 +591,7 @@ mod tests {
                     show_band_plan: true,
                     hover_pos: None,
                     tune_step_hz: 100_000,
+                    peak_marker_hz: &[],
                 }
                 .show(ui);
             });
