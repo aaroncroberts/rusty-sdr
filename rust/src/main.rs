@@ -170,11 +170,34 @@ fn main() -> anyhow::Result<()> {
                     "LowIF2MHz"   => sdrapp_sdrplay::IfMode::LowIf2MHz,
                     _             => sdrapp_sdrplay::IfMode::ZeroIf,
                 },
-            });
+            })
+            .with_shared(Arc::clone(&shared));
             let rx = src.subscribe();
             let iq_rec_rx = src.subscribe();
             let fa = Source::frequency_atomic(&src);
             let hw_tx = src.hardware_cmd_tx();
+            // Watch device status and update source_name in SharedState.
+            let mut status_rx = src.status_rx();
+            let shared_for_status = Arc::clone(&shared);
+            rt.spawn(async move {
+                loop {
+                    if status_rx.changed().await.is_err() {
+                        break; // sender dropped (source was stopped)
+                    }
+                    let status = status_rx.borrow().clone();
+                    let name = match &status {
+                        sdrapp_sdrplay::DeviceStatus::Running { serial, .. } =>
+                            format!("SDRplay RSPdx-R2 ({})", serial),
+                        sdrapp_sdrplay::DeviceStatus::Reconnecting { attempt, .. } =>
+                            format!("SDRplay RSPdx-R2 (reconnecting…  attempt {attempt})"),
+                        sdrapp_sdrplay::DeviceStatus::Disconnected =>
+                            "SDRplay RSPdx-R2 (disconnected)".into(),
+                        sdrapp_sdrplay::DeviceStatus::Connecting =>
+                            "SDRplay RSPdx-R2 (connecting…)".into(),
+                    };
+                    shared_for_status.write().source_name = Some(name);
+                }
+            });
             drop(src.start());
             _sdrplay_source = Some(src);
             (rx, iq_rec_rx, fa, Some(hw_tx))
@@ -281,10 +304,9 @@ fn main() -> anyhow::Result<()> {
 
                 if available {
                     tracing::info!("hardware device detected while running — hot-swapping source");
-                    let mut src = sdrapp_sdrplay::RspdxSource::new(sdrplay_cfg.clone());
+                    let mut src = sdrapp_sdrplay::RspdxSource::new(sdrplay_cfg.clone())
+                        .with_shared(Arc::clone(&shared_probe));
                     let new_rx = src.subscribe();
-                    // Capture the hardware command tx for the new device so the
-                    // signal path can restore frequency and gain after reconnect.
                     let new_hw_tx = src.hardware_cmd_tx();
                     drop(src.start());
                     *holder.lock() = Some(src);

@@ -75,6 +75,57 @@ impl Bookmark {
     }
 }
 
+/// A single timestamped entry in the device error log.
+#[derive(Clone)]
+pub struct ErrorEntry {
+    /// Unix timestamp (seconds) for display in the diagnostics panel.
+    pub timestamp_secs: u64,
+    pub message: String,
+}
+
+/// Real-time diagnostics for the active hardware device.
+///
+/// Written by the device thread; read by the UI diagnostics panel.
+/// Stored inside `SharedState` under the same `RwLock` as all other shared state.
+#[derive(Default, Clone)]
+pub struct DeviceDiagnostics {
+    /// Device serial number string (e.g. "RSPdxR2SN12345").
+    pub serial: String,
+    /// Hardware version byte reported by the API (7 = RSPdx-R2).
+    pub hw_ver: u8,
+    /// SDRplay API version string (e.g. "3.15").
+    pub api_version: String,
+    /// Human-readable status string: "Running", "Reconnecting (attempt 2)", etc.
+    pub status: String,
+    /// Total error count since the source was opened.
+    pub error_count: u32,
+    /// Ring buffer of the last 20 errors with timestamps.
+    pub error_log: std::collections::VecDeque<ErrorEntry>,
+}
+
+impl DeviceDiagnostics {
+    /// Append an error message to the ring buffer and increment the counter.
+    pub fn push_error(&mut self, msg: impl Into<String>) {
+        self.error_count += 1;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if self.error_log.len() >= 20 {
+            self.error_log.pop_front();
+        }
+        self.error_log.push_back(ErrorEntry {
+            timestamp_secs: ts,
+            message: msg.into(),
+        });
+    }
+
+    /// Reset all diagnostics (called when the device source is torn down).
+    pub fn clear(&mut self) {
+        *self = DeviceDiagnostics::default();
+    }
+}
+
 /// Hardware control state (RSPdx-R2).
 #[derive(Default, Clone)]
 pub struct HardwareState {
@@ -238,6 +289,8 @@ pub struct SharedState {
     pub scanner: ScannerState,
     pub fft: FftDisplayState,
     pub rds: RdsState,
+    /// Real-time diagnostics for the hardware device (empty in demo mode).
+    pub device_diagnostics: DeviceDiagnostics,
 }
 
 impl SharedState {

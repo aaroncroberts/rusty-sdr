@@ -254,6 +254,9 @@ impl SignalPath {
                                     HardwareCommand::SetAntenna(port) => {
                                         s.hardware.antenna_port = *port
                                     }
+                                    // RestartDevice has no SharedState mirror — forwarded
+                                    // directly to the device thread without a state update.
+                                    HardwareCommand::RestartDevice => {}
                                 }
                             }
                             // Forward verbatim to the device thread

@@ -33,6 +33,9 @@ pub enum HardwareCommand {
     SetFmNotch(bool),
     /// Antenna port: 0 = A, 1 = B, 2 = C.
     SetAntenna(u8),
+    /// Close and reopen the hardware device without restarting the app.
+    /// The device thread completes a clean RAII shutdown then starts a new session.
+    RestartDevice,
 }
 
 /// Core receiver tuning and demodulation commands.
