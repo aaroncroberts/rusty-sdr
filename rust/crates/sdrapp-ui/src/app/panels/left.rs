@@ -410,6 +410,7 @@ impl SdrApp {
                 .count();
             (s.scanner.scan_running, s.scanner.scan_cursor, count)
         };
+        let scan_can_start = is_running && scan_bm_count > 0;
 
         // Category filter
         ui.horizontal(|ui| {
@@ -457,19 +458,25 @@ impl SdrApp {
                         .strong(),
                 );
             } else {
-                let has_bms = scan_bm_count > 0;
-                let start_color = if has_bms { theme::STATUS_OK } else { theme::TEXT_MUTED };
+                let start_color = if scan_can_start {
+                    theme::STATUS_OK
+                } else {
+                    theme::TEXT_MUTED
+                };
                 let start_btn =
                     egui::Button::new(RichText::new("▶  Scan").color(start_color).strong())
                         .fill(theme::WIDGET_BG);
+                let tip = if !is_running {
+                    "Start the radio first".to_string()
+                } else if scan_bm_count == 0 {
+                    "No bookmarks to scan — add some first".to_string()
+                } else {
+                    format!("Scan {scan_bm_count} bookmark(s)")
+                };
                 let start_resp = ui
                     .add_sized(Vec2::new(70.0, 22.0), start_btn)
-                    .on_hover_text(if has_bms {
-                        format!("Scan {scan_bm_count} bookmark(s)")
-                    } else {
-                        "No bookmarks to scan — add some first".to_string()
-                    });
-                if start_resp.clicked() && has_bms {
+                    .on_hover_text(tip);
+                if start_resp.clicked() && scan_can_start {
                     let _ = self
                         .cmd_tx
                         .try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
@@ -492,6 +499,13 @@ impl SdrApp {
                 ui.add_space(2.0);
                 ui.label(RichText::new(label).color(theme::ACCENT_DIM).small());
             }
+        } else if !is_running {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("Start the radio to enable scanning")
+                    .color(theme::TEXT_MUTED)
+                    .small(),
+            );
         } else if scan_bm_count == 0 {
             ui.add_space(2.0);
             ui.label(

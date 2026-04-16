@@ -424,7 +424,14 @@ impl SignalPath {
                         SignalPathCommand::Stop => {
                             if !paused {
                                 paused = true;
-                                shared_clone.write().is_running = false;
+                                let mut s = shared_clone.write();
+                                s.is_running = false;
+                                // Halt the scanner so the SCAN badge clears and the
+                                // dwell timer doesn't silently stall while paused.
+                                if s.scanner.scan_running {
+                                    s.scanner.scan_running = false;
+                                    scan_running = false;
+                                }
                                 tracing::info!("signal path stopped");
                             } else {
                                 tracing::debug!("Stop received while already stopped — ignored");

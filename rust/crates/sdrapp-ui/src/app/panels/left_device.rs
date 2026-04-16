@@ -131,9 +131,9 @@ impl SdrApp {
             });
         });
 
-        // LNA state (only when AGC is off)
+        // LNA state — always shown; disabled when AGC is active.
         // RSPdx-R2: 0–9 normal; 0–3 in HDR mode.
-        if !self.config.source.agc_enabled {
+        {
             let lna_max = if self.config.source.hdr_mode {
                 3_i32
             } else {
@@ -144,6 +144,7 @@ impl SdrApp {
                 self.config.source.lna_state = lna_max as u8;
                 self.config_dirty = true;
             }
+            let agc_active = self.config.source.agc_enabled;
             // LNA + IF Gain knobs side by side
             let (lna_learn, lna_cc) = {
                 let s = self.shared.read();
@@ -171,7 +172,9 @@ impl SdrApp {
             let mut ifg_learn_req = false;
             let mut ifg_learn_cancel = false;
             let mut ifg_clear: Option<u8> = None;
-            ui.horizontal(|ui| {
+            let agc_tip = "AGC is managing gain — disable AGC to adjust LNA / IF manually";
+            ui.add_enabled_ui(!agc_active, |ui| {
+                ui.horizontal(|ui| {
                 let knob_w = (ui.available_width() / 2.0).min(60.0);
                 ui.allocate_ui(egui::Vec2::new(knob_w, 72.0), |ui| {
                     ui.vertical_centered(|ui| {
@@ -257,7 +260,10 @@ impl SdrApp {
                         }
                     });
                 });
-            });
+                }) // ui.horizontal
+            }) // add_enabled_ui
+            .response
+            .on_disabled_hover_text(agc_tip);
             if lna_learn_req {
                 self.shared.write().midi_learn_target = Some("lna".into());
             }
