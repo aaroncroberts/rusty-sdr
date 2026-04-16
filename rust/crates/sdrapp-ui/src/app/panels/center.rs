@@ -615,7 +615,7 @@ impl SdrApp {
                         egui::Slider::new(&mut decay, 0.1_f32..=2.0_f32)
                             .step_by(0.1)
                             .text(RichText::new("dB/fr").small())
-                            .clamp_to_range(true),
+                            .clamping(egui::SliderClamping::Always),
                     )
                     .on_hover_text("Peak-hold decay rate in dB per display frame");
                 if resp.changed() {
