@@ -509,7 +509,7 @@ impl SdrApp {
 
             // Safety warning: FM notch is dangerous when tuned to the FM broadcast band.
             let freq_hz = self.config.ui.frequency_hz;
-            let in_fm_band = freq_hz >= 87_000_000 && freq_hz <= 108_000_000;
+            let in_fm_band = (87_000_000..=108_000_000).contains(&freq_hz);
             let fm = self.config.source.fm_notch_enabled;
             if fm && in_fm_band {
                 ui.add_space(2.0);

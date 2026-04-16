@@ -354,7 +354,20 @@ impl SdrApp {
         ui.add_space(6.0);
 
         // ── MIDI Status ───────────────────────────────────────────────────────
-        ui.label(RichText::new("MIDI").color(theme::TEXT_MUTED).small());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("MIDI").color(theme::TEXT_MUTED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mapper_label = if self.show_midi_mapper { "▼ Mapper" } else { "▶ Mapper" };
+                let btn = egui::Button::new(
+                    RichText::new(mapper_label).color(theme::ACCENT).small(),
+                )
+                .fill(theme::WIDGET_BG)
+                .stroke(Stroke::new(1.0, if self.show_midi_mapper { theme::ACCENT } else { theme::BORDER }));
+                if ui.add(btn).clicked() {
+                    self.show_midi_mapper = !self.show_midi_mapper;
+                }
+            });
+        });
         ui.add_space(4.0);
 
         let (midi_device, midi_page) = {

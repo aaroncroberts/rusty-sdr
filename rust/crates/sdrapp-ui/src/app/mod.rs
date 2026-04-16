@@ -25,7 +25,10 @@ use sdrapp_recorder::RecorderCommand;
 
 use crate::{frequency::FrequencyWidget, help::HelpPanel, theme, waterfall::WaterfallWidget};
 
+mod midi_mapper;
 mod panels;
+
+use midi_mapper::MidiMapperWindow;
 
 pub struct SdrApp {
     config: AppConfig,
@@ -106,6 +109,10 @@ pub struct SdrApp {
     last_freq_bucket: u64,
     /// Whether the ? keyboard shortcut overlay is open.
     show_shortcut_overlay: bool,
+    /// MIDI mapper floating window (nanoKONTROL2 diagram).
+    midi_mapper: MidiMapperWindow,
+    /// Whether the MIDI mapper window is open.
+    show_midi_mapper: bool,
 }
 
 impl SdrApp {
@@ -183,6 +190,8 @@ impl SdrApp {
             demod_suggest_dismissed: std::collections::HashSet::new(),
             last_freq_bucket: 0,
             show_shortcut_overlay: false,
+            midi_mapper: MidiMapperWindow::new_nanokontrol2(),
+            show_midi_mapper: false,
         }
     }
 }
@@ -332,6 +341,12 @@ impl eframe::App for SdrApp {
         // ── Settings window (Ctrl+,) ──────────────────────────────────────────
         if self.show_settings {
             self.settings_window(ctx);
+        }
+
+        // ── MIDI Mapper window ────────────────────────────────────────────────
+        if self.show_midi_mapper {
+            self.midi_mapper
+                .show(ctx, &mut self.show_midi_mapper, &self.shared);
         }
 
         // Keep the UI live at ~30 fps unconditionally.
