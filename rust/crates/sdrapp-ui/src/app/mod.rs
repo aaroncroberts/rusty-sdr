@@ -256,7 +256,7 @@ impl eframe::App for SdrApp {
             )
             .show(ctx, |ui| self.status_bar(ui));
 
-        // Left panel
+        // Left panel (scrollable so controls are always reachable)
         egui::SidePanel::left("left_panel")
             .min_width(190.0)
             .max_width(250.0)
@@ -265,9 +265,13 @@ impl eframe::App for SdrApp {
                     .fill(theme::PANEL_BG)
                     .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
             )
-            .show(ctx, |ui| self.left_panel(ui));
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| self.left_panel(ui));
+            });
 
-        // Right panel
+        // Right panel (scrollable so controls are always reachable)
         egui::SidePanel::right("right_panel")
             .min_width(170.0)
             .max_width(220.0)
@@ -276,7 +280,11 @@ impl eframe::App for SdrApp {
                     .fill(theme::PANEL_BG)
                     .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
             )
-            .show(ctx, |ui| self.right_panel(ui));
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| self.right_panel(ui));
+            });
 
         // Center spectrum + waterfall
         egui::CentralPanel::default()

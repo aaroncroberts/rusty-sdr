@@ -363,7 +363,7 @@ impl SdrApp {
             ui.horizontal(|ui| {
                 let label_color = if ctcss_enabled { theme::ACCENT } else { theme::TEXT_MUTED };
                 let ctcss_label = if ctcss_enabled && ctcss_detected {
-                    "CTCSS ✓"
+                    "CTCSS on"
                 } else if ctcss_enabled {
                     "CTCSS (no tone)"
                 } else {

@@ -9,7 +9,7 @@ use crate::{frequency::FrequencyWidget, knob::KnobWidget, spectrum::SpectrumWidg
 
 impl SdrApp {
     pub(in crate::app) fn center_panel(&mut self, ui: &mut Ui) {
-        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz, is_running, fft_clipping, peak_hold_enabled, peak_hold_decay_db) = {
+        let (fft_data, band_plan_enabled, snr_db, demod_mode, nfm_bw_hz, is_running, fft_clipping, peak_hold_enabled, peak_hold_decay_db, hw_center_freq, scanner_running, tune_step_hz) = {
             let s = self.shared.read();
             (
                 s.fft.fft_magnitudes.clone(),
@@ -21,8 +21,18 @@ impl SdrApp {
                 s.fft.fft_clipping_detected,
                 s.fft.peak_hold_enabled,
                 s.fft.peak_hold_decay_db,
+                s.center_freq_hz,
+                s.scanner.scan_running,
+                s.demod.tune_step_hz,
             )
         };
+
+        // When the scanner is running it retunes hardware directly — sync the UI
+        // display so the spectrum axis and frequency widget reflect the actual channel.
+        if scanner_running && hw_center_freq != 0 && hw_center_freq != self.config.ui.frequency_hz {
+            self.config.ui.frequency_hz = hw_center_freq;
+            self.frequency_widget = FrequencyWidget::new(hw_center_freq);
+        }
 
         let freq = self.config.ui.frequency_hz;
         let (span, zoom_level, waterfall_speed) = {
@@ -116,20 +126,41 @@ impl SdrApp {
         // ── Spectrum ──────────────────────────────────────────────────────────
         let (spectrum_rect, spectrum_resp) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), spectrum_height),
-            egui::Sense::click(),
+            egui::Sense::click_and_drag(),
         );
 
-        // Click-to-tune: map click X to frequency
-        if let Some(click_pos) = spectrum_resp.interact_pointer_pos() {
-            if spectrum_resp.clicked() {
-                let t =
-                    ((click_pos.x - spectrum_rect.left()) / spectrum_rect.width()).clamp(0.0, 1.0);
-                let low = freq.saturating_sub(span) as f64;
-                let high = freq as f64 + span as f64;
-                let new_freq = (low + t as f64 * (high - low)).round() as u64;
-                let _ = self
-                    .cmd_tx
-                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
+        // Helper: map an X pixel position within spectrum_rect to a frequency.
+        let x_to_freq = |x: f32| -> u64 {
+            let t = ((x - spectrum_rect.left()) / spectrum_rect.width()).clamp(0.0, 1.0);
+            let low = freq.saturating_sub(span) as f64;
+            let high = freq as f64 + span as f64;
+            (low + t as f64 * (high - low)).round() as u64
+        };
+
+        // Click-to-tune: point click sets VFO to clicked frequency.
+        if spectrum_resp.clicked() {
+            if let Some(click_pos) = spectrum_resp.interact_pointer_pos() {
+                let new_freq = x_to_freq(click_pos.x);
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                self.config.ui.frequency_hz = new_freq;
+                self.frequency_widget = FrequencyWidget::new(new_freq);
+                self.config_dirty = true;
+            }
+        }
+
+        // Drag-to-pan: dragging left/right shifts center frequency.
+        // Hz per pixel = (2 * span) / width.  Negate: drag-right → lower freq displayed.
+        if spectrum_resp.dragged() {
+            let drag_dx = spectrum_resp.drag_delta().x;
+            if drag_dx.abs() > 0.1 && spectrum_rect.width() > 0.0 {
+                let hz_per_px = (2.0 * span as f64) / spectrum_rect.width() as f64;
+                let delta_hz = (drag_dx as f64 * hz_per_px) as i64;
+                let new_freq = if delta_hz < 0 {
+                    freq.saturating_add((-delta_hz) as u64)
+                } else {
+                    freq.saturating_sub(delta_hz as u64).max(1)
+                };
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
@@ -141,11 +172,7 @@ impl SdrApp {
         if spectrum_resp.hovered() && scroll_delta.abs() > 0.5 {
             if ctrl_held {
                 // Ctrl+scroll → zoom
-                let factor = if scroll_delta > 0.0 {
-                    0.8_f32
-                } else {
-                    1.25_f32
-                };
+                let factor = if scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
                 let new_zoom = (zoom_level * factor).clamp(min_zoom_for_mode(demod_mode), 1.0);
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_zoom).into());
                 self.config.ui.zoom_level = new_zoom;
@@ -158,9 +185,7 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(step).max(1)
                 };
-                let _ = self
-                    .cmd_tx
-                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;
@@ -211,6 +236,7 @@ impl SdrApp {
             peak_hold: peak_ref,
             show_band_plan: band_plan_enabled,
             hover_pos: spectrum_hover,
+            tune_step_hz,
         }
         .show(&mut spectrum_ui);
 
@@ -299,7 +325,7 @@ impl SdrApp {
         ui.horizontal(|ui| {
             // Auto ref toggle (compact)
             let auto_color = if self.auto_ref { theme::ACCENT } else { theme::TEXT_MUTED };
-            if ui.small_button(RichText::new(if self.auto_ref { "A✓" } else { "A" }).color(auto_color))
+            if ui.small_button(RichText::new(if self.auto_ref { "A*" } else { "A" }).color(auto_color))
                 .on_hover_text("Auto ref: tracks signal ceiling automatically. Click to toggle manual override.")
                 .clicked()
             {
@@ -622,16 +648,33 @@ impl SdrApp {
         let waterfall_resp = self.waterfall.show(ui, &ctx);
 
         // Click-to-tune on waterfall (same x→Hz conversion as spectrum)
-        if let Some(click_pos) = waterfall_resp.interact_pointer_pos() {
-            if waterfall_resp.clicked() {
+        if waterfall_resp.clicked() {
+            if let Some(click_pos) = waterfall_resp.interact_pointer_pos() {
                 let rect = waterfall_resp.rect;
                 let t = ((click_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
                 let low = freq.saturating_sub(span) as f64;
                 let high = freq as f64 + span as f64;
                 let new_freq = (low + t as f64 * (high - low)).round() as u64;
-                let _ = self
-                    .cmd_tx
-                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
+                self.config.ui.frequency_hz = new_freq;
+                self.frequency_widget = FrequencyWidget::new(new_freq);
+                self.config_dirty = true;
+            }
+        }
+
+        // Drag-to-pan on waterfall
+        if waterfall_resp.dragged() {
+            let drag_dx = waterfall_resp.drag_delta().x;
+            if drag_dx.abs() > 0.1 {
+                let rect = waterfall_resp.rect;
+                let hz_per_px = (2.0 * span as f64) / rect.width() as f64;
+                let delta_hz = (drag_dx as f64 * hz_per_px) as i64;
+                let new_freq = if delta_hz < 0 {
+                    freq.saturating_add((-delta_hz) as u64)
+                } else {
+                    freq.saturating_sub(delta_hz as u64).max(1)
+                };
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
                 self.config.ui.frequency_hz = new_freq;
                 self.frequency_widget = FrequencyWidget::new(new_freq);
                 self.config_dirty = true;

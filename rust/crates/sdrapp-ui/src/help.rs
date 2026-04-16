@@ -82,11 +82,11 @@ struct KeyRow {
 
 const KEY_TABLE: &[KeyRow] = &[
     KeyRow {
-        key: "↑ / ↓",
+        key: "Up / Dn",
         action: "Tune frequency by step size",
     },
     KeyRow {
-        key: "← / →",
+        key: "Lt / Rt",
         action: "Tune frequency by 10× step size",
     },
     KeyRow {
@@ -162,7 +162,7 @@ impl HelpPanel {
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .small_button(RichText::new("✕").color(theme::TEXT_MUTED))
+                            .small_button(RichText::new("[x]").color(theme::TEXT_MUTED))
                             .clicked()
                         {
                             *open = false;
@@ -235,7 +235,7 @@ impl HelpPanel {
             "1. Connect antenna to the appropriate port (see Antennas tab).",
             "2. Press ▶ Start in the left panel to begin receiving.",
             "3. Tune to a frequency: click the frequency display and type, \
-               scroll the spectrum, or use ↑↓ arrow keys.",
+               scroll the spectrum, or use up/down arrow keys.",
             "4. Select demod mode: WBFM for FM broadcasts (88–108 MHz), \
                NFM for voice (aviation, marine, amateur), AM for broadcast below 1.7 MHz.",
             "5. Adjust squelch in NFM mode to gate out noise between transmissions.",

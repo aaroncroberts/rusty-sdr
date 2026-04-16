@@ -131,38 +131,37 @@ impl SdrApp {
         ui.separator();
         ui.add_space(6.0);
 
-        // ── Band Presets ──────────────────────────────────────────────────────
-        ui.label(
-            RichText::new("BAND PRESETS")
-                .color(theme::TEXT_MUTED)
-                .small(),
-        );
-        ui.add_space(4.0);
-
+        // ── Band Presets (collapsible 2-column grid) ──────────────────────────
         let mut tuned: Option<(u64, u64)> = None;
-        for preset in BAND_PRESETS {
-            let btn = egui::Button::new(
-                RichText::new(preset.name)
-                    .color(theme::TEXT_PRIMARY)
-                    .small(),
-            )
-            .fill(theme::WIDGET_BG)
-            .stroke(Stroke::new(1.0, theme::BORDER));
-
-            if ui
-                .add_sized(Vec2::new(ui.available_width(), 20.0), btn)
-                .clicked()
-            {
-                tuned = Some((preset.center_hz, preset.span_hz));
-            }
-        }
+        ui.collapsing(
+            RichText::new("BAND PRESETS").color(theme::TEXT_MUTED).small(),
+            |ui| {
+                let btn_w = (ui.available_width() - 4.0) / 2.0;
+                let mut col = 0;
+                ui.horizontal_wrapped(|ui| {
+                    for preset in BAND_PRESETS {
+                        let btn = egui::Button::new(
+                            RichText::new(preset.name).color(theme::TEXT_PRIMARY).small(),
+                        )
+                        .fill(theme::WIDGET_BG)
+                        .stroke(Stroke::new(1.0, theme::BORDER));
+                        if ui.add_sized(Vec2::new(btn_w, 18.0), btn).clicked() {
+                            tuned = Some((preset.center_hz, preset.span_hz));
+                        }
+                        col += 1;
+                        if col % 2 == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            },
+        );
 
         if let Some((hz, span)) = tuned {
             let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(hz).into());
             self.config.ui.frequency_hz = hz;
             self.config.ui.span_hz = span;
             self.frequency_widget = FrequencyWidget::new(hz);
-            // Convert preset span to zoom_level relative to hardware bandwidth
             let sr_half = self.shared.read().sample_rate_sps as u64 / 2;
             if sr_half > 0 {
                 let z = (span as f32 / sr_half as f32).clamp(0.005, 1.0);
@@ -172,7 +171,7 @@ impl SdrApp {
             self.config_dirty = true;
         }
 
-        ui.add_space(8.0);
+        ui.add_space(4.0);
         ui.separator();
         ui.add_space(6.0);
 
@@ -193,29 +192,8 @@ impl SdrApp {
             )
         };
 
-        // Recording mode selector
-        if !is_recording {
-            ui.horizontal(|ui| {
-                for mode in [
-                    RecordingMode::AudioOnly,
-                    RecordingMode::IqOnly,
-                    RecordingMode::Both,
-                ] {
-                    let selected = rec_mode == mode;
-                    let label = match mode {
-                        RecordingMode::AudioOnly => "Audio",
-                        RecordingMode::IqOnly => "IQ",
-                        RecordingMode::Both => "Both",
-                    };
-                    if ui.selectable_label(selected, label).clicked() {
-                        self.shared.write().recording_mode = mode;
-                    }
-                }
-            });
-            ui.add_space(4.0);
-        }
-
         if is_recording {
+            // ── Active recording: stop button + level meters ──────────────────
             let stop_btn = egui::Button::new(
                 RichText::new("■  Stop Recording")
                     .color(theme::DANGER)
@@ -249,11 +227,30 @@ impl SdrApp {
                 ui.label(RichText::new("●").color(theme::DANGER));
                 ui.label(RichText::new("REC").color(theme::AMBER).strong());
                 ui.add_space(6.0);
-                // Two small vertical dBFS bars: peak (left) and RMS (right).
-                // Range: -60 to 0 dBFS, mapped to bar height.
                 self.draw_recording_level_bars(ui, rec_peak_db, rec_rms_db);
             });
         } else {
+            // ── Idle: mode selector inline above start button ─────────────────
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Mode:").color(theme::TEXT_MUTED).small());
+                for mode in [
+                    RecordingMode::AudioOnly,
+                    RecordingMode::IqOnly,
+                    RecordingMode::Both,
+                ] {
+                    let selected = rec_mode == mode;
+                    let label = match mode {
+                        RecordingMode::AudioOnly => "Audio",
+                        RecordingMode::IqOnly => "IQ",
+                        RecordingMode::Both => "Both",
+                    };
+                    if ui.selectable_label(selected, RichText::new(label).small()).clicked() {
+                        self.shared.write().recording_mode = mode;
+                    }
+                }
+            });
+            ui.add_space(3.0);
+
             let rec_btn =
                 egui::Button::new(RichText::new("●  Start Recording").color(theme::STATUS_OK))
                     .fill(theme::WIDGET_BG)
@@ -294,9 +291,9 @@ impl SdrApp {
                 .inner_margin(egui::Margin::same(4.0));
             err_frame.show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("⚠").color(theme::DANGER));
+                    ui.label(RichText::new("[!]").color(theme::DANGER));
                     ui.label(RichText::new(err).color(theme::DANGER).small());
-                    if ui.small_button("✕").clicked() {
+                    if ui.small_button("x").clicked() {
                         self.shared.write().recorder_error = None;
                     }
                 });
@@ -326,7 +323,7 @@ impl SdrApp {
                     self.sched_duration_secs = dur;
                 }
             });
-            let arm_btn = egui::Button::new("⏱  Arm Schedule")
+            let arm_btn = egui::Button::new("Arm Schedule")
                 .fill(theme::WIDGET_BG)
                 .stroke(Stroke::new(1.0, theme::ACCENT));
             if ui

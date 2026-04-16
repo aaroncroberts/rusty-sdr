@@ -42,12 +42,17 @@ pub struct SpectrumWidget<'a> {
     /// Current mouse position in screen coordinates, if hovering over the widget.
     /// When Some, draws a crosshair + frequency/power readout at the cursor.
     pub hover_pos: Option<egui::Pos2>,
+    /// Tuning step in Hz — draws small tick marks on the frequency axis so the
+    /// operator can see the granularity of scroll-tuning at a glance.
+    /// Pass 0 to suppress the step markers.
+    pub tune_step_hz: u64,
 }
 
 impl<'a> SpectrumWidget<'a> {
     pub fn show(&self, ui: &mut Ui) -> Response {
         let available = ui.available_size();
-        let (rect, response) = ui.allocate_exact_size(available, Sense::click());
+        // Use hover-only so the parent (center.rs) owns all click/drag interactions.
+        let (rect, response) = ui.allocate_exact_size(available, Sense::hover());
 
         if ui.is_rect_visible(rect) {
             self.paint(ui.painter(), rect);
@@ -286,15 +291,49 @@ impl<'a> SpectrumWidget<'a> {
                 Stroke::new(1.0, theme::VFO_LINE),
             );
 
-            // VFO frequency label
+            // VFO frequency label — rendered below the band-plan name row
+            // (band names sit at top+3 with ~8.5px font; we start at top+14 to avoid overlap)
             let vfo_label = format_freq_short(self.vfo_hz);
             painter.text(
-                Pos2::new(vfo_x + 4.0, plot_rect.top() + 3.0),
+                Pos2::new(vfo_x + 4.0, plot_rect.top() + 14.0),
                 egui::Align2::LEFT_TOP,
                 vfo_label,
                 egui::FontId::proportional(9.0),
                 theme::ACCENT,
             );
+        }
+
+        // ── Tune-step markers ─────────────────────────────────────────────────
+        // Small diamond ticks on the bottom of plot_rect at each tune_step_hz
+        // interval from the VFO, showing scroll-tune granularity at a glance.
+        if self.tune_step_hz > 0 && freq_hi > freq_lo {
+            let step = self.tune_step_hz as f64;
+            let freq_span = freq_hi - freq_lo;
+            // First step position at or just below freq_lo
+            let first_n = (freq_lo / step).floor() as i64;
+            let last_n = (freq_hi / step).ceil() as i64;
+            for n in first_n..=last_n {
+                let step_freq = n as f64 * step;
+                if step_freq < freq_lo || step_freq > freq_hi {
+                    continue;
+                }
+                let x = plot_rect.left() + ((step_freq - freq_lo) / freq_span) as f32 * plot_rect.width();
+                // Skip if too close to the VFO line (avoid clutter at center)
+                let is_vfo = (step_freq - self.vfo_hz as f64).abs() < step * 0.1;
+                let color = if is_vfo {
+                    Color32::from_rgba_unmultiplied(100, 200, 255, 120)
+                } else {
+                    Color32::from_rgba_unmultiplied(150, 150, 180, 80)
+                };
+                // Small tick below the plot area
+                painter.line_segment(
+                    [
+                        Pos2::new(x, plot_rect.bottom()),
+                        Pos2::new(x, plot_rect.bottom() + 5.0),
+                    ],
+                    Stroke::new(if is_vfo { 1.5 } else { 1.0 }, color),
+                );
+            }
         }
 
         // ── Frequency axis (X labels) ─────────────────────────────────────────
@@ -474,6 +513,7 @@ mod tests {
                     peak_hold: Some(&peak),
                     show_band_plan: true,
                     hover_pos: None,
+                    tune_step_hz: 100_000,
                 }
                 .show(ui);
             });

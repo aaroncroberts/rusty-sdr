@@ -163,14 +163,14 @@ impl SdrApp {
                             .is_ok_and(|f| f > 0);
                         ui.add_enabled_ui(freq_valid, |ui| {
                             if ui
-                                .small_button(RichText::new("✓ Save").color(theme::STATUS_OK))
+                                .small_button(RichText::new("Save").color(theme::STATUS_OK))
                                 .clicked()
                             {
                                 edit_commit_idx = Some(i);
                             }
                         });
                         if ui
-                            .small_button(RichText::new("✕ Cancel").color(theme::TEXT_MUTED))
+                            .small_button(RichText::new("Cancel").color(theme::TEXT_MUTED))
                             .clicked()
                         {
                             edit_cancel = true;
@@ -180,7 +180,7 @@ impl SdrApp {
             } else {
                 ui.horizontal(|ui| {
                     // Recall button (star for active, circle for inactive)
-                    let icon = if is_active { "★" } else { "☆" };
+                    let icon = if is_active { "[*]" } else { "[ ]" };
                     let icon_color = if is_active {
                         theme::ACCENT
                     } else {
