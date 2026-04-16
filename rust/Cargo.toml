@@ -94,3 +94,22 @@ sdrapp-recorder = { path = "crates/sdrapp-recorder" }
 sdrapp-midi = { path = "crates/sdrapp-midi" }
 sdrapp-rtlsdr = { path = "crates/sdrapp-rtlsdr" }
 sdrapp-ui = { path = "crates/sdrapp-ui" }
+
+# ── Dev-profile optimizations ─────────────────────────────────────────────────
+# DSP and audio crates are compute-bound — running them at opt-level 2 in debug
+# builds eliminates the IQ-channel lag that causes choppy audio and dropped
+# batches.  The UI/app crates stay unoptimized so incremental builds stay fast.
+[profile.dev.package.sdrapp-core]
+opt-level = 2
+
+[profile.dev.package.sdrapp-sdrplay]
+opt-level = 2
+
+[profile.dev.package.sdrapp-audio]
+opt-level = 2
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.num-complex]
+opt-level = 3
