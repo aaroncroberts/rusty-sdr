@@ -380,48 +380,6 @@ fn try_run_sdrplay_session(
         "GetDeviceParams failed"
     );
 
-    let params = unsafe { &mut *params_ptr };
-
-    // ── Configure sample rate ─────────────────────────────────────────────────
-    unsafe {
-        (*params.devParams).fsFreq.fsHz = config.sample_rate_sps as f64;
-    }
-
-    // ── Configure tuner parameters (rxChannelA) ────────────────────────────
-    let ch = unsafe { &mut *params.rxChannelA };
-
-    // Frequency
-    ch.tunerParams.rfFreq.rfHz = config.frequency_hz as f64;
-
-    // AGC and gain
-    if config.agc_enabled {
-        ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_CTRL_EN;
-        ch.ctrlParams.agc.setPoint_dBfs = config.agc_setpoint_dbfs;
-    } else {
-        ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_DISABLE;
-        ch.tunerParams.gain.LNAstate = config.lna_state;
-        // Config stores if_gain_dbfs as negative (0 to −59 dBFS).
-        // The API's gRdB is the positive gain reduction (0–59). Negate to convert.
-        ch.tunerParams.gain.gRdB = (-config.if_gain_dbfs).clamp(0, 59);
-    }
-
-    // IF mode
-    ch.tunerParams.bwType = sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_1_536;
-
-    // RSPdx-R2 specific parameters (rspDxParams is a direct field on DevParamsT)
-    unsafe {
-        let rsp_params = &mut (*params.devParams).rspDxParams;
-        rsp_params.antennaSel = match config.antenna {
-            Antenna::A => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_A,
-            Antenna::B => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_B,
-            Antenna::C => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_C,
-        };
-        rsp_params.biasTEnable = config.bias_t_enabled as u8;
-        rsp_params.hdrEnable = config.hdr_mode as u8;
-        rsp_params.rfNotchEnable = config.am_notch_enabled as u8;
-        rsp_params.rfDabNotchEnable = config.fm_notch_enabled as u8;
-    }
-
     // ── Set up callback context ───────────────────────────────────────────────
     let ctx = Box::new(CallbackContext {
         tx: iq_tx,
@@ -437,12 +395,91 @@ fn try_run_sdrplay_session(
 
     running.store(true, Ordering::Relaxed);
 
-    // ── Initialize streaming ──────────────────────────────────────────────────
+    // ── Initialize streaming (NO pre-configuration, matching the upstream reference) ──
+    // The upstream SDR++ app calls Init immediately after GetDeviceParams without
+    // modifying any parameters first.  All configuration is applied via Update()
+    // after a successful Init.  Pre-configuring params before Init was causing
+    // sdrplay_api_Fail (err=1) on the RSPdx-R2.
     let init_err = unsafe { sys::sdrplay_api_Init(dev_handle, &mut callbacks, ctx_ptr) };
     if init_err != sys::sdrplay_api_ErrT_sdrplay_api_Success {
         // Reclaim box to avoid leak before bailing (DeviceGuard + ApiGuard fire on return)
         let _ = unsafe { Box::from_raw(ctx_ptr as *mut CallbackContext) };
         anyhow::bail!("sdrplay_api_Init failed: {init_err}");
+    }
+
+    // ── Configure device via Update() after successful Init ───────────────────
+    // All parameter writes must happen through the params_ptr returned by
+    // GetDeviceParams, followed by an sdrplay_api_Update call.
+    unsafe {
+        let params_ref = &mut *params_ptr;
+        let ch = &mut *params_ref.rxChannelA;
+        let rsp = &mut (*params_ref.devParams).rspDxParams;
+
+        // Sample rate
+        (*params_ref.devParams).fsFreq.fsHz = config.sample_rate_sps as f64;
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Dev_Fs,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None);
+
+        // Frequency
+        ch.tunerParams.rfFreq.rfHz = config.frequency_hz as f64;
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Frf,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None);
+
+        // Bandwidth
+        ch.tunerParams.bwType = sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_1_536;
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_BwType,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None);
+
+        // AGC / gain
+        if config.agc_enabled {
+            ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_CTRL_EN;
+            ch.ctrlParams.agc.setPoint_dBfs = config.agc_setpoint_dbfs;
+        } else {
+            ch.ctrlParams.agc.enable = sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_DISABLE;
+            ch.tunerParams.gain.LNAstate = config.lna_state;
+            ch.tunerParams.gain.gRdB = (-config.if_gain_dbfs).clamp(0, 59);
+        }
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Agc,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None);
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Gr,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None);
+
+        // RSPdx-R2 specific
+        rsp.antennaSel = match config.antenna {
+            Antenna::A => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_A,
+            Antenna::B => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_B,
+            Antenna::C => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_C,
+        };
+        rsp.biasTEnable = config.bias_t_enabled as u8;
+        rsp.hdrEnable = config.hdr_mode as u8;
+        rsp.rfNotchEnable = config.am_notch_enabled as u8;
+        rsp.rfDabNotchEnable = config.fm_notch_enabled as u8;
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_AntennaControl);
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_BiasTControl);
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_RfNotchControl);
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_RfDabNotchControl);
     }
 
     tracing::info!(
@@ -482,7 +519,7 @@ fn try_run_sdrplay_session(
         while let Ok(cmd) = hw_cmd_rx.try_recv() {
             unsafe {
                 let ch = &mut *(*params_ptr).rxChannelA;
-                let rsp = &mut (*params.devParams).rspDxParams;
+                let rsp = &mut (*(*params_ptr).devParams).rspDxParams;
                 let (reason, reason_ext) = match cmd {
                     HardwareCommand::SetLnaState(n) => {
                         ch.tunerParams.gain.LNAstate = n;
