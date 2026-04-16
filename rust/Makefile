@@ -1,7 +1,7 @@
 .PHONY: run test lint fmt fmt-check clean bundle
 
 run:
-	cargo run
+	cargo run -- --auto-start
 
 test:
 	cargo test --workspace --exclude sdrapp-sdrplay --exclude sdrapp-sdrplay-sys
@@ -16,7 +16,7 @@ fmt-check:
 	cargo fmt --all -- --check
 
 bundle:
-	sh bundle_macos.sh
+	bash bundle_macos.sh
 
 clean:
 	cargo clean

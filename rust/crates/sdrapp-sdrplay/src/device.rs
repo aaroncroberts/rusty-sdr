@@ -71,6 +71,10 @@ struct CallbackContext {
     /// Set by `event_callback` when `sdrplay_api_DeviceRemoved` fires.
     /// The main device loop polls this flag and exits cleanly on hot-unplug.
     disconnected: Arc<AtomicBool>,
+    /// Set by `event_callback` when `sdrplay_api_PowerOverloadChange` fires.
+    /// The main device loop polls this and sends `OverloadMsgAck` to the API,
+    /// which allows the AGC subsystem to reduce gain and correct the overload.
+    overload_ack_needed: Arc<AtomicBool>,
 }
 
 // ── RspdxSource ───────────────────────────────────────────────────────────────
@@ -439,17 +443,39 @@ fn try_run_sdrplay_session(
     }
 
     // RAII: Uninit + ReleaseDevice when this function returns.
-    struct DeviceGuard(sys::sdrplay_api_DeviceT);
-    impl Drop for DeviceGuard {
-        fn drop(&mut self) {
-            tracing::debug!("sdrplay_api_Uninit + ReleaseDevice");
-            unsafe {
-                sys::sdrplay_api_Uninit(self.0.dev);
-                sys::sdrplay_api_ReleaseDevice(&mut self.0);
+    //
+    // `uninit_done` tracks whether Uninit has already been called so we never
+    // call it twice (explicit early call before freeing the callback context,
+    // then the Drop falls through to ReleaseDevice only).
+    struct DeviceGuard {
+        device: sys::sdrplay_api_DeviceT,
+        uninit_done: bool,
+    }
+    impl DeviceGuard {
+        /// Call Uninit now, marking it done so Drop won't call it again.
+        /// MUST be called before freeing the callback context to ensure no
+        /// stream callbacks fire on freed memory.
+        fn uninit(&mut self) {
+            if !self.uninit_done {
+                tracing::debug!("sdrplay_api_Uninit (explicit — stopping callbacks)");
+                unsafe { sys::sdrplay_api_Uninit(self.device.dev) };
+                self.uninit_done = true;
             }
         }
     }
-    let _dev_guard = DeviceGuard(devices[device_idx]);
+    impl Drop for DeviceGuard {
+        fn drop(&mut self) {
+            // Uninit should already have been called explicitly; call it here
+            // only as a safety net (e.g. early-return via `?`).
+            if !self.uninit_done {
+                tracing::debug!("sdrplay_api_Uninit (fallback in drop)");
+                unsafe { sys::sdrplay_api_Uninit(self.device.dev) };
+            }
+            tracing::debug!("sdrplay_api_ReleaseDevice");
+            unsafe { sys::sdrplay_api_ReleaseDevice(&mut self.device) };
+        }
+    }
+    let mut dev_guard = DeviceGuard { device: devices[device_idx], uninit_done: false };
 
     // ── Get device parameters ─────────────────────────────────────────────────
     let mut params_ptr: *mut sys::sdrplay_api_DeviceParamsT = std::ptr::null_mut();
@@ -465,10 +491,12 @@ fn try_run_sdrplay_session(
 
     // ── Set up callback context ───────────────────────────────────────────────
     let disconnected = Arc::new(AtomicBool::new(false));
+    let overload_ack_needed = Arc::new(AtomicBool::new(false));
     let ctx = Box::new(CallbackContext {
         tx: iq_tx,
         batch: Mutex::new(Vec::with_capacity(BATCH_SIZE * 2)),
         disconnected: Arc::clone(&disconnected),
+        overload_ack_needed: Arc::clone(&overload_ack_needed),
     });
     let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
 
@@ -637,6 +665,8 @@ fn try_run_sdrplay_session(
                 diag.device_diagnostics.status = "Disconnected (hot-unplug)".into();
                 diag.device_diagnostics.push_error("Device removed — hot-unplug detected");
             }
+            // Stop callbacks before freeing the context (prevents use-after-free).
+            dev_guard.uninit();
             let _ = unsafe { Box::from_raw(ctx_ptr as *mut CallbackContext) };
             return SessionOutcome::Error(anyhow::anyhow!("device removed (hot-unplug)"));
         }
@@ -644,6 +674,19 @@ fn try_run_sdrplay_session(
         // Stop signal from user or Drop.
         if !running.load(Ordering::Relaxed) {
             break;
+        }
+
+        // Acknowledge ADC overload — allows AGC to correct the gain level.
+        if overload_ack_needed.swap(false, Ordering::Relaxed) {
+            unsafe {
+                sys::sdrplay_api_Update(
+                    dev_handle,
+                    sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+                    sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_OverloadMsgAck,
+                    sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None,
+                );
+            }
+            tracing::debug!("Sent OverloadMsgAck — AGC will reduce gain");
         }
 
         // Poll for frequency changes written by the signal path.
@@ -779,7 +822,10 @@ fn try_run_sdrplay_session(
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    // Reclaim the callback context box (RAII guards fire after this).
+    // Stop SDRplay callbacks BEFORE freeing the callback context.
+    // The stream callback thread fires asynchronously; Uninit() blocks until
+    // it is fully stopped. Only then is it safe to drop the context memory.
+    dev_guard.uninit();
     let _ = unsafe { Box::from_raw(ctx_ptr as *mut CallbackContext) };
     tracing::info!("RSPdx-R2 streaming stopped");
 
@@ -933,9 +979,12 @@ extern "C" fn event_callback(
         sys::sdrplay_api_EventT_sdrplay_api_GainChange => {
             tracing::debug!(tuner, "SDRplay GainChange event (AGC)");
         }
-        // PowerOverloadChange (1): ADC input overload detected.
+        // PowerOverloadChange (1): ADC input overload — flag for OverloadMsgAck.
+        // The main loop will call sdrplay_api_Update(OverloadMsgAck) which lets
+        // the AGC subsystem reduce gain and correct the overload condition.
         sys::sdrplay_api_EventT_sdrplay_api_PowerOverloadChange => {
-            tracing::warn!(tuner, "SDRplay ADC power overload — reduce gain or signal level");
+            tracing::warn!(tuner, "SDRplay ADC power overload — flagging for AGC correction");
+            ctx.overload_ack_needed.store(true, Ordering::Relaxed);
         }
         // DeviceRemoved (2): physical hot-unplug — signal the main loop.
         sys::sdrplay_api_EventT_sdrplay_api_DeviceRemoved => {
