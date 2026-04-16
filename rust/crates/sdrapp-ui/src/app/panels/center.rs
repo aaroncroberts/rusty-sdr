@@ -102,6 +102,19 @@ impl SdrApp {
             let _db_floor = self.ref_level - self.dyn_range;
             let _db_ceil = self.ref_level;
 
+            // Waterfall auto-range: re-arm if 10 s have passed since last manual drag.
+            let now = ui.ctx().input(|i| i.time);
+            if !self.wf_auto_armed && (now - self.wf_last_manual_drag) > 10.0 {
+                self.wf_auto_armed = true;
+            }
+            // When armed, keep wf_level so the signal ceiling sits ~5 dB below the top.
+            // Threshold: signal_ceil_ema > wf_level + 77 (i.e. within 3 dB of clipping white).
+            if self.wf_auto_armed && self.signal_ceil_ema > self.wf_level + 77.0 {
+                self.wf_level = (self.signal_ceil_ema - 75.0).clamp(-120.0, 0.0);
+                self.config.ui.wf_level = self.wf_level;
+                self.config_dirty = true;
+            }
+
             // Waterfall range: wf_level is the absolute dBFS floor (darkest colour);
             // wf_gain shifts that floor down to reveal weaker signals.
             // The ceiling is wf_level + 80 dB, giving a consistent 80 dB window.
@@ -321,35 +334,84 @@ impl SdrApp {
         }
         if let Some(t) = self.last_clipping_time {
             if now - t < 2.0 {
-                // Overlay "ADC SAT" in the top-right corner of the spectrum rect.
-                let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Foreground,
-                    egui::Id::new("adc_sat_badge"),
-                ));
-                let badge_w = 62.0_f32;
-                let badge_h = 16.0_f32;
-                let badge_rect = egui::Rect::from_min_size(
-                    egui::Pos2::new(
-                        spectrum_rect.right() - badge_w - 4.0,
-                        spectrum_rect.top() + 4.0,
-                    ),
-                    egui::Vec2::new(badge_w, badge_h),
+                // Flash the badge: alternate bright/dark red every 0.4 s while actively clipping.
+                let flash_on = fft_clipping && ((now / 0.4) as i32) % 2 == 0;
+                let badge_color = if flash_on {
+                    egui::Color32::from_rgb(230, 55, 55)
+                } else {
+                    egui::Color32::from_rgb(170, 25, 25)
+                };
+
+                let badge_pos = egui::Pos2::new(
+                    spectrum_rect.right() - 70.0,
+                    spectrum_rect.top() + 4.0,
                 );
-                painter.rect_filled(
-                    badge_rect,
-                    2.0,
-                    egui::Color32::from_rgb(200, 40, 40),
-                );
-                painter.text(
-                    badge_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "ADC SAT",
-                    egui::FontId::proportional(10.0),
-                    egui::Color32::WHITE,
-                );
+                let popover_id = egui::Id::new("adc_sat_popover_open");
+                let mut popover_open =
+                    ui.ctx().data(|d| d.get_temp::<bool>(popover_id).unwrap_or(false));
+
+                // Render badge as an interactive Area so it receives clicks.
+                let badge_area = egui::Area::new(egui::Id::new("adc_sat_badge"))
+                    .fixed_pos(badge_pos)
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        let btn = egui::Button::new(
+                            RichText::new("⚡ ADC SAT")
+                                .color(egui::Color32::WHITE)
+                                .small(),
+                        )
+                        .fill(badge_color)
+                        .stroke(egui::Stroke::NONE)
+                        .rounding(2.0);
+                        ui.add(btn)
+                            .on_hover_text("Input overloaded — click for fix")
+                    });
+                if badge_area.inner.clicked() {
+                    popover_open = !popover_open;
+                    ui.ctx().data_mut(|d| d.insert_temp(popover_id, popover_open));
+                }
+
+                if popover_open {
+                    egui::Window::new("ADC Saturation")
+                        .id(egui::Id::new("adc_sat_help_window"))
+                        .fixed_pos(egui::Pos2::new(badge_pos.x - 180.0, badge_pos.y + 20.0))
+                        .resizable(false)
+                        .collapsible(false)
+                        .show(ui.ctx(), |ui| {
+                            ui.label(
+                                RichText::new("⚡ Input Overloaded")
+                                    .color(egui::Color32::from_rgb(230, 55, 55))
+                                    .strong(),
+                            );
+                            ui.separator();
+                            ui.label("The ADC is clipping — the signal is too strong.");
+                            ui.add_space(4.0);
+                            ui.label("To fix:");
+                            ui.indent("adc_sat_tips", |ui| {
+                                ui.label("• Raise LNA state (e.g. LNA = 9)");
+                                ui.label("• Lower AGC Level setpoint (e.g. −60 dBFS)");
+                                ui.label("• Use an external attenuator");
+                            });
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("→ Adjust in Device Settings (left panel)")
+                                    .color(theme::TEXT_MUTED)
+                                    .small(),
+                            );
+                            ui.add_space(4.0);
+                            if ui.button("Close").clicked() {
+                                popover_open = false;
+                                ui.ctx().data_mut(|d| d.insert_temp(popover_id, popover_open));
+                            }
+                        });
+                }
+
                 ui.ctx().request_repaint();
             } else {
                 self.last_clipping_time = None;
+                // Auto-close popover when badge expires.
+                let popover_id = egui::Id::new("adc_sat_popover_open");
+                ui.ctx().data_mut(|d| d.insert_temp(popover_id, false));
             }
         }
 
@@ -483,7 +545,7 @@ impl SdrApp {
                 default_value: -30.0,
                 step: 2.0,
                 diameter: 40.0,
-                label: Some("REF"),
+                label: Some("Level"),
                 unit: "dB",
                 midi_cc: None,
                 learn_active: false,
@@ -501,7 +563,7 @@ impl SdrApp {
                 default_value: 60.0,
                 step: 5.0,
                 diameter: 40.0,
-                label: Some("RANGE"),
+                label: Some("Range"),
                 unit: "dB",
                 midi_cc: None,
                 learn_active: false,
@@ -629,6 +691,29 @@ impl SdrApp {
                 self.config.ui.waterfall_speed = ws;
                 self.config_dirty = true;
             }
+
+            // WF Level knob (6th knob — waterfall floor in dBFS)
+            let mut wf_lv = self.wf_level;
+            let wflvl_resp = KnobWidget {
+                value: &mut wf_lv,
+                range: -120.0_f32..=-40.0_f32,
+                default_value: -70.0,
+                step: 1.0,
+                diameter: 40.0,
+                label: Some("WF Lvl"),
+                unit: "dB",
+                midi_cc: None,
+                learn_active: false,
+            }
+            .show(ui);
+            if wflvl_resp.changed() {
+                self.wf_level = wf_lv;
+                self.config.ui.wf_level = wf_lv;
+                self.config_dirty = true;
+                // Disarm auto-range on manual adjustment; re-arms after 10 s idle.
+                self.wf_auto_armed = false;
+                self.wf_last_manual_drag = ui.ctx().input(|i| i.time);
+            }
         });
         // Handle MIDI Learn actions deferred from the horizontal closure
         if zoom_learn_req {
@@ -652,7 +737,7 @@ impl SdrApp {
             self.config_dirty = true;
         }
 
-        // Row 3: FFT size, window, averaging, band plan, SNR
+        // Row 2: FFT size, window, averaging, band plan, SNR, waterfall palette
         ui.add_space(1.0);
         ui.horizontal(|ui| {
             let (cur_fft_size, cur_fft_window, cur_fft_avg) = {
@@ -786,33 +871,9 @@ impl SdrApp {
                 .on_hover_text("Estimated signal-to-noise ratio in the active demod channel");
             }
 
-        });
-
-        // Row 4: Waterfall visibility controls
-        ui.add_space(1.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("WF").color(theme::TEXT_MUTED).small());
-
-            // WF Level slider
-            let mut wf_lv = self.wf_level;
-            let wf_resp = ui
-                .add(
-                    egui::Slider::new(&mut wf_lv, -120.0_f32..=-40.0_f32)
-                        .step_by(1.0)
-                        .text(RichText::new("Level").small())
-                        .clamping(egui::SliderClamping::Always),
-                )
-                .on_hover_text("Waterfall floor level in dBFS — shift down to reveal weaker signals");
-            if wf_resp.changed() {
-                self.wf_level = wf_lv;
-                self.config.ui.wf_level = wf_lv;
-                self.config_dirty = true;
-            }
-
-            ui.add_space(8.0);
+            // Palette picker (merged from old Row 4)
+            ui.add_space(6.0);
             ui.label(RichText::new("Palette").color(theme::TEXT_MUTED).small());
-
-            // Colormap picker
             let colormap_label = self.config.ui.waterfall_colormap.clone();
             egui::ComboBox::from_id_salt("wf_colormap")
                 .selected_text(RichText::new(colormap_label.as_str()).small())

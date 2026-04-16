@@ -93,6 +93,11 @@ pub struct SdrApp {
     /// egui time (seconds since app start) of the last frame where ADC clipping
     /// was detected.  Used to hold the "ADC SAT" badge visible for 2 s.
     last_clipping_time: Option<f64>,
+    /// When true, the waterfall level auto-follows the signal ceiling.
+    /// Disarmed when the user manually drags the WF Level slider; re-arms after 10 s.
+    wf_auto_armed: bool,
+    /// egui time of the last manual WF Level slider interaction.
+    wf_last_manual_drag: f64,
 }
 
 impl SdrApp {
@@ -163,6 +168,8 @@ impl SdrApp {
             show_settings: false,
             auto_start_pending: auto_start,
             last_clipping_time: None,
+            wf_auto_armed: true,
+            wf_last_manual_drag: 0.0,
         }
     }
 }

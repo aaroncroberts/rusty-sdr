@@ -310,10 +310,10 @@ impl SdrApp {
                 let resp = KnobWidget {
                     value: &mut sp,
                     range: -60.0_f32..=0.0_f32,
-                    default_value: -30.0,
+                    default_value: -50.0,
                     step: 1.0,
                     diameter: 40.0,
-                    label: Some("SETPNT"),
+                    label: Some("AGC Level"),
                     unit: "dBFS",
                     midi_cc: sp_cc,
                     learn_active: sp_learn,
@@ -343,6 +343,25 @@ impl SdrApp {
                     let _ = self
                         .cmd_tx
                         .try_send(HardwareCommand::SetAgcSetpoint(new_sp).into());
+                }
+
+                // Max Attenuation: one-click saturated-input fix — LNA=9, setpoint=−60.
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Max Atten").small())
+                            .fill(egui::Color32::from_rgb(80, 30, 30)),
+                    )
+                    .on_hover_text("Set LNA = 9 and AGC Level = −60 dBFS to handle strong inputs")
+                    .clicked()
+                {
+                    self.config.source.agc_setpoint_dbfs = -60;
+                    self.config_dirty = true;
+                    let _ = self
+                        .cmd_tx
+                        .try_send(HardwareCommand::SetLnaState(9).into());
+                    let _ = self
+                        .cmd_tx
+                        .try_send(HardwareCommand::SetAgcSetpoint(-60).into());
                 }
             });
             if sp_learn_req {
@@ -448,6 +467,21 @@ impl SdrApp {
                     let _ = self.cmd_tx.try_send(HardwareCommand::SetFmNotch(!fm).into());
                 }
             });
+
+            // Safety warning: FM notch is dangerous when tuned to the FM broadcast band.
+            let freq_hz = self.config.ui.frequency_hz;
+            let in_fm_band = freq_hz >= 87_000_000 && freq_hz <= 108_000_000;
+            let fm = self.config.source.fm_notch_enabled;
+            if fm && in_fm_band {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("⚠ FM notch active — this filter cuts your listening band")
+                            .color(egui::Color32::from_rgb(240, 165, 0))
+                            .small(),
+                    );
+                });
+            }
         }
 
         // Signal path status + RDS display
