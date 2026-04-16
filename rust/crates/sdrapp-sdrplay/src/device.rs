@@ -429,8 +429,38 @@ fn try_run_sdrplay_session(
             sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Frf,
             sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None);
 
-        // Bandwidth
-        ch.tunerParams.bwType = sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_1_536;
+        // IF mode + bandwidth — both must be set together.
+        // Zero-IF: IF centre = 0 Hz, wide bandwidth (1.536 MHz default).
+        // Low-IF: IF centre shifts the signal away from the DC spike;
+        //         narrower bandwidth reduces noise outside the channel.
+        let (if_type, bw_type) = match config.if_mode {
+            crate::config::IfMode::ZeroIf => (
+                sys::sdrplay_api_If_kHzT_sdrplay_api_IF_Zero,
+                sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_1_536,
+            ),
+            crate::config::IfMode::LowIf200kHz => (
+                sys::sdrplay_api_If_kHzT_sdrplay_api_IF_0_450,
+                sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_0_200,
+            ),
+            crate::config::IfMode::LowIf500kHz => (
+                sys::sdrplay_api_If_kHzT_sdrplay_api_IF_0_450,
+                sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_0_600,
+            ),
+            crate::config::IfMode::LowIf1MHz => (
+                sys::sdrplay_api_If_kHzT_sdrplay_api_IF_1_620,
+                sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_1_536,
+            ),
+            crate::config::IfMode::LowIf2MHz => (
+                sys::sdrplay_api_If_kHzT_sdrplay_api_IF_2_048,
+                sys::sdrplay_api_Bw_MHzT_sdrplay_api_BW_1_536,
+            ),
+        };
+        ch.tunerParams.ifType = if_type;
+        ch.tunerParams.bwType = bw_type;
+        sys::sdrplay_api_Update(dev_handle,
+            sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+            sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_IfType,
+            sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None);
         sys::sdrplay_api_Update(dev_handle,
             sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
             sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_BwType,
