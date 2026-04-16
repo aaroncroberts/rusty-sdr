@@ -3334,6 +3334,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "hound",
  "parking_lot",
  "sdrapp-audio",
  "sdrapp-core",

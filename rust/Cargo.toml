@@ -95,6 +95,10 @@ sdrapp-midi = { path = "crates/sdrapp-midi" }
 sdrapp-rtlsdr = { path = "crates/sdrapp-rtlsdr" }
 sdrapp-ui = { path = "crates/sdrapp-ui" }
 
+[dev-dependencies]
+hound = { workspace = true }
+tokio = { workspace = true }
+
 # ── Dev-profile optimizations ─────────────────────────────────────────────────
 # DSP and audio crates are compute-bound — running them at opt-level 2 in debug
 # builds eliminates the IQ-channel lag that causes choppy audio and dropped
