@@ -3462,10 +3462,13 @@ dependencies = [
  "eframe",
  "egui",
  "egui_plot",
+ "image",
  "parking_lot",
  "sdrapp-core",
+ "sdrapp-midi",
  "sdrapp-recorder",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

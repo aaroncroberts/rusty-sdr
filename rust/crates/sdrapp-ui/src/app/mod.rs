@@ -23,7 +23,13 @@ use sdrapp_core::{
 };
 use sdrapp_recorder::RecorderCommand;
 
-use crate::{frequency::FrequencyWidget, help::HelpPanel, theme, waterfall::WaterfallWidget};
+use crate::{
+    frequency::FrequencyWidget,
+    handbook::HandbookWindow,
+    help::HelpPanel,
+    theme,
+    waterfall::WaterfallWidget,
+};
 
 mod midi_mapper;
 mod panels;
@@ -113,6 +119,10 @@ pub struct SdrApp {
     midi_mapper: MidiMapperWindow,
     /// Whether the MIDI mapper window is open.
     show_midi_mapper: bool,
+    /// Operators Handbook floating window.
+    handbook: HandbookWindow,
+    /// Whether the Operators Handbook window is open.
+    show_handbook: bool,
 }
 
 impl SdrApp {
@@ -144,6 +154,9 @@ impl SdrApp {
         let freq = config.ui.frequency_hz;
         let wf_level = config.ui.wf_level;
         let seen_onboarding = config.ui.seen_onboarding;
+        let handbook_section = config.ui.handbook_section;
+        let handbook_page = config.ui.handbook_page;
+        let show_handbook = config.ui.show_handbook;
         let mut waterfall_widget = WaterfallWidget::new_with_colormap(1024, (-120.0, 0.0));
         waterfall_widget.set_colormap(wf_colormap.build());
 
@@ -192,6 +205,8 @@ impl SdrApp {
             show_shortcut_overlay: false,
             midi_mapper: MidiMapperWindow::new_nanokontrol2(),
             show_midi_mapper: false,
+            handbook: HandbookWindow::with_state(handbook_section, handbook_page),
+            show_handbook,
         }
     }
 }
@@ -234,6 +249,13 @@ impl eframe::App for SdrApp {
                 .collect();
             self.config.save();
             self.config_dirty = false;
+        }
+
+        // ── F1 toggles the Operators Handbook ────────────────────────────────
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.show_handbook = !self.show_handbook;
+            self.config.ui.show_handbook = self.show_handbook;
+            self.config_dirty = true;
         }
 
         // ── '?' key toggles help panel ────────────────────────────────────────
@@ -353,6 +375,21 @@ impl eframe::App for SdrApp {
         if self.show_midi_mapper {
             self.midi_mapper
                 .show(ctx, &mut self.show_midi_mapper, &self.shared, &self.midi_bindings);
+        }
+
+        // ── Operators Handbook window ─────────────────────────────────────────
+        if self.show_handbook {
+            self.handbook.show(ctx, &mut self.show_handbook);
+            // Persist navigation state each frame it's open
+            if self.config.ui.handbook_section != self.handbook.section
+                || self.config.ui.handbook_page != self.handbook.page
+                || self.config.ui.show_handbook != self.show_handbook
+            {
+                self.config.ui.handbook_section = self.handbook.section;
+                self.config.ui.handbook_page = self.handbook.page;
+                self.config.ui.show_handbook = self.show_handbook;
+                self.config_dirty = true;
+            }
         }
 
         // Keep the UI live at ~30 fps unconditionally.

@@ -167,6 +167,16 @@ pub struct UiConfig {
     /// When false (or absent from config), the overlay is shown on next launch.
     #[serde(default)]
     pub seen_onboarding: bool,
+    // ── Operators Handbook ─────────────────────────────────────────────────────
+    /// Active section index in the Operators Handbook (0-based).
+    #[serde(default)]
+    pub handbook_section: usize,
+    /// Active page index within the current handbook section (0-based).
+    #[serde(default)]
+    pub handbook_page: usize,
+    /// Whether the Operators Handbook window is open.
+    #[serde(default)]
+    pub show_handbook: bool,
 }
 
 fn default_zoom_level() -> f32 {
@@ -221,6 +231,9 @@ impl Default for UiConfig {
             spectrum_split: 0.45,
             wf_level: -80.0,
             seen_onboarding: false,
+            handbook_section: 0,
+            handbook_page: 0,
+            show_handbook: false,
         }
     }
 }

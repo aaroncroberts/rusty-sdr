@@ -4,6 +4,7 @@ pub mod app;
 pub mod band_plan;
 pub mod bands;
 pub mod frequency;
+pub mod handbook;
 pub mod help;
 pub mod hints;
 pub mod knob;
