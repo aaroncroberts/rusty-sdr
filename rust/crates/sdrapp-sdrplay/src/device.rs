@@ -247,8 +247,14 @@ impl Source for RspdxSource {
 
 // ── SDRplay thread ────────────────────────────────────────────────────────────
 
-fn run_sdrplay_thread(
-    config: RspdxConfig,
+/// One full attempt to open the SDRplay API, select the device, configure it,
+/// initialize streaming, and run until `running` is cleared.
+///
+/// On return (success or failure) all RAII guards fire: `Uninit`, `ReleaseDevice`,
+/// and `Close` are called in order, leaving the service in a clean state so the
+/// caller can retry immediately.
+fn try_run_sdrplay_session(
+    config: &RspdxConfig,
     iq_tx: crossbeam_channel::Sender<Arc<[IqSample]>>,
     running: Arc<AtomicBool>,
     freq_atomic: Arc<AtomicU64>,
@@ -263,12 +269,11 @@ fn run_sdrplay_thread(
         "sdrplay_api_Open failed: {err}"
     );
 
+    // RAII: Close the API connection when this function returns (success or error).
     struct ApiGuard;
     impl Drop for ApiGuard {
         fn drop(&mut self) {
-            unsafe {
-                sys::sdrplay_api_Close();
-            }
+            unsafe { sys::sdrplay_api_Close() };
         }
     }
     let _api_guard = ApiGuard;
@@ -308,11 +313,12 @@ fn run_sdrplay_thread(
     );
 
     // sdrplay_api_GetDevices() locks the device API — UnlockDeviceApi() MUST be
-    // called after SelectDevice or sdrplay_api_Init will fail with error 1.
+    // called after SelectDevice or sdrplay_api_Init will fail.
     unsafe { sys::sdrplay_api_UnlockDeviceApi() };
 
     let dev_handle = devices[device_idx].dev;
 
+    // RAII: Uninit + ReleaseDevice when this function returns.
     struct DeviceGuard(sys::sdrplay_api_DeviceT);
     impl Drop for DeviceGuard {
         fn drop(&mut self) {
@@ -390,29 +396,11 @@ fn run_sdrplay_thread(
     running.store(true, Ordering::Relaxed);
 
     // ── Initialize streaming ──────────────────────────────────────────────────
-    // Retry up to 3 times with a short delay to recover from a previous session
-    // that exited uncleanly (SIGKILL, crash) without calling sdrplay_api_Uninit.
-    let mut init_err = sys::sdrplay_api_ErrT_sdrplay_api_Success;
-    for attempt in 0..3 {
-        init_err = unsafe { sys::sdrplay_api_Init(dev_handle, &mut callbacks, ctx_ptr) };
-        if init_err == sys::sdrplay_api_ErrT_sdrplay_api_Success {
-            break;
-        }
-        tracing::warn!(
-            attempt,
-            err = init_err,
-            "sdrplay_api_Init failed, retrying in 1s"
-        );
-        // Try to uninit in case a previous session left the device initialised
-        unsafe {
-            sys::sdrplay_api_Uninit(dev_handle);
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
+    let init_err = unsafe { sys::sdrplay_api_Init(dev_handle, &mut callbacks, ctx_ptr) };
     if init_err != sys::sdrplay_api_ErrT_sdrplay_api_Success {
-        // Reclaim box to avoid leak
+        // Reclaim box to avoid leak before bailing (DeviceGuard + ApiGuard fire on return)
         let _ = unsafe { Box::from_raw(ctx_ptr as *mut CallbackContext) };
-        anyhow::bail!("sdrplay_api_Init failed after retries: {init_err}");
+        anyhow::bail!("sdrplay_api_Init failed: {init_err}");
     }
 
     tracing::info!(
@@ -526,12 +514,55 @@ fn run_sdrplay_thread(
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    // Cleanup: Uninit + ReleaseDevice happen in DeviceGuard drop.
     // Reclaim the callback context box.
+    // DeviceGuard + ApiGuard fire here (Uninit → ReleaseDevice → Close).
     let _ = unsafe { Box::from_raw(ctx_ptr as *mut CallbackContext) };
 
     tracing::info!("RSPdx-R2 streaming stopped");
     Ok(())
+}
+
+/// Outer retry wrapper for `try_run_sdrplay_session`.
+///
+/// If the session fails (e.g. `sdrplay_api_Init` returns a generic error because a
+/// previous process was killed before it could call `Uninit`/`ReleaseDevice`/`Close`),
+/// the RAII guards in `try_run_sdrplay_session` fire on its return, fully closing
+/// the API connection.  The outer loop then waits and retries — each attempt does a
+/// fresh `Open → GetDevices → SelectDevice → UnlockDeviceApi → Init` cycle.
+fn run_sdrplay_thread(
+    config: RspdxConfig,
+    iq_tx: crossbeam_channel::Sender<Arc<[IqSample]>>,
+    running: Arc<AtomicBool>,
+    freq_atomic: Arc<AtomicU64>,
+    hw_cmd_rx: crossbeam_channel::Receiver<HardwareCommand>,
+) -> anyhow::Result<()> {
+    const MAX_ATTEMPTS: u32 = 4;
+    const RETRY_DELAY_SECS: u64 = 2;
+
+    let mut last_err = anyhow::anyhow!("no attempts made");
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            tracing::warn!(
+                attempt,
+                "SDRplay session failed, retrying in {RETRY_DELAY_SECS}s (service may still be \
+                 releasing resources from previous session)"
+            );
+            std::thread::sleep(std::time::Duration::from_secs(RETRY_DELAY_SECS));
+        }
+
+        match try_run_sdrplay_session(&config, iq_tx.clone(), Arc::clone(&running), Arc::clone(&freq_atomic), hw_cmd_rx.clone() /* crossbeam Receiver is Clone */) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                tracing::warn!(attempt, err = %e, "SDRplay session attempt failed");
+                last_err = e;
+                // If `running` was cleared externally (user hit Stop), don't retry.
+                if !running.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+        }
+    }
+    Err(last_err)
 }
 
 // ── Callbacks ─────────────────────────────────────────────────────────────────
