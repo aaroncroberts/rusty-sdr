@@ -36,7 +36,8 @@ use rustfft::num_complex::Complex;
 
 use crate::dsp::{
     volume::soft_limit, AmDemodulator, AudioBandpass, CtcssDetector, CwDemodulator, FftProcessor,
-    FmDemodulator, RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder, Volume,
+    FirLowpass, FmDemodulator, RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder,
+    Volume,
 };
 use crate::sample::{IqSample, StereoFrame};
 
@@ -106,15 +107,21 @@ impl SignalPath {
 
         let handle = tokio::spawn(async move {
             let sr = sample_rate.max(200_000);
+            // WBFM demodulation decimation: run FM demod at ≤500 kHz to cut
+            // transcendental-math cost (atan2/sin_cos) by the decimation factor.
+            // The FFT still sees the full-rate IQ for wide spectrum display.
+            // Factor is chosen so demod_sr is in [200_000, 500_000].
+            let wbfm_decim: u32 = (sr / 500_000).max(1);
+            let demod_sr = sr / wbfm_decim;
             let mut fft_size = FFT_SIZE;
             let mut fft_window = crate::dsp::FftWindow::Hann;
             let mut fft = FftProcessor::new(fft_size, fft_window);
             let mut fft_averaging: u8 = 4;
             let mut fft_avg_buf: Vec<f32> = vec![-120.0; fft_size];
             let mut vol = Volume::new(0.8);
-            let mut demod: Demod = Demod::Wbfm(StereoFmDecoder::new(sr));
+            let mut demod: Demod = Demod::Wbfm(StereoFmDecoder::new(demod_sr));
             let mut squelch = Squelch::new(48_000, -50.0);
-            let mut rds = RdsDecoder::new(sr);
+            let mut rds = RdsDecoder::new(demod_sr);
             let mut audio_bp = AudioBandpass::voice(48_000.0);
             let mut ctcss = CtcssDetector::with_default_threshold(48_000.0);
             let mut nfm_bw_hz: u32 = 12_500;
@@ -122,6 +129,34 @@ impl SignalPath {
             let mut ctcss_was_detected: bool = false;
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
+            // Track previous values to skip write-lock acquisitions when nothing changed.
+            let mut last_is_stereo: bool = false;
+            // Rate-limit FFT shared-state writes and UI repaints to ~30 Hz (33ms).
+            let mut last_fft_write = std::time::Instant::now();
+            const FFT_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
+            // ── Pre-allocated hot-path working buffers ──────────────────────────
+            // Reusing these Vec<_>s across iterations eliminates thousands of
+            // allocator round-trips per second in the IQ processing hot loop.
+            // Capacity is sized for the largest expected batch (sr / callback_rate).
+            let max_batch = (sr as usize / 50).max(8192); // ~20 ms @ any supported rate
+            let mut iq_complex_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
+            let mut iq_decimated_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
+            // Anti-aliasing FIR lowpass applied before WBFM decimation.
+            // Cutoff = 88% of the post-decimation Nyquist (0.88 × demod_sr/2).
+            // Example at 2 MSps, 4× decimation: demod_sr=500 kHz, cutoff=220 kHz.
+            //   - Passes WBFM signal (±100 kHz bandwidth, including 57 kHz RDS)
+            //   - Rejects content above 250 kHz (post-decim Nyquist) that would
+            //     alias into the passband; e.g. a station 400 kHz away aliases to
+            //     100 kHz without the filter.
+            // 127 taps with Kaiser β=6 give ≥60 dB stopband rejection.
+            let mut aa_filter: Option<FirLowpass> = if wbfm_decim > 1 {
+                let cutoff = 0.88 * (demod_sr as f32 / 2.0);
+                Some(FirLowpass::new(cutoff, sr as f32, 127, 6.0))
+            } else {
+                None
+            };
+            let mut aa_filter_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
             // Scanner state
             let mut scan_running = false;
             let mut scan_cursor: usize = 0;
@@ -131,9 +166,11 @@ impl SignalPath {
             let mut scan_dwell_samples: u64 = 0;
 
             /// Create a fresh demodulator for the given mode.
-            fn make_demod(mode: DemodMode, sr: u32, nfm_bw_hz: u32) -> Demod {
+            /// `demod_sr` is the rate after any decimation (used for WBFM).
+            /// `sr` is the full hardware rate (used for non-decimated modes).
+            fn make_demod(mode: DemodMode, sr: u32, demod_sr: u32, nfm_bw_hz: u32) -> Demod {
                 match mode {
-                    DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(sr)),
+                    DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(demod_sr)),
                     DemodMode::Nfm => {
                         Demod::Nfm(FmDemodulator::new(sr, 48_000, nfm_bw_hz as f32, 0.0))
                     }
@@ -190,7 +227,7 @@ impl SignalPath {
                                 shared_clone.write().demod.volume = v;
                             }
                             ReceiverCmd::SetDemodMode(mode) => {
-                                demod = make_demod(mode, sr, nfm_bw_hz);
+                                demod = make_demod(mode, sr, demod_sr, nfm_bw_hz);
                                 squelch.reset();
                                 audio_bp.reset();
                                 ctcss.reset();
@@ -373,7 +410,7 @@ impl SignalPath {
                                     if let Some(ref atomic) = freq_atomic_clone {
                                         atomic.store(bm_freq, Ordering::Relaxed);
                                     }
-                                    demod = make_demod(bm_mode, sr, nfm_bw_hz);
+                                    demod = make_demod(bm_mode, sr, demod_sr, nfm_bw_hz);
                                     shared_clone.write().demod.demod_mode = bm_mode;
                                     demod.reset();
                                     rds.reset();
@@ -486,7 +523,7 @@ impl SignalPath {
                                 );
                             }
                             // Rebuild demodulator for current mode (new device, fresh state)
-                            demod = make_demod(demod_mode, sr, nfm_bw_hz);
+                            demod = make_demod(demod_mode, sr, demod_sr, nfm_bw_hz);
                             demod.reset();
                             rds.reset();
                         }
@@ -505,11 +542,15 @@ impl SignalPath {
                     Ok(b) => b,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(dropped = n, "signal path lagged — dropped batches");
-                        // Reset demodulator state so stale `prev` doesn't produce
-                        // a huge phase-jump click on the next received batch.
                         demod.reset();
                         rds.reset();
                         audio_accumulator.clear();
+                        last_is_stereo = false;
+                        // Yield the Tokio worker so other tasks run and the
+                        // broadcast channel can drain.  Without this, the task
+                        // spins at 100% CPU because Lagged returns Poll::Ready
+                        // immediately and the task never suspends.
+                        tokio::task::yield_now().await;
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -548,7 +589,8 @@ impl SignalPath {
                         let (snr, signal_level_dbfs) = {
                             let n = fft_avg_buf.len();
                             let center = n / 2;
-                            let (bw_hz, is_wbfm) = {
+                            // Single lock acquisition for all needed shared state.
+                            let (bw_hz, is_wbfm, sr_hz) = {
                                 let s = shared_clone.read();
                                 let bw = match s.demod.demod_mode {
                                     DemodMode::Wbfm => 200_000_u32,
@@ -560,9 +602,9 @@ impl SignalPath {
                                     DemodMode::Cw => 1_000,
                                 };
                                 let wbfm = s.demod.demod_mode == DemodMode::Wbfm;
-                                (bw, wbfm)
+                                let rate = s.sample_rate_sps.max(1) as f32;
+                                (bw, wbfm, rate)
                             };
-                            let sr_hz = shared_clone.read().sample_rate_sps.max(1) as f32;
                             let mut half_bw_bins =
                                 ((bw_hz as f32 / sr_hz * n as f32) as usize)
                                     .max(2)
@@ -581,15 +623,21 @@ impl SignalPath {
                             (snr, sig)
                         };
                         let clipping = any_bin_clipping(&fft_avg_buf);
-                        {
-                            let mut s = shared_clone.write();
-                            s.fft.fft_magnitudes = fft_avg_buf.clone();
-                            s.fft.snr_db = Some(snr);
-                            s.fft.fft_clipping_detected = clipping;
-                            s.fft.signal_level_dbfs = signal_level_dbfs;
-                        }
-                        if let Some(ref ctx) = egui_ctx {
-                            ctx.request_repaint();
+                        // Rate-limit shared-state writes to ~30 Hz so the write
+                        // lock doesn't fire 977×/sec and stall UI read locks.
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_fft_write) >= FFT_WRITE_INTERVAL {
+                            last_fft_write = now;
+                            {
+                                let mut s = shared_clone.write();
+                                s.fft.fft_magnitudes = fft_avg_buf.clone();
+                                s.fft.snr_db = Some(snr);
+                                s.fft.fft_clipping_detected = clipping;
+                                s.fft.signal_level_dbfs = signal_level_dbfs;
+                            }
+                            if let Some(ref ctx) = egui_ctx {
+                                ctx.request_repaint();
+                            }
                         }
                     }
                     iq_accumulator.drain(..fft_size);
@@ -635,7 +683,7 @@ impl SignalPath {
                             if let Some(ref atomic) = freq_atomic_clone {
                                 atomic.store(bm_freq, Ordering::Relaxed);
                             }
-                            demod = make_demod(bm_mode, sr, nfm_bw_hz);
+                            demod = make_demod(bm_mode, sr, demod_sr, nfm_bw_hz);
                             shared_clone.write().demod.demod_mode = bm_mode;
                             demod.reset();
                             rds.reset();
@@ -647,13 +695,46 @@ impl SignalPath {
                 }
 
                 // Demodulate IQ → StereoFrame batches at 48 kHz.
-                let iq_complex: Vec<Complex<f32>> =
-                    batch.iter().map(|s| Complex::new(s.re, s.im)).collect();
+                // For WBFM, anti-alias filter then decimate to demod_sr before the
+                // FM discriminator to reduce atan2/sin_cos calls by wbfm_decim×.
+                // Non-WBFM modes use the full-rate IQ for best SNR.
+                //
+                // All buffers are pre-allocated and reused — no per-batch heap allocs.
+                iq_complex_buf.clear();
+                iq_complex_buf.extend(batch.iter().map(|s| Complex::new(s.re, s.im)));
+
+                // Build the decimated IQ view for WBFM demodulation.
+                let iq_for_demod: &[Complex<f32>] = if wbfm_decim > 1 {
+                    // 1. Anti-aliasing lowpass (prevents adjacent-station aliasing)
+                    if let Some(ref mut fir) = aa_filter {
+                        fir.process(&iq_complex_buf, &mut aa_filter_buf);
+                    } else {
+                        aa_filter_buf.clear();
+                        aa_filter_buf.extend_from_slice(&iq_complex_buf);
+                    }
+                    // 2. Integer decimation (boxcar average, now alias-free)
+                    let d = wbfm_decim as usize;
+                    let scale = 1.0 / d as f32;
+                    iq_decimated_buf.clear();
+                    iq_decimated_buf.extend(
+                        aa_filter_buf.chunks(d).map(|c| {
+                            c.iter().fold(Complex::new(0.0_f32, 0.0), |a, &b| a + b) * scale
+                        }),
+                    );
+                    &iq_decimated_buf
+                } else {
+                    // No decimation — pass full-rate IQ directly (no clone)
+                    &iq_complex_buf
+                };
 
                 let stereo: Vec<StereoFrame> = match &mut demod {
                     Demod::Wbfm(d) => {
-                        let (frames, is_stereo, composite) = d.process_with_composite(&iq_complex);
-                        shared_clone.write().rds.is_stereo = is_stereo;
+                        let (frames, is_stereo, composite) = d.process_with_composite(iq_for_demod);
+                        // Only acquire write lock when stereo status actually changes.
+                        if is_stereo != last_is_stereo {
+                            shared_clone.write().rds.is_stereo = is_stereo;
+                            last_is_stereo = is_stereo;
+                        }
                         if rds.process(&composite) {
                             let mut s = shared_clone.write();
                             s.rds.ps_name = rds.data.ps_name.clone();
@@ -665,7 +746,7 @@ impl SignalPath {
                         frames
                     }
                     Demod::Nfm(d) => {
-                        let mono = d.process(&iq_complex);
+                        let mono = d.process(&iq_complex_buf);
                         // Run CTCSS detector on raw demodulated audio (before squelch/filter)
                         if ctcss_enabled {
                             ctcss.process_batch(&mono);
@@ -695,15 +776,15 @@ impl SignalPath {
                         filtered.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Am(d) => {
-                        let mono = d.process(&iq_complex);
+                        let mono = d.process(&iq_complex_buf);
                         mono.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Ssb(d) => {
-                        let mono = d.process(&iq_complex);
+                        let mono = d.process(&iq_complex_buf);
                         mono.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Cw(d) => {
-                        let mono = d.process(&iq_complex);
+                        let mono = d.process(&iq_complex_buf);
                         mono.into_iter().map(StereoFrame::mono).collect()
                     }
                 };
