@@ -10,7 +10,9 @@ mod action;
 mod config;
 mod controller;
 mod nanokontrol2;
+pub mod layout;
 
 pub use action::MidiAction;
-pub use config::{MidiActionTag, MidiConfig, MidiKeyKind};
+pub use config::{MidiActionTag, MidiConfig, MidiKey, MidiKeyKind};
 pub use controller::MidiController;
+pub use layout::{ControlDef, ControlRect, ControlType, ControllerLayout, NanoKontrol2Layout};
