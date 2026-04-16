@@ -163,7 +163,13 @@ fn main() -> anyhow::Result<()> {
                 hdr_mode: config.source.hdr_mode,
                 am_notch_enabled: config.source.am_notch_enabled,
                 fm_notch_enabled: config.source.fm_notch_enabled,
-                ..Default::default()
+                if_mode: match config.source.if_mode.as_str() {
+                    "LowIF200kHz" => sdrapp_sdrplay::IfMode::LowIf200kHz,
+                    "LowIF500kHz" => sdrapp_sdrplay::IfMode::LowIf500kHz,
+                    "LowIF1MHz"   => sdrapp_sdrplay::IfMode::LowIf1MHz,
+                    "LowIF2MHz"   => sdrapp_sdrplay::IfMode::LowIf2MHz,
+                    _             => sdrapp_sdrplay::IfMode::ZeroIf,
+                },
             });
             let rx = src.subscribe();
             let iq_rec_rx = src.subscribe();
@@ -253,7 +259,13 @@ fn main() -> anyhow::Result<()> {
             hdr_mode: config.source.hdr_mode,
             am_notch_enabled: config.source.am_notch_enabled,
             fm_notch_enabled: config.source.fm_notch_enabled,
-            ..Default::default()
+            if_mode: match config.source.if_mode.as_str() {
+                "LowIF200kHz" => sdrapp_sdrplay::IfMode::LowIf200kHz,
+                "LowIF500kHz" => sdrapp_sdrplay::IfMode::LowIf500kHz,
+                "LowIF1MHz"   => sdrapp_sdrplay::IfMode::LowIf1MHz,
+                "LowIF2MHz"   => sdrapp_sdrplay::IfMode::LowIf2MHz,
+                _             => sdrapp_sdrplay::IfMode::ZeroIf,
+            },
         };
         rt.spawn(async move {
             loop {

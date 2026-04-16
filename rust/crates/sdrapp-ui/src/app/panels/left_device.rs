@@ -68,7 +68,7 @@ impl SdrApp {
             ui.label(RichText::new("Rate").color(theme::TEXT_MUTED).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // RSPdx-R2 in ZeroIF mode requires >= 2 MHz sample rate.
-                // Lower rates are only valid in LowIF mode (not exposed here).
+                // Lower rates are valid when LowIF mode is selected.
                 let rates: &[(u32, &str)] = if is_demo {
                     &[
                         (200_000, "200k"),
@@ -107,6 +107,45 @@ impl SdrApp {
                 .response
                 .on_disabled_hover_text(
                     "Stop playback before changing the sample rate — the device must reinitialize.",
+                );
+            });
+        });
+
+        // IF mode dropdown — requires restart to take effect.
+        // Disabled while running; changing IF mode alters the sample-rate valid range.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("IF Mode").color(theme::TEXT_MUTED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let modes: &[(&str, &str)] = &[
+                    ("ZeroIF",      "Zero-IF"),
+                    ("LowIF200kHz", "Low 200k"),
+                    ("LowIF500kHz", "Low 500k"),
+                    ("LowIF1MHz",   "Low 1M"),
+                    ("LowIF2MHz",   "Low 2M"),
+                ];
+                let current = modes
+                    .iter()
+                    .find(|&&(k, _)| k == self.config.source.if_mode)
+                    .map(|&(_, label)| label)
+                    .unwrap_or("?");
+
+                ui.add_enabled_ui(!is_running, |ui| {
+                    egui::ComboBox::from_id_salt("if_mode")
+                        .selected_text(RichText::new(current).small())
+                        .width(80.0)
+                        .show_ui(ui, |ui| {
+                            for &(key, label) in modes {
+                                let selected = key == self.config.source.if_mode;
+                                if ui.selectable_label(selected, label).clicked() {
+                                    self.config.source.if_mode = key.into();
+                                    self.config_dirty = true;
+                                }
+                            }
+                        });
+                })
+                .response
+                .on_disabled_hover_text(
+                    "Stop playback before changing IF mode — the device must reinitialize.",
                 );
             });
         });

@@ -584,6 +584,15 @@ fn try_run_sdrplay_session(
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_BiasTControl)
                     }
                     HardwareCommand::SetHdrMode(en) => {
+                        // HDR mode is only valid below 2 MHz on the RSPdx-R2.
+                        // The UI enforces this, but guard here too for API callers.
+                        if en && last_freq > 2_000_000 {
+                            tracing::warn!(
+                                freq_hz = last_freq,
+                                "HDR mode rejected — only valid below 2 MHz on RSPdx-R2"
+                            );
+                            continue;
+                        }
                         rsp.hdrEnable = en as u8;
                         (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_HdrEnable)
