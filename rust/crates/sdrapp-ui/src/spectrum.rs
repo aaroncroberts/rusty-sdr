@@ -336,7 +336,9 @@ impl<'a> SpectrumWidget<'a> {
             }
         }
 
-        // ── Frequency axis (X labels) ─────────────────────────────────────────
+        // ── Frequency grid lines + axis labels ───────────────────────────────
+        // Full-height vertical lines at each tick give the spectrum a "tuning dial"
+        // feel — major lines (every 4th, including edges) are brighter than minor.
         if freq_hi > freq_lo {
             let tick_count = 8_usize;
             for i in 0..=tick_count {
@@ -344,16 +346,29 @@ impl<'a> SpectrumWidget<'a> {
                 let freq_hz = freq_lo + t * (freq_hi - freq_lo);
                 let x = plot_rect.left() + t as f32 * plot_rect.width();
 
-                // Tick mark
+                let is_major = i % 4 == 0;
+                let grid_alpha = if is_major { 35u8 } else { 18u8 };
+                let tick_alpha = if is_major { 120u8 } else { 60u8 };
+
+                // Full-height vertical grid line (drawn behind the trace)
+                painter.line_segment(
+                    [
+                        Pos2::new(x, plot_rect.top()),
+                        Pos2::new(x, plot_rect.bottom()),
+                    ],
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 160, 200, grid_alpha)),
+                );
+
+                // Short tick mark at the bottom edge
                 painter.line_segment(
                     [
                         Pos2::new(x, plot_rect.bottom()),
                         Pos2::new(x, plot_rect.bottom() + 4.0),
                     ],
-                    Stroke::new(1.0, theme::SEPARATOR),
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(180, 200, 220, tick_alpha)),
                 );
 
-                // Label
+                // Frequency label
                 painter.text(
                     Pos2::new(x, rect.bottom() - 2.0),
                     egui::Align2::CENTER_BOTTOM,

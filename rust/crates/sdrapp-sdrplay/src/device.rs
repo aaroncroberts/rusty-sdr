@@ -61,6 +61,10 @@ pub struct RspdxSource {
     hw_cmd_tx: crossbeam_channel::Sender<HardwareCommand>,
     /// Receiver side kept here until `start()` moves it into the device thread.
     hw_cmd_rx: Option<crossbeam_channel::Receiver<HardwareCommand>>,
+    /// Handle to the blocking SDRplay driver thread.
+    /// Stored so `Drop` can join it, ensuring `sdrplay_api_Uninit`/`ReleaseDevice`/`Close`
+    /// are always called before the process exits — even on SIGTERM.
+    device_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RspdxSource {
@@ -76,6 +80,7 @@ impl RspdxSource {
             stop_tx: None,
             hw_cmd_tx,
             hw_cmd_rx: Some(hw_cmd_rx),
+            device_thread: None,
         }
     }
 
@@ -164,19 +169,21 @@ impl Block for RspdxSource {
         // Bridge channel: callback thread → tokio task
         let (iq_tx, iq_rx) = crossbeam_channel::bounded::<Arc<[IqSample]>>(128);
 
-        // Spawn the blocking SDRplay driver thread
+        // Spawn the blocking SDRplay driver thread; store the handle so Drop can join it.
         let iq_tx_clone = iq_tx.clone();
         let freq_atomic_clone = Arc::clone(&self.frequency_hz);
-        std::thread::Builder::new()
-            .name("sdrapp-sdrplay".into())
-            .spawn(move || {
-                if let Err(e) =
-                    run_sdrplay_thread(config, iq_tx_clone, running, freq_atomic_clone, hw_cmd_rx)
-                {
-                    tracing::error!("SDRplay thread error: {e}");
-                }
-            })
-            .expect("failed to spawn SDRplay thread");
+        self.device_thread = Some(
+            std::thread::Builder::new()
+                .name("sdrapp-sdrplay".into())
+                .spawn(move || {
+                    if let Err(e) = run_sdrplay_thread(
+                        config, iq_tx_clone, running, freq_atomic_clone, hw_cmd_rx,
+                    ) {
+                        tracing::error!("SDRplay thread error: {e}");
+                    }
+                })
+                .expect("failed to spawn SDRplay thread"),
+        );
 
         // Tokio task: forward from crossbeam channel to broadcast
         tokio::spawn(async move {
@@ -245,6 +252,29 @@ impl Source for RspdxSource {
             direct_sampling: false,
             gain_range_db: (0.0, 59.0),
             has_hardware_cmd_tx: true,
+        }
+    }
+}
+
+// ── Clean shutdown ────────────────────────────────────────────────────────────
+
+impl Drop for RspdxSource {
+    /// Signal the device thread to stop and block until it finishes.
+    ///
+    /// This ensures `sdrplay_api_Uninit`, `sdrplay_api_ReleaseDevice`, and
+    /// `sdrplay_api_Close` are always called before the process exits — whether
+    /// the app closes normally, receives SIGTERM, or the source is hot-swapped.
+    /// Without this join, `process::exit()` (called by eframe/winit on SIGTERM)
+    /// kills threads before their RAII guards run, leaving the API service locked.
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        // Drop stop_tx to signal the Tokio bridge task to exit.
+        drop(self.stop_tx.take());
+        // Join the device thread — blocks until sdrplay_api_Close() returns.
+        if let Some(handle) = self.device_thread.take() {
+            tracing::debug!("waiting for SDRplay device thread to exit...");
+            let _ = handle.join();
+            tracing::debug!("SDRplay device thread exited cleanly");
         }
     }
 }
