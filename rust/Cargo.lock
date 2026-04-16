@@ -3372,6 +3372,7 @@ dependencies = [
  "crossbeam-channel",
  "dasp",
  "dirs",
+ "hound",
  "num-complex",
  "parking_lot",
  "proptest",

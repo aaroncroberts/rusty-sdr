@@ -19,7 +19,13 @@ parking_lot = { workspace = true }
 crossbeam-channel = { workspace = true }
 dirs = { workspace = true }
 
+[features]
+# Gates hardware-in-the-loop reception tests.
+# Run with: cargo test -p sdrapp-core --features hardware_tests --test reception
+hardware_tests = []
+
 [dev-dependencies]
 proptest = { workspace = true }
 approx = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "time"] }
+hound = { workspace = true }
