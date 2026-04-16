@@ -62,9 +62,12 @@ impl FrequencyWidget {
 
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
 
-        // Handle scroll to tune
+        // Handle scroll to tune — only when the cursor is over this widget.
+        // smooth_scroll_delta is a global per-frame accumulator (not a consumed
+        // event), so without the hovered() guard it would double-fire alongside
+        // any other scroll handler in the same frame (e.g. spectrum scroll-tune).
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-        let new_freq = if scroll_delta.abs() > 0.5 {
+        let new_freq = if scroll_delta.abs() > 0.5 && response.hovered() {
             let ticks = scroll_delta.signum() as i64;
             let delta = ticks * self.step_hz;
             let raw = self.frequency_hz as i64 + delta;

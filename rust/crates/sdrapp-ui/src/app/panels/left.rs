@@ -400,7 +400,16 @@ impl SdrApp {
         ui.label(RichText::new("SCANNER").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        let scan_running = self.shared.read().scanner.scan_running;
+        let (scan_running, scan_cursor, scan_bm_count) = {
+            let s = self.shared.read();
+            let cat = &self.scan_cat_ui;
+            let count = s
+                .bookmarks
+                .iter()
+                .filter(|b| cat.is_empty() || b.category == *cat)
+                .count();
+            (s.scanner.scan_running, s.scanner.scan_cursor, count)
+        };
 
         // Category filter
         ui.horizontal(|ui| {
@@ -436,7 +445,7 @@ impl SdrApp {
                     let _ = self.cmd_tx.try_send(ScanCmd::Stop.into());
                 }
                 if ui
-                    .small_button(RichText::new("▶▶ Next").color(theme::TEXT_MUTED))
+                    .small_button(RichText::new(">> Next").color(theme::TEXT_MUTED))
                     .clicked()
                 {
                     let _ = self.cmd_tx.try_send(ScanCmd::Next.into());
@@ -448,10 +457,19 @@ impl SdrApp {
                         .strong(),
                 );
             } else {
+                let has_bms = scan_bm_count > 0;
+                let start_color = if has_bms { theme::STATUS_OK } else { theme::TEXT_MUTED };
                 let start_btn =
-                    egui::Button::new(RichText::new("▶  Scan").color(theme::STATUS_OK).strong())
+                    egui::Button::new(RichText::new("▶  Scan").color(start_color).strong())
                         .fill(theme::WIDGET_BG);
-                if ui.add_sized(Vec2::new(70.0, 22.0), start_btn).clicked() {
+                let start_resp = ui
+                    .add_sized(Vec2::new(70.0, 22.0), start_btn)
+                    .on_hover_text(if has_bms {
+                        format!("Scan {scan_bm_count} bookmark(s)")
+                    } else {
+                        "No bookmarks to scan — add some first".to_string()
+                    });
+                if start_resp.clicked() && has_bms {
                     let _ = self
                         .cmd_tx
                         .try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
@@ -461,6 +479,27 @@ impl SdrApp {
                 }
             }
         });
+
+        // When scanning: show current target bookmark name + freq
+        if scan_running {
+            let bm_label = {
+                let s = self.shared.read();
+                s.bookmarks.get(scan_cursor).map(|b| {
+                    format!("{} — {:.3} MHz", b.name, b.freq_hz as f64 / 1_000_000.0)
+                })
+            };
+            if let Some(label) = bm_label {
+                ui.add_space(2.0);
+                ui.label(RichText::new(label).color(theme::ACCENT_DIM).small());
+            }
+        } else if scan_bm_count == 0 {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("Add bookmarks to enable scanning")
+                    .color(theme::DANGER)
+                    .small(),
+            );
+        }
 
         ui.add_space(8.0);
         ui.separator();
