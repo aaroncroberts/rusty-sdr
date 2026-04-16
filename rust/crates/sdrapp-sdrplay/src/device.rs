@@ -108,9 +108,13 @@ impl RspdxSource {
         }
 
         // Enumerate connected devices.
+        // GetDevices() acquires an internal device-list lock; we must release it
+        // via UnlockDeviceApi() before Close(), otherwise the lock leaks into the
+        // next Open() call made by the device thread and causes Init to fail.
         let mut devices = [sys::sdrplay_api_DeviceT::default(); 16];
         let mut num: u32 = 0;
         let enum_err = unsafe { sys::sdrplay_api_GetDevices(devices.as_mut_ptr(), &mut num, 16) };
+        unsafe { sys::sdrplay_api_UnlockDeviceApi() };
 
         // Always close the API, regardless of enumeration result.
         unsafe { sys::sdrplay_api_Close() };
