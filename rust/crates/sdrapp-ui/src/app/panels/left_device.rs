@@ -172,9 +172,15 @@ impl SdrApp {
             let mut ifg_learn_req = false;
             let mut ifg_learn_cancel = false;
             let mut ifg_clear: Option<u8> = None;
-            let agc_tip = "AGC is managing gain — disable AGC to adjust LNA / IF manually";
-            ui.add_enabled_ui(!agc_active, |ui| {
-                ui.horizontal(|ui| {
+            if agc_active {
+                ui.label(
+                    RichText::new("LNA / IF — managed by AGC")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                )
+                .on_hover_text("Disable AGC to adjust LNA and IF gain manually");
+            } else {
+            ui.horizontal(|ui| {
                 let knob_w = (ui.available_width() / 2.0).min(60.0);
                 ui.allocate_ui(egui::Vec2::new(knob_w, 72.0), |ui| {
                     ui.vertical_centered(|ui| {
@@ -260,10 +266,8 @@ impl SdrApp {
                         }
                     });
                 });
-                }) // ui.horizontal
-            }) // add_enabled_ui
-            .response
-            .on_disabled_hover_text(agc_tip);
+            }); // ui.horizontal
+            } // else (AGC off)
             if lna_learn_req {
                 self.shared.write().midi_learn_target = Some("lna".into());
             }
