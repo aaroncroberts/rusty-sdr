@@ -185,7 +185,7 @@ impl SdrApp {
             }
             let agc_active = self.config.source.agc_enabled;
             // LNA + IF Gain knobs side by side
-            let (lna_learn, lna_cc) = {
+            let (lna_learn, lna_cc, map_pending) = {
                 let s = self.shared.read();
                 (
                     s.midi_learn_target.as_deref() == Some("lna"),
@@ -193,6 +193,7 @@ impl SdrApp {
                         .iter()
                         .find(|(_, v)| v.as_str() == "lna")
                         .map(|(&c, _)| c),
+                    s.midi_map_pending.is_some(),
                 )
             };
             let (ifg_learn, ifg_cc) = {
@@ -208,9 +209,11 @@ impl SdrApp {
             let mut lna_learn_req = false;
             let mut lna_learn_cancel = false;
             let mut lna_clear: Option<u8> = None;
+            let mut lna_bind = false;
             let mut ifg_learn_req = false;
             let mut ifg_learn_cancel = false;
             let mut ifg_clear: Option<u8> = None;
+            let mut ifg_bind = false;
             if agc_active {
                 ui.label(
                     RichText::new("LNA / IF — managed by AGC")
@@ -233,26 +236,30 @@ impl SdrApp {
                             label: Some("LNA"),
                             unit: "",
                             midi_cc: lna_cc,
-                            learn_active: lna_learn,
+                            learn_active: lna_learn || map_pending,
                         }
                         .show(ui);
-                        resp.context_menu(|ui| {
-                            if lna_learn {
-                                if ui.button("Cancel MIDI Learn").clicked() {
-                                    lna_learn_cancel = true;
+                        if map_pending && resp.clicked() {
+                            lna_bind = true;
+                        } else {
+                            resp.context_menu(|ui| {
+                                if lna_learn {
+                                    if ui.button("Cancel MIDI Learn").clicked() {
+                                        lna_learn_cancel = true;
+                                        ui.close_menu();
+                                    }
+                                } else if ui.button("Assign MIDI CC").clicked() {
+                                    lna_learn_req = true;
                                     ui.close_menu();
                                 }
-                            } else if ui.button("Assign MIDI CC").clicked() {
-                                lna_learn_req = true;
-                                ui.close_menu();
-                            }
-                            if let Some(cc) = lna_cc {
-                                if ui.button(format!("Clear CC {cc} binding")).clicked() {
-                                    lna_clear = Some(cc);
-                                    ui.close_menu();
+                                if let Some(cc) = lna_cc {
+                                    if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                                        lna_clear = Some(cc);
+                                        ui.close_menu();
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
                         if resp.changed() {
                             let new_lna = lna.round() as u8;
                             self.config.source.lna_state = new_lna;
@@ -275,26 +282,30 @@ impl SdrApp {
                             label: Some("IF"),
                             unit: "dBFS",
                             midi_cc: ifg_cc,
-                            learn_active: ifg_learn,
+                            learn_active: ifg_learn || map_pending,
                         }
                         .show(ui);
-                        resp.context_menu(|ui| {
-                            if ifg_learn {
-                                if ui.button("Cancel MIDI Learn").clicked() {
-                                    ifg_learn_cancel = true;
+                        if map_pending && resp.clicked() {
+                            ifg_bind = true;
+                        } else {
+                            resp.context_menu(|ui| {
+                                if ifg_learn {
+                                    if ui.button("Cancel MIDI Learn").clicked() {
+                                        ifg_learn_cancel = true;
+                                        ui.close_menu();
+                                    }
+                                } else if ui.button("Assign MIDI CC").clicked() {
+                                    ifg_learn_req = true;
                                     ui.close_menu();
                                 }
-                            } else if ui.button("Assign MIDI CC").clicked() {
-                                ifg_learn_req = true;
-                                ui.close_menu();
-                            }
-                            if let Some(cc) = ifg_cc {
-                                if ui.button(format!("Clear CC {cc} binding")).clicked() {
-                                    ifg_clear = Some(cc);
-                                    ui.close_menu();
+                                if let Some(cc) = ifg_cc {
+                                    if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                                        ifg_clear = Some(cc);
+                                        ui.close_menu();
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
                         if resp.changed() {
                             let new_gain = gain.round() as i32;
                             self.config.source.if_gain_dbfs = new_gain;
@@ -307,6 +318,18 @@ impl SdrApp {
                 });
             }); // ui.horizontal
             } // else (AGC off)
+            if lna_bind {
+                if let Some(cc) = self.shared.write().midi_map_pending.take() {
+                    self.shared.write().midi_cc_to_knob.insert(cc, "lna".into());
+                    self.config_dirty = true;
+                }
+            }
+            if ifg_bind {
+                if let Some(cc) = self.shared.write().midi_map_pending.take() {
+                    self.shared.write().midi_cc_to_knob.insert(cc, "if_gain".into());
+                    self.config_dirty = true;
+                }
+            }
             if lna_learn_req {
                 self.shared.write().midi_learn_target = Some("lna".into());
             }
@@ -331,7 +354,7 @@ impl SdrApp {
 
         // AGC setpoint knob (only when AGC is on)
         if self.config.source.agc_enabled {
-            let (sp_learn, sp_cc) = {
+            let (sp_learn, sp_cc, sp_map_pending) = {
                 let s = self.shared.read();
                 (
                     s.midi_learn_target.as_deref() == Some("agc_setpoint"),
@@ -339,11 +362,13 @@ impl SdrApp {
                         .iter()
                         .find(|(_, v)| v.as_str() == "agc_setpoint")
                         .map(|(&c, _)| c),
+                    s.midi_map_pending.is_some(),
                 )
             };
             let mut sp_learn_req = false;
             let mut sp_learn_cancel = false;
             let mut sp_clear: Option<u8> = None;
+            let mut sp_bind = false;
             ui.vertical_centered(|ui| {
                 let mut sp = self.config.source.agc_setpoint_dbfs as f32;
                 let resp = KnobWidget {
@@ -355,26 +380,30 @@ impl SdrApp {
                     label: Some("AGC Level"),
                     unit: "dBFS",
                     midi_cc: sp_cc,
-                    learn_active: sp_learn,
+                    learn_active: sp_learn || sp_map_pending,
                 }
                 .show(ui);
-                resp.context_menu(|ui| {
-                    if sp_learn {
-                        if ui.button("Cancel MIDI Learn").clicked() {
-                            sp_learn_cancel = true;
+                if sp_map_pending && resp.clicked() {
+                    sp_bind = true;
+                } else {
+                    resp.context_menu(|ui| {
+                        if sp_learn {
+                            if ui.button("Cancel MIDI Learn").clicked() {
+                                sp_learn_cancel = true;
+                                ui.close_menu();
+                            }
+                        } else if ui.button("Assign MIDI CC").clicked() {
+                            sp_learn_req = true;
                             ui.close_menu();
                         }
-                    } else if ui.button("Assign MIDI CC").clicked() {
-                        sp_learn_req = true;
-                        ui.close_menu();
-                    }
-                    if let Some(cc) = sp_cc {
-                        if ui.button(format!("Clear CC {cc} binding")).clicked() {
-                            sp_clear = Some(cc);
-                            ui.close_menu();
+                        if let Some(cc) = sp_cc {
+                            if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                                sp_clear = Some(cc);
+                                ui.close_menu();
+                            }
                         }
-                    }
-                });
+                    });
+                }
                 if resp.changed() {
                     let new_sp = sp.round() as i32;
                     self.config.source.agc_setpoint_dbfs = new_sp;
@@ -403,6 +432,12 @@ impl SdrApp {
                         .try_send(HardwareCommand::SetAgcSetpoint(-60).into());
                 }
             });
+            if sp_bind {
+                if let Some(cc) = self.shared.write().midi_map_pending.take() {
+                    self.shared.write().midi_cc_to_knob.insert(cc, "agc_setpoint".into());
+                    self.config_dirty = true;
+                }
+            }
             if sp_learn_req {
                 self.shared.write().midi_learn_target = Some("agc_setpoint".into());
             }

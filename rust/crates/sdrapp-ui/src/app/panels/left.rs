@@ -243,7 +243,7 @@ impl SdrApp {
             ui.add_space(4.0);
 
             // Squelch threshold knob
-            let (sq_learn, sq_cc) = {
+            let (sq_learn, sq_cc, sq_map_pending) = {
                 let s = self.shared.read();
                 let learn = s.midi_learn_target.as_deref() == Some("squelch");
                 let cc = s
@@ -251,11 +251,12 @@ impl SdrApp {
                     .iter()
                     .find(|(_, v)| v.as_str() == "squelch")
                     .map(|(&c, _)| c);
-                (learn, cc)
+                (learn, cc, s.midi_map_pending.is_some())
             };
             let mut sq_learn_req = false;
             let mut sq_learn_cancel = false;
             let mut sq_clear: Option<u8> = None;
+            let mut sq_bind = false;
             ui.vertical_centered(|ui| {
                 let mut sq_threshold = self.shared.read().demod.squelch_threshold;
                 let resp = KnobWidget {
@@ -267,32 +268,42 @@ impl SdrApp {
                     label: Some("SQUELCH"),
                     unit: "dBFS",
                     midi_cc: sq_cc,
-                    learn_active: sq_learn,
+                    learn_active: sq_learn || sq_map_pending,
                 }
                 .show(ui);
-                resp.context_menu(|ui| {
-                    if sq_learn {
-                        if ui.button("Cancel MIDI Learn").clicked() {
-                            sq_learn_cancel = true;
+                if sq_map_pending && resp.clicked() {
+                    sq_bind = true;
+                } else {
+                    resp.context_menu(|ui| {
+                        if sq_learn {
+                            if ui.button("Cancel MIDI Learn").clicked() {
+                                sq_learn_cancel = true;
+                                ui.close_menu();
+                            }
+                        } else if ui.button("Assign MIDI CC").clicked() {
+                            sq_learn_req = true;
                             ui.close_menu();
                         }
-                    } else if ui.button("Assign MIDI CC").clicked() {
-                        sq_learn_req = true;
-                        ui.close_menu();
-                    }
-                    if let Some(cc) = sq_cc {
-                        if ui.button(format!("Clear CC {cc} binding")).clicked() {
-                            sq_clear = Some(cc);
-                            ui.close_menu();
+                        if let Some(cc) = sq_cc {
+                            if ui.button(format!("Clear CC {cc} binding")).clicked() {
+                                sq_clear = Some(cc);
+                                ui.close_menu();
+                            }
                         }
-                    }
-                });
+                    });
+                }
                 if resp.changed() {
                     let _ = self
                         .cmd_tx
                         .try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
                 }
             });
+            if sq_bind {
+                if let Some(cc) = self.shared.write().midi_map_pending.take() {
+                    self.shared.write().midi_cc_to_knob.insert(cc, "squelch".into());
+                    self.config_dirty = true;
+                }
+            }
             if sq_learn_req {
                 self.shared.write().midi_learn_target = Some("squelch".into());
             }

@@ -62,12 +62,12 @@ impl MidiMapperWindow {
     }
 
     fn show_contents(&self, ui: &mut egui::Ui, shared: &Arc<RwLock<SharedState>>) {
-        let (mapped_ccs, learn_active) = {
+        let (mapped_ccs, learn_active, pending_cc) = {
             let s = shared.read();
             let mapped: std::collections::HashSet<u8> =
                 s.midi_cc_to_knob.keys().copied().collect();
             let learn = s.midi_learn_target.is_some();
-            (mapped, learn)
+            (mapped, learn, s.midi_map_pending)
         };
 
         // ── Canvas painter ────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ impl MidiMapperWindow {
 
         let (rect, _response) = ui.allocate_exact_size(
             Vec2::new(available_w, canvas_px_h),
-            Sense::hover(),
+            Sense::click(),
         );
 
         let painter = ui.painter_at(rect);
@@ -90,7 +90,11 @@ impl MidiMapperWindow {
         let t = ui.input(|i| i.time);
         let pulse = ((t * 3.0).sin() as f32 * 0.5 + 0.5).clamp(0.0, 1.0);
 
-        // ── Draw controls ─────────────────────────────────────────────────────
+        // ── Draw controls + click detection ──────────────────────────────────
+        // Each CC control gets its own click region for binding.
+        // NoteOn controls (buttons) are not part of the MIDI-learn CC system.
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+
         for ctrl in self.layout.controls() {
             let r = &ctrl.rect;
             let px = rect.min + Vec2::new(r.x * scale, r.y * scale);
@@ -98,8 +102,22 @@ impl MidiMapperWindow {
             let ph = r.h * scale;
             let screen_rect = Rect::from_min_size(px, Vec2::new(pw, ph));
 
+            // Only CC controls can be clicked to start a bind.
+            let is_cc = ctrl.midi_key.kind == MidiKeyKind::ControlChange;
+            let cc_num = ctrl.midi_key.number;
+            let is_pending = pending_cc == Some(cc_num);
+
+            // Check for click on this specific control.
+            if is_cc {
+                let hovered = pointer_pos.is_some_and(|p| screen_rect.contains(p));
+                if hovered && ui.input(|i| i.pointer.primary_clicked()) {
+                    shared.write().midi_map_pending = Some(cc_num);
+                    ui.ctx().request_repaint();
+                }
+            }
+
             let state = control_state(&ctrl.midi_key, &mapped_ccs);
-            let (fill, stroke) = colors_for_state(state, learn_active, pulse);
+            let (fill, stroke) = colors_for_state_ex(state, learn_active, is_pending, pulse);
 
             match ctrl.control_type {
                 ControlType::Knob => {
@@ -150,11 +168,18 @@ fn control_state(
     }
 }
 
-fn colors_for_state(
+fn colors_for_state_ex(
     state: ControlState,
     learn_active: bool,
+    is_pending: bool,
     pulse: f32,
 ) -> (Color32, Stroke) {
+    if is_pending {
+        // This control is currently selected — solid bright amber + fill
+        let alpha = (pulse * 180.0 + 75.0) as u8;
+        let fill = Color32::from_rgba_premultiplied(80, 60, 0, alpha);
+        return (fill, Stroke::new(2.0, theme::AMBER));
+    }
     match state {
         ControlState::Mapped => (
             theme::ACCENT_DIM,

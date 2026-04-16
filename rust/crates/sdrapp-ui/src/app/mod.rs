@@ -242,6 +242,11 @@ impl eframe::App for SdrApp {
             s.help_panel_open = !s.help_panel_open;
         }
 
+        // ── Escape cancels pending mapper bind ────────────────────────────────
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.shared.write().midi_map_pending = None;
+        }
+
         // ── Ctrl+, opens settings ─────────────────────────────────────────────
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma)) {
             self.show_settings = !self.show_settings;

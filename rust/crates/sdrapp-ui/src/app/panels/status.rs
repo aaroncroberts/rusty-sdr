@@ -17,6 +17,7 @@ impl SdrApp {
             source_name,
             is_stereo,
             frames_dropped,
+            midi_map_pending,
         ) = {
             let s = self.shared.read();
             (
@@ -30,6 +31,7 @@ impl SdrApp {
                 s.source_name.clone(),
                 s.rds.is_stereo,
                 s.audio_frames_dropped,
+                s.midi_map_pending,
             )
         };
 
@@ -59,6 +61,17 @@ impl SdrApp {
             );
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // MIDI bind-mode hint (highest priority — shown instead of normal right items)
+                if let Some(cc) = midi_map_pending {
+                    ui.label(
+                        RichText::new(format!("Click a knob to bind CC {cc}  |  Esc to cancel"))
+                            .color(theme::AMBER)
+                            .small()
+                            .strong(),
+                    );
+                    return;
+                }
+
                 // Right: recording
                 if is_recording {
                     ui.label(RichText::new("● REC").color(theme::DANGER).small().strong());

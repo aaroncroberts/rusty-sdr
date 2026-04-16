@@ -279,6 +279,9 @@ pub struct SharedState {
     /// Learned CC bindings: MIDI CC number → knob ID string.
     /// Set by the MIDI controller; read by the MIDI dispatcher and KnobWidget.
     pub midi_cc_to_knob: std::collections::HashMap<u8, String>,
+    /// Set by the MIDI mapper window when the user clicks a CC control, waiting for
+    /// the user to click a UI knob to complete the binding.  Cleared on bind or Escape.
+    pub midi_map_pending: Option<u8>,
     /// Scheduled recording: seconds until start (0 = start now, None = not scheduled).
     pub scheduled_record_delay_secs: Option<u64>,
     /// Scheduled recording duration in seconds.
