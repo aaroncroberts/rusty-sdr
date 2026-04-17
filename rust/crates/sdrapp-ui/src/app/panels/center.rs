@@ -410,6 +410,20 @@ impl SdrApp {
             vec![]
         };
 
+        // ── Scanner lock tracking ─────────────────────────────────────────────
+        // Read the locked freq from shared state; when a new lock appears, record
+        // the egui time so the 3-second banner can be auto-dismissed.
+        let now = ui.ctx().input(|i| i.time);
+        {
+            let locked = self.shared.read().scanner.last_locked_freq_hz;
+            if locked.is_some() && locked != self.scan_last_locked_freq {
+                self.scan_last_locked_freq = locked;
+                self.scan_lock_time = Some(now);
+                // Re-arm repaint so the fade runs at display rate.
+                ui.ctx().request_repaint();
+            }
+        }
+
         SpectrumWidget {
             fft_data: &fft_data,
             db_range,
@@ -422,8 +436,63 @@ impl SdrApp {
             hover_pos: spectrum_hover,
             tune_step_hz,
             peak_marker_hz: &peak_freqs_hz,
+            locked_freq_hz: self.scan_last_locked_freq,
         }
         .show(&mut spectrum_ui);
+
+        // ── Scanner lock banner ───────────────────────────────────────────────
+        // Prominent "LOCKED: 104.700 MHz" overlay for 3 s; fades out in last 0.5 s.
+        if let (Some(locked_hz), Some(lock_t)) = (self.scan_last_locked_freq, self.scan_lock_time) {
+            let elapsed = now - lock_t;
+            if elapsed < 3.0 {
+                // Alpha: full opacity for first 2.5 s, then fade to 0 over 0.5 s
+                let alpha = if elapsed < 2.5 {
+                    1.0_f32
+                } else {
+                    (1.0 - ((elapsed - 2.5) / 0.5)) as f32
+                };
+                let alpha_u8 = (alpha * 255.0) as u8;
+
+                let mhz = locked_hz as f64 / 1_000_000.0;
+                let banner_text = format!("LOCKED  {mhz:.3} MHz");
+                let banner_color = egui::Color32::from_rgba_unmultiplied(255, 200, 50, alpha_u8);
+                let bg_color = egui::Color32::from_rgba_unmultiplied(10, 10, 10, (alpha * 180.0) as u8);
+                let border_color = egui::Color32::from_rgba_unmultiplied(255, 200, 50, (alpha * 120.0) as u8);
+
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("scan_lock_banner"),
+                ));
+                let text_pos = egui::Pos2::new(
+                    spectrum_rect.center().x,
+                    spectrum_rect.top() + 18.0,
+                );
+                // Background box
+                let galley = ui.ctx().fonts(|f| {
+                    f.layout_no_wrap(
+                        banner_text.clone(),
+                        egui::FontId::proportional(14.0),
+                        banner_color,
+                    )
+                });
+                let text_size = galley.size();
+                let pad = egui::Vec2::new(8.0, 4.0);
+                let box_rect = egui::Rect::from_center_size(
+                    text_pos,
+                    text_size + pad * 2.0,
+                );
+                painter.rect(box_rect, 3.0, bg_color, egui::Stroke::new(1.0, border_color));
+                painter.text(
+                    text_pos,
+                    egui::Align2::CENTER_CENTER,
+                    banner_text,
+                    egui::FontId::proportional(14.0),
+                    banner_color,
+                );
+                // Keep repainting during the fade
+                ui.ctx().request_repaint();
+            }
+        }
 
         // ── Frequency context band label ──────────────────────────────────────
         // Show the band name in the top-left corner of the spectrum when tuned

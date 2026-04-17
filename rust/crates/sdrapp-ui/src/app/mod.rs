@@ -102,6 +102,12 @@ pub struct SdrApp {
     range_scan_dwell: f32,
     /// Require stereo pilot before locking.
     range_scan_stereo_only: bool,
+    /// egui time (seconds since app start) when the range scanner last locked.
+    /// Used to drive the 3-second auto-dismiss banner. None = no lock yet.
+    scan_lock_time: Option<f64>,
+    /// Last frequency (Hz) where the range scanner locked — persists for the
+    /// spectrum indicator even after the banner fades.
+    scan_last_locked_freq: Option<u64>,
     // ── App settings ──────────────────────────────────────────────────────────
     /// Whether the settings window (Ctrl+,) is open.
     show_settings: bool,
@@ -214,6 +220,8 @@ impl SdrApp {
             range_scan_squelch: -60.0,
             range_scan_dwell: 0.3,
             range_scan_stereo_only: false,
+            scan_lock_time: None,
+            scan_last_locked_freq: None,
             show_settings: false,
             auto_start_pending: auto_start,
             last_clipping_time: None,

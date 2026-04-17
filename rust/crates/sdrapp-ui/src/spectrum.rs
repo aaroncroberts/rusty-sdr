@@ -50,6 +50,10 @@ pub struct SpectrumWidget<'a> {
     /// A small triangle marker is drawn above the spectrum trace at each position.
     /// Empty slice = no markers drawn.
     pub peak_marker_hz: &'a [u64],
+    /// Frequency (Hz) where the range scanner last locked onto a station.
+    /// When Some, a gold vertical line is drawn at this position so the operator
+    /// can see the locked channel even after the banner fades.
+    pub locked_freq_hz: Option<u64>,
 }
 
 impl<'a> SpectrumWidget<'a> {
@@ -361,6 +365,38 @@ impl<'a> SpectrumWidget<'a> {
             );
         }
 
+        // ── Scanner lock marker ───────────────────────────────────────────────
+        // Gold dashed-style vertical line at the last FM band scan lock frequency.
+        // Distinct from the VFO line (blue) so the operator can see where the
+        // scanner found a station even after manual retuning.
+        if let Some(locked_hz) = self.locked_freq_hz {
+            if freq_hi > freq_lo {
+                let lt = ((locked_hz as f64 - freq_lo) / (freq_hi - freq_lo)) as f32;
+                let lx = plot_rect.left() + lt.clamp(0.0, 1.0) * plot_rect.width();
+                let lock_color = Color32::from_rgba_unmultiplied(255, 200, 50, 180); // gold
+                // Dashed appearance: alternating short segments every 6px
+                let mut y = plot_rect.top();
+                while y < plot_rect.bottom() {
+                    let y_end = (y + 4.0).min(plot_rect.bottom());
+                    painter.line_segment(
+                        [Pos2::new(lx, y), Pos2::new(lx, y_end)],
+                        Stroke::new(1.5, lock_color),
+                    );
+                    y += 6.0;
+                }
+                // "LOCKED" label above the marker
+                let mhz = locked_hz as f64 / 1_000_000.0;
+                let lock_label = format!("LOCKED {mhz:.3}");
+                painter.text(
+                    Pos2::new(lx + 3.0, plot_rect.top() + 2.0),
+                    egui::Align2::LEFT_TOP,
+                    lock_label,
+                    egui::FontId::proportional(9.0),
+                    lock_color,
+                );
+            }
+        }
+
         // ── Tune-step markers ─────────────────────────────────────────────────
         // Small diamond ticks on the bottom of plot_rect at each tune_step_hz
         // interval from the VFO, showing scroll-tune granularity at a glance.
@@ -612,6 +648,7 @@ mod tests {
                     hover_pos: None,
                     tune_step_hz: 100_000,
                     peak_marker_hz: &[],
+                    locked_freq_hz: None,
                 }
                 .show(ui);
             });

@@ -199,6 +199,9 @@ pub struct ScannerState {
     pub range_squelch_dbfs: f32,
     /// When true, require stereo pilot detection before stopping (WBFM only).
     pub range_stereo_only: bool,
+    /// Frequency (Hz) where the range scanner last locked onto a station.
+    /// Set on lock, cleared when a new StartRange scan is issued.
+    pub last_locked_freq_hz: Option<u64>,
 }
 
 /// FFT / spectrum display settings and data.

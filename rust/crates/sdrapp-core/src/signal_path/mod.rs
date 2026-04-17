@@ -493,6 +493,7 @@ impl SignalPath {
                                     s.scanner.range_squelch_dbfs = squelch_dbfs;
                                     s.scanner.range_stereo_only = stereo_only;
                                     s.scanner.scan_dwell_secs = dwell_secs;
+                                    s.scanner.last_locked_freq_hz = None; // clear previous lock
                                     s.center_freq_hz = freq_lo;
                                 }
                                 if let Some(ref atomic) = freq_atomic_clone {
@@ -885,6 +886,7 @@ impl SignalPath {
                                 let mut s = shared_clone.write();
                                 s.scanner.scan_running = false;
                                 s.scanner.range_mode = false;
+                                s.scanner.last_locked_freq_hz = Some(scan_range_freq);
                             } else {
                                 // Advance to next frequency, wrap around.
                                 let next = scan_range_freq + scan_range_step;
