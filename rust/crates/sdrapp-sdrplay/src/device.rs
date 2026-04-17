@@ -767,15 +767,19 @@ fn try_run_sdrplay_session(
             unsafe {
                 let ch = &mut *(*params_ptr).rxChannelA;
                 let rsp = &mut (*(*params_ptr).devParams).rspDxParams;
-                let (reason, reason_ext) = match cmd {
+                let (cmd_name, reason, reason_ext) = match cmd {
                     HardwareCommand::SetLnaState(n) => {
                         ch.tunerParams.gain.LNAstate = n;
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Gr,
+                        ("SetLnaState",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Gr,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
                     }
                     HardwareCommand::SetIfGain(g) => {
+                        // gRdB is gain *reduction* in dB: 0=max gain, 59=max attenuation.
+                        // if_gain_dbfs is signed (0 = no attenuation).
                         ch.tunerParams.gain.gRdB = (-g).clamp(0, 59);
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Gr,
+                        ("SetIfGain",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Tuner_Gr,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
                     }
                     HardwareCommand::SetAgcEnabled(en) => {
@@ -784,17 +788,20 @@ fn try_run_sdrplay_session(
                         } else {
                             sys::sdrplay_api_AgcControlT_sdrplay_api_AGC_DISABLE
                         };
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Agc,
+                        ("SetAgcEnabled",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Agc,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
                     }
                     HardwareCommand::SetAgcSetpoint(sp) => {
                         ch.ctrlParams.agc.setPoint_dBfs = sp;
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Agc,
+                        ("SetAgcSetpoint",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Agc,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
                     }
                     HardwareCommand::SetBiasT(en) => {
                         rsp.biasTEnable = en as u8;
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                        ("SetBiasT",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_BiasTControl)
                     }
                     HardwareCommand::SetHdrMode(en) => {
@@ -806,17 +813,20 @@ fn try_run_sdrplay_session(
                             continue;
                         }
                         rsp.hdrEnable = en as u8;
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                        ("SetHdrMode",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_HdrEnable)
                     }
                     HardwareCommand::SetAmNotch(en) => {
                         rsp.rfNotchEnable = en as u8;
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                        ("SetAmNotch",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_RfNotchControl)
                     }
                     HardwareCommand::SetFmNotch(en) => {
                         rsp.rfDabNotchEnable = en as u8;
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                        ("SetFmNotch",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_RfDabNotchControl)
                     }
                     HardwareCommand::SetAntenna(port) => {
@@ -825,7 +835,8 @@ fn try_run_sdrplay_session(
                             2 => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_C,
                             _ => sys::sdrplay_api_RspDx_AntennaSelectT_sdrplay_api_RspDx_ANTENNA_A,
                         };
-                        (sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
+                        ("SetAntenna",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_AntennaControl)
                     }
                     HardwareCommand::RestartDevice => unreachable!(),
@@ -838,16 +849,17 @@ fn try_run_sdrplay_session(
                 );
                 if e != sys::sdrplay_api_ErrT_sdrplay_api_Success {
                     tracing::error!(
+                        cmd = cmd_name,
                         error_code = e,
-                        "sdrplay_api_Update (hardware cmd) failed"
+                        "sdrplay_api_Update failed"
                     );
                     if let Some(s) = shared {
                         s.write().device_diagnostics.push_error(
-                            format!("HardwareCommand Update failed (err={e})")
+                            format!("{cmd_name} Update failed (err={e})")
                         );
                     }
                 } else {
-                    tracing::debug!(error_code = e, "sdrplay_api_Update (hardware cmd)");
+                    tracing::debug!(cmd = cmd_name, "sdrplay_api_Update ok");
                 }
             }
         }

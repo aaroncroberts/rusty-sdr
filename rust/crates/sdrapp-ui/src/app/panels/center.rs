@@ -163,8 +163,8 @@ impl SdrApp {
         let db_range = (db_floor, db_ceil);
 
         // ── Hint strip ───────────────────────────────────────────────────────
-        // Evaluate all hint conditions and render the highest-priority active
-        // hint as a 1-line strip.  Hidden (zero height) when nothing is wrong.
+        // Always reserve exactly one text row so the spectrum + waterfall below
+        // never shift when a hint appears or disappears.
         let hint_ctx = HintCtx {
             is_running,
             demod_mode,
@@ -177,17 +177,21 @@ impl SdrApp {
             frequency_hz: self.config.ui.frequency_hz,
             scanner_running,
         };
-        if let Some(hint) = hints::evaluate(&hint_ctx) {
-            let strip_color = if hint.priority == 0 {
-                egui::Color32::from_rgb(220, 50, 50) // red for critical
-            } else if hint.priority <= 2 {
-                egui::Color32::from_rgb(240, 165, 0) // amber for warnings
+        let hint = hints::evaluate(&hint_ctx);
+        let strip_color = hint.as_ref().map(|h| {
+            if h.priority == 0 {
+                egui::Color32::from_rgb(220, 50, 50)
+            } else if h.priority <= 2 {
+                egui::Color32::from_rgb(240, 165, 0)
             } else {
-                theme::TEXT_MUTED // muted for informational
-            };
-            ui.add_space(1.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(hint.message).color(strip_color).small());
+                theme::TEXT_MUTED
+            }
+        });
+        // ui.horizontal always allocates one row; empty when no hint is active.
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            if let (Some(hint), Some(color)) = (hint, strip_color) {
+                ui.label(RichText::new(hint.message).color(color).small());
                 if let Some((label, action)) = hint.action {
                     if ui.small_button(label).clicked() {
                         match action {
@@ -232,9 +236,9 @@ impl SdrApp {
                         }
                     }
                 }
-            });
-            ui.add_space(1.0);
-        }
+            }
+        });
+        ui.add_space(1.0);
 
         let available_h = ui.available_height();
         // Spectrum height driven by the user-adjustable split ratio.
