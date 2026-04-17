@@ -119,7 +119,13 @@ impl SignalPath {
             // transcendental-math cost (atan2/sin_cos) by the decimation factor.
             // The FFT still sees the full-rate IQ for wide spectrum display.
             // Factor is chosen so demod_sr is in [200_000, 500_000].
-            let wbfm_decim: u32 = (sr / 500_000).max(1);
+            // Decimate IQ to ≤250 kHz before the FM stereo decoder.
+            // FM composite content tops out at 57 kHz (RDS subcarrier);
+            // 250 kHz/2 = 125 kHz Nyquist is sufficient with margin.
+            // Using 250 kHz instead of 500 kHz halves the per-sample DSP cost
+            // (atan2, sin/cos PLL, 10-stage IIR) at the hardware's native rate.
+            // Example: 500 kHz hardware → decim=2, demod at 250 kHz.
+            let wbfm_decim: u32 = (sr / 250_000).max(1);
             let demod_sr = sr / wbfm_decim;
             let mut fft_size = FFT_SIZE;
             let mut fft_window = crate::dsp::FftWindow::Hann;
@@ -464,8 +470,25 @@ impl SignalPath {
                         SignalPathCommand::Start => {
                             if paused {
                                 paused = false;
-                                shared_clone.write().is_running = true;
                                 iq_accumulator.clear();
+                                audio_accumulator.clear();
+                                // Drain IQ that accumulated while the hardware was
+                                // initialising (typically ~3 s worth of batches).
+                                // Without this drain, blocking_recv() returns Lagged(N)
+                                // immediately on every call for several seconds, causing
+                                // repeated demod.reset() and preventing the FM PLL from
+                                // ever locking → silent audio.
+                                let mut drained = 0u64;
+                                loop {
+                                    match iq_rx.try_recv() {
+                                        Ok(_) => drained += 1,
+                                        Err(_) => break,
+                                    }
+                                }
+                                if drained > 0 {
+                                    tracing::info!(drained, "drained stale IQ batches on start");
+                                }
+                                shared_clone.write().is_running = true;
                                 tracing::info!("signal path started");
                             } else {
                                 tracing::debug!("Start received while already running — ignored");
@@ -579,11 +602,12 @@ impl SignalPath {
                                 "signal path minor lag — continuing without demod reset"
                             );
                         }
-                        // Yield this OS thread so other threads run and the
-                        // broadcast channel can drain.  Without this, the thread
-                        // spins at 100% CPU because blocking_recv() on a Lagged
-                        // channel returns immediately with the next available item.
-                        std::thread::yield_now();
+                        // Sleep briefly so the SDRplay callback thread can
+                        // refill the broadcast channel and we don't spin at
+                        // 100% CPU.  blocking_recv() on a Lagged channel
+                        // returns the oldest buffered item immediately (no
+                        // blocking), which would otherwise create a hot loop.
+                        std::thread::sleep(std::time::Duration::from_millis(2));
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {

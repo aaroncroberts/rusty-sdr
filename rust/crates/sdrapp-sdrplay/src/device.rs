@@ -971,34 +971,44 @@ extern "C" fn event_callback(
     _params: *mut sys::sdrplay_api_EventParamsT,
     cb_context: *mut c_void,
 ) {
-    // SAFETY: cb_context is a Box<CallbackContext> kept alive by try_run_sdrplay_session.
-    let ctx = unsafe { &*(cb_context as *const CallbackContext) };
+    // Guard against Rust panics crossing the C FFI boundary.
+    // A panic propagating into libsdrplay_api would be undefined behaviour
+    // and would cause SIGABRT (the runtime catches it at the extern "C" boundary
+    // and calls abort() rather than letting C++ frames unwind).
+    let result = std::panic::catch_unwind(|| {
+        // SAFETY: cb_context is a Box<CallbackContext> kept alive by try_run_sdrplay_session.
+        let ctx = unsafe { &*(cb_context as *const CallbackContext) };
 
-    match event_id {
-        // GainChange (0): AGC adjusted — routine, debug level only.
-        sys::sdrplay_api_EventT_sdrplay_api_GainChange => {
-            tracing::debug!(tuner, "SDRplay GainChange event (AGC)");
+        match event_id {
+            // GainChange (0): AGC adjusted — routine, debug level only.
+            sys::sdrplay_api_EventT_sdrplay_api_GainChange => {
+                tracing::debug!(tuner, "SDRplay GainChange event (AGC)");
+            }
+            // PowerOverloadChange (1): ADC input overload — flag for OverloadMsgAck.
+            // The main loop will call sdrplay_api_Update(OverloadMsgAck) which lets
+            // the AGC subsystem reduce gain and correct the overload condition.
+            sys::sdrplay_api_EventT_sdrplay_api_PowerOverloadChange => {
+                tracing::warn!(tuner, "SDRplay ADC power overload — flagging for AGC correction");
+                ctx.overload_ack_needed.store(true, Ordering::Relaxed);
+            }
+            // DeviceRemoved (2): physical hot-unplug — signal the main loop.
+            sys::sdrplay_api_EventT_sdrplay_api_DeviceRemoved => {
+                tracing::warn!("SDRplay DeviceRemoved event — hot-unplug detected");
+                ctx.disconnected.store(true, Ordering::Relaxed);
+            }
+            // DeviceFailure (4): internal API failure — treat as removal.
+            sys::sdrplay_api_EventT_sdrplay_api_DeviceFailure => {
+                tracing::error!("SDRplay DeviceFailure event — treating as disconnect");
+                ctx.disconnected.store(true, Ordering::Relaxed);
+            }
+            _ => {
+                tracing::debug!(event = event_id, tuner, "SDRplay event");
+            }
         }
-        // PowerOverloadChange (1): ADC input overload — flag for OverloadMsgAck.
-        // The main loop will call sdrplay_api_Update(OverloadMsgAck) which lets
-        // the AGC subsystem reduce gain and correct the overload condition.
-        sys::sdrplay_api_EventT_sdrplay_api_PowerOverloadChange => {
-            tracing::warn!(tuner, "SDRplay ADC power overload — flagging for AGC correction");
-            ctx.overload_ack_needed.store(true, Ordering::Relaxed);
-        }
-        // DeviceRemoved (2): physical hot-unplug — signal the main loop.
-        sys::sdrplay_api_EventT_sdrplay_api_DeviceRemoved => {
-            tracing::warn!("SDRplay DeviceRemoved event — hot-unplug detected");
-            ctx.disconnected.store(true, Ordering::Relaxed);
-        }
-        // DeviceFailure (4): internal API failure — treat as removal.
-        sys::sdrplay_api_EventT_sdrplay_api_DeviceFailure => {
-            tracing::error!("SDRplay DeviceFailure event — treating as disconnect");
-            ctx.disconnected.store(true, Ordering::Relaxed);
-        }
-        _ => {
-            tracing::debug!(event = event_id, tuner, "SDRplay event");
-        }
+    });
+
+    if result.is_err() {
+        tracing::error!("panic in SDRplay event_callback — suppressed to avoid FFI abort");
     }
 }
 
