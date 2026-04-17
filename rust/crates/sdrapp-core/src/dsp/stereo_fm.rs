@@ -19,8 +19,8 @@
 //! 1. **FM discriminator** — `arg(conj(z[n-1]) · z[n])` at full IQ sample rate.
 //! 2. **Pilot PLL** — proportional-only loop locks to 19 kHz pilot.
 //!    38 kHz reference is derived as `cos(2·θ_pilot)`.
-//! 3. **L+R** — 1st-order IIR low-pass at ~15 kHz on the composite.
-//! 4. **L-R** — composite × 2·cos(2·θ_pilot), then same IIR LP.
+//! 3. **L+R** — 4th-order Butterworth low-pass at 15 kHz on the composite.
+//! 4. **L-R** — composite × 2·cos(2·θ_pilot), then same Butterworth LP.
 //! 5. **Pilot level tracking** — slow EMA of `|composite × cos(θ_pilot)|`.
 //!    Stereo is enabled when the pilot exceeds a threshold.
 //! 6. **Matrix decode** — `L = (L+R + L-R) / 2`, `R = (L+R − L-R) / 2`.
@@ -34,6 +34,88 @@ use crate::sample::StereoFrame;
 /// Minimum normalised pilot amplitude to declare stereo.
 /// (Pilot is typically ~10 % of full FM deviation.)
 const PILOT_THRESHOLD: f32 = 0.02;
+
+// ── Direct-form II transposed biquad section ─────────────────────────────────
+
+/// Single biquad (2nd-order IIR) section, direct-form II transposed.
+///
+/// Used in pairs to build a 4th-order Butterworth LP with -3 dB at exactly
+/// the specified cutoff frequency.
+#[derive(Clone)]
+struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+impl Biquad {
+    /// Construct a 2nd-order Butterworth LP section.
+    ///
+    /// * `fc` — cutoff frequency in Hz
+    /// * `fs` — sample rate in Hz
+    /// * `q`  — pole Q factor (controls the shape of the 4th-order cascade)
+    ///
+    /// For a 4th-order Butterworth, use two sections with `q` values
+    /// `[1.3066, 0.5412]` (poles at ±15°, ±75° from the unit-circle top).
+    fn butterworth_lp(fc: f32, fs: f32, q: f32) -> Self {
+        let omega = std::f32::consts::TAU * fc / fs;
+        let alpha = omega.sin() / (2.0 * q);
+        let cos_w = omega.cos();
+        let a0_inv = 1.0 / (1.0 + alpha);
+        let b01 = (1.0 - cos_w) * 0.5 * a0_inv;
+        Self {
+            b0: b01,
+            b1: (1.0 - cos_w) * a0_inv,
+            b2: b01,
+            a1: -2.0 * cos_w * a0_inv,
+            a2: (1.0 - alpha) * a0_inv,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        y
+    }
+
+    fn reset(&mut self) {
+        self.z1 = 0.0;
+        self.z2 = 0.0;
+    }
+}
+
+// ── 4th-order Butterworth LP: two biquad sections ────────────────────────────
+
+/// Apply a pair of biquad sections in series (4th-order LP).
+#[inline]
+fn biquad2_process(stages: &mut [Biquad; 2], x: f32) -> f32 {
+    let mid = stages[0].process(x);
+    stages[1].process(mid)
+}
+
+fn biquad2_reset(stages: &mut [Biquad; 2]) {
+    stages[0].reset();
+    stages[1].reset();
+}
+
+fn butterworth_lp4(fc: f32, fs: f32) -> [Biquad; 2] {
+    // 4th-order Butterworth: Q values for the two conjugate pole pairs
+    // at 15° and 75° from the imaginary axis → Q = 1/(2·cos(θ))
+    [
+        Biquad::butterworth_lp(fc, fs, 1.306_562_9),
+        Biquad::butterworth_lp(fc, fs, 0.541_196_1),
+    ]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// FM stereo decoder for wideband broadcast FM.
 ///
@@ -61,16 +143,11 @@ pub struct StereoFmDecoder {
     /// EMA coefficient for slow level smoothing.
     pilot_slow_alpha: f32,
 
-    // ── L+R low-pass filter (5-stage 1st-order IIR cascade, ≈15 kHz cutoff) ──
-    // 5 stages gives ~43 dB attenuation at 38 kHz, preventing the DSB-SC
-    // stereo subcarrier from aliasing into the audio band after decimation.
-    lpr: [f32; 5],
+    // ── L+R 4th-order Butterworth LP at 15 kHz ───────────────────────────────
+    lpr: [Biquad; 2],
 
-    // ── L-R low-pass filter (same design) ────────────────────────────────────
-    lmr: [f32; 5],
-
-    /// Coefficient for both LP filters: `exp(-2π · 15000 / sample_rate)`.
-    lp_alpha: f32,
+    // ── L-R 4th-order Butterworth LP at 15 kHz ───────────────────────────────
+    lmr: [Biquad; 2],
 
     // ── 75 µs de-emphasis on L and R ─────────────────────────────────────────
     deemph_alpha: f32,
@@ -85,7 +162,7 @@ pub struct StereoFmDecoder {
 impl StereoFmDecoder {
     /// Create a new decoder.
     ///
-    /// * `sample_rate` — IQ input sample rate in Hz (e.g. 200_000 or 2_000_000)
+    /// * `sample_rate` — IQ input sample rate in Hz (e.g. 250_000 or 2_000_000)
     pub fn new(sample_rate: u32) -> Self {
         let sr = sample_rate.max(100_000) as f32;
         let audio_rate = 48_000_f32;
@@ -99,9 +176,6 @@ impl StereoFmDecoder {
         // Pilot EMA constants
         let pilot_fast_alpha = (-1.0 / (0.005 * sr)).exp(); // 5 ms
         let pilot_slow_alpha = (-1.0 / (0.300 * sr)).exp(); // 300 ms
-
-        // L+R / L-R LP filter (15 kHz cutoff)
-        let lp_alpha = (-tau * 15_000.0 / sr).exp();
 
         // 75 µs de-emphasis at audio rate
         let deemph_alpha = (-1.0 / (75e-6 * audio_rate)).exp();
@@ -122,9 +196,8 @@ impl StereoFmDecoder {
             pilot_level: 0.0,
             pilot_slow_alpha,
 
-            lpr: [0.0; 5],
-            lmr: [0.0; 5],
-            lp_alpha,
+            lpr: butterworth_lp4(15_000.0, sr),
+            lmr: butterworth_lp4(15_000.0, sr),
 
             deemph_alpha,
             deemph_l: 0.0,
@@ -138,6 +211,14 @@ impl StereoFmDecoder {
     /// Returns `true` if a stereo pilot is currently detected.
     pub fn is_stereo(&self) -> bool {
         self.pilot_level >= PILOT_THRESHOLD
+    }
+
+    /// Reset only the FM discriminator's previous sample reference.
+    ///
+    /// Call this whenever IQ continuity is broken (e.g. after a Lagged event)
+    /// to prevent a single garbage sample from the stale phase difference.
+    pub fn clear_prev(&mut self) {
+        self.prev = Complex::new(1.0, 0.0);
     }
 
     /// Process a batch of IQ samples and return stereo audio frames at 48 kHz.
@@ -183,24 +264,14 @@ impl StereoFmDecoder {
             self.pilot_level = self.pilot_slow_alpha * self.pilot_level
                 + (1.0 - self.pilot_slow_alpha) * instantaneous_amplitude;
 
-            // ── L+R: low-pass composite to audio baseband (5-stage IIR) ──────
-            let mut v = composite;
-            for s in &mut self.lpr {
-                *s = self.lp_alpha * *s + (1.0 - self.lp_alpha) * v;
-                v = *s;
-            }
-            let lpr = v;
+            // ── L+R: 4th-order Butterworth LP at 15 kHz ──────────────────────
+            let lpr = biquad2_process(&mut self.lpr, composite);
 
-            // ── L-R: mix with 2× pilot reference, then low-pass (5-stage) ────
+            // ── L-R: mix with 2× pilot reference, then 4th-order LP ──────────
             // 38 kHz reference: cos(2θ) = 2cos²(θ) − 1
             let cos2 = 2.0 * cos_p * cos_p - 1.0;
             let mixed = composite * 2.0 * cos2;
-            let mut v = mixed;
-            for s in &mut self.lmr {
-                *s = self.lp_alpha * *s + (1.0 - self.lp_alpha) * v;
-                v = *s;
-            }
-            let lmr = v;
+            let lmr = biquad2_process(&mut self.lmr, mixed);
 
             // ── Resampler: emit one audio frame per integer phase crossing ────
             self.phase_acc += self.phase_step;
@@ -272,23 +343,13 @@ impl StereoFmDecoder {
             self.pilot_level = self.pilot_slow_alpha * self.pilot_level
                 + (1.0 - self.pilot_slow_alpha) * instantaneous_amplitude;
 
-            // ── L+R (5-stage IIR LP) ──────────────────────────────────────────
-            let mut v = composite;
-            for s in &mut self.lpr {
-                *s = self.lp_alpha * *s + (1.0 - self.lp_alpha) * v;
-                v = *s;
-            }
-            let lpr = v;
+            // ── L+R: 4th-order Butterworth LP at 15 kHz ──────────────────────
+            let lpr = biquad2_process(&mut self.lpr, composite);
 
-            // ── L-R (5-stage IIR LP) ──────────────────────────────────────────
+            // ── L-R: 4th-order Butterworth LP at 15 kHz ──────────────────────
             let cos2 = 2.0 * cos_p * cos_p - 1.0;
             let mixed = composite * 2.0 * cos2;
-            let mut v = mixed;
-            for s in &mut self.lmr {
-                *s = self.lp_alpha * *s + (1.0 - self.lp_alpha) * v;
-                v = *s;
-            }
-            let lmr = v;
+            let lmr = biquad2_process(&mut self.lmr, mixed);
 
             self.phase_acc += self.phase_step;
             while self.phase_acc >= 1.0 {
@@ -319,8 +380,8 @@ impl StereoFmDecoder {
         self.pilot_phase = 0.0;
         self.pilot_i = 0.0;
         self.pilot_level = 0.0;
-        self.lpr = [0.0; 5];
-        self.lmr = [0.0; 5];
+        biquad2_reset(&mut self.lpr);
+        biquad2_reset(&mut self.lmr);
         self.deemph_l = 0.0;
         self.deemph_r = 0.0;
         self.phase_acc = 0.0;
@@ -367,6 +428,49 @@ mod tests {
         }
 
         samples
+    }
+
+    #[test]
+    fn biquad_butterworth_lp_flat_passband() {
+        // At DC, a Butterworth LP should pass with unity gain.
+        let mut b = Biquad::butterworth_lp(15_000.0, 200_000.0, 1.0);
+        // Feed a constant 1.0 until settled
+        let mut y = 0.0;
+        for _ in 0..10_000 {
+            y = b.process(1.0);
+        }
+        // DC gain should be ≈ 1.0 (all-pole LP, no zeros except at Nyquist)
+        assert!(
+            (y - 1.0).abs() < 0.01,
+            "DC gain should be ~1.0, got {y:.4}"
+        );
+    }
+
+    #[test]
+    fn biquad2_butterworth_attenuates_38khz() {
+        // A 4th-order Butterworth at 15 kHz should strongly attenuate 38 kHz.
+        // At 38 kHz (2.53× the cutoff), 4th-order → ~-40 dB attenuation.
+        let sr = 200_000.0_f32;
+        let fc = 15_000.0_f32;
+        let f_test = 38_000.0_f32;
+        let mut stages = butterworth_lp4(fc, sr);
+
+        // Measure RMS of output for a 38 kHz sine input
+        let n = 20_000usize;
+        let mut sum_sq = 0.0_f32;
+        for i in 0..n {
+            let x = (2.0 * std::f32::consts::PI * f_test / sr * i as f32).sin();
+            let y = biquad2_process(&mut stages, x);
+            if i > n / 2 {
+                sum_sq += y * y;
+            }
+        }
+        let rms_out = (sum_sq / (n / 2) as f32).sqrt();
+        // Input RMS = 1/√2 ≈ 0.707; output should be << 0.1 (-20 dB or better)
+        assert!(
+            rms_out < 0.05,
+            "38 kHz should be attenuated below 0.05 RMS, got {rms_out:.4}"
+        );
     }
 
     #[test]
@@ -473,6 +577,20 @@ mod tests {
                 "R={} out of range",
                 f.right
             );
+        }
+    }
+
+    #[test]
+    fn clear_prev_does_not_affect_subsequent_output_range() {
+        let mut dec = StereoFmDecoder::new(SR);
+        let iq = make_stereo_composite(1_000.0, 0.5, 0.1, 0.3);
+        // Feed half, call clear_prev, feed the other half
+        dec.process(&iq[..iq.len() / 2]);
+        dec.clear_prev();
+        let (frames, _) = dec.process(&iq[iq.len() / 2..]);
+        for f in &frames {
+            assert!((-1.0..=1.0).contains(&f.left));
+            assert!((-1.0..=1.0).contains(&f.right));
         }
     }
 }

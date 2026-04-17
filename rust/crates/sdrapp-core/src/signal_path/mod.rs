@@ -102,6 +102,18 @@ impl SignalPath {
                     Self::Cw(d) => d.reset(),
                 }
             }
+
+            /// Clear only the FM discriminator's phase reference after an IQ gap.
+            ///
+            /// Unlike `reset()` this does NOT flush the PLL, LP filters, or
+            /// resampler state — it only invalidates the single `prev` sample so
+            /// the next discriminator call doesn't produce a garbage phase-spike
+            /// from a stale sample reference across a Lagged boundary.
+            fn clear_prev(&mut self) {
+                if let Self::Wbfm(d) = self {
+                    d.clear_prev();
+                }
+            }
         }
 
         // Run the signal path on a dedicated OS thread rather than a Tokio task.
@@ -599,8 +611,15 @@ impl SignalPath {
                             tracing::debug!(
                                 dropped = n,
                                 dropped_ms = dropped_ms as u32,
-                                "signal path minor lag — continuing without demod reset"
+                                "signal path minor lag — clearing prev only"
                             );
+                            // IQ continuity is broken across the gap.  The FM
+                            // discriminator computes arg(prev* × s) — if prev is
+                            // from before the gap, the first sample after the gap
+                            // produces a random phase spike (up to ±π).  Clear only
+                            // prev so the spike is suppressed without flushing the
+                            // PLL lock or filter state.
+                            demod.clear_prev();
                         }
                         // Sleep briefly so the SDRplay callback thread can
                         // refill the broadcast channel and we don't spin at
