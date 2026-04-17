@@ -93,22 +93,30 @@ fn note(number: u8) -> MidiKey {
     MidiKey { channel: 0, kind: MidiKeyKind::NoteOn, number }
 }
 
-// Reference canvas: 560 × 110 units.
-// 8 channel strips × 56 units each = 448; transport section = 448..560.
-const CANVAS_W: f32 = 560.0;
+// Reference canvas: 576 × 110 units.
+// Transport section = 0..112; 8 channel strips × 58 units each = 464; total = 576.
+//
+// Physical nanoKontrol2 layout (left → right):
+//   Transport: Prev/Next/Cycle/Set/Markers (nav row) + Rew/FF/Stop/Play/Rec (playback row)
+//   Channel strips: 8 × (Knob top · S/M/R buttons middle · Fader bottom)
+const CANVAS_W: f32 = 576.0;
 const CANVAS_H: f32 = 110.0;
 
+// Channel strips begin after the transport section.
+const STRIP_OFFSET_X: f32 = 114.0;
+const STRIP_W: f32 = 57.0;
+
 const fn knob_rect(col: u8) -> ControlRect {
-    ControlRect::new(col as f32 * 56.0 + 8.0, 5.0, 40.0, 40.0)
+    ControlRect::new(STRIP_OFFSET_X + col as f32 * STRIP_W + 8.0, 5.0, 40.0, 40.0)
 }
 
 /// SMR row button: col = track 0-7, smr = 0 (S) / 1 (M) / 2 (R)
 const fn smr_rect(col: u8, smr: u8) -> ControlRect {
-    ControlRect::new(col as f32 * 56.0 + 5.0 + smr as f32 * 17.0, 50.0, 14.0, 14.0)
+    ControlRect::new(STRIP_OFFSET_X + col as f32 * STRIP_W + 5.0 + smr as f32 * 17.0, 50.0, 14.0, 14.0)
 }
 
 const fn fader_rect(col: u8) -> ControlRect {
-    ControlRect::new(col as f32 * 56.0 + 23.0, 68.0, 10.0, 36.0)
+    ControlRect::new(STRIP_OFFSET_X + col as f32 * STRIP_W + 24.0, 68.0, 10.0, 36.0)
 }
 
 /// Korg nanoKONTROL2 physical layout.
@@ -149,14 +157,15 @@ impl NanoKontrol2Layout {
         }
 
         // ── Transport: navigation row (y=5) ──────────────────────────────────
+        // Physical nanoKontrol2: transport is on the LEFT of the device.
         // Prev Track · Next Track · Cycle · Set · ◄ Marker · Marker ►
         let nav: &[(&str, &str, MidiKey, f32, f32, f32, f32)] = &[
-            ("transport_prev",   "◄◄",   note(58), 454.0, 5.0, 18.0, 14.0),
-            ("transport_next",   "►►",   note(59), 474.0, 5.0, 18.0, 14.0),
-            ("transport_cycle",  "CYCLE",note(46), 494.0, 5.0, 18.0, 14.0),
-            ("transport_set",    "SET",  note(60), 514.0, 5.0, 14.0, 14.0),
-            ("transport_mark_l", "◄",    note(61), 530.0, 5.0, 14.0, 14.0),
-            ("transport_mark_r", "►",    note(62), 546.0, 5.0, 14.0, 14.0),
+            ("transport_prev",   "◄◄",   note(58),  2.0, 5.0, 17.0, 14.0),
+            ("transport_next",   "►►",   note(59), 21.0, 5.0, 17.0, 14.0),
+            ("transport_cycle",  "CYC",  note(46), 40.0, 5.0, 17.0, 14.0),
+            ("transport_set",    "SET",  note(60), 59.0, 5.0, 14.0, 14.0),
+            ("transport_mark_l", "◄",    note(61), 75.0, 5.0, 14.0, 14.0),
+            ("transport_mark_r", "►",    note(62), 91.0, 5.0, 14.0, 14.0),
         ];
         for &(id, label, ref key, x, y, w, h) in nav {
             controls.push(ControlDef { id, label, control_type: ControlType::Button, midi_key: key.clone(), rect: ControlRect::new(x, y, w, h) });
@@ -165,11 +174,11 @@ impl NanoKontrol2Layout {
         // ── Transport: playback row (y=24) ────────────────────────────────────
         // Rewind · Fast-Forward · Stop · Play · Record
         let playback: &[(&str, &str, MidiKey, f32, f32, f32, f32)] = &[
-            ("transport_rew",  "<<",  note(43), 454.0, 24.0, 19.0, 16.0),
-            ("transport_ff",   ">>",  note(44), 475.0, 24.0, 19.0, 16.0),
-            ("transport_stop", "STP", note(42), 496.0, 24.0, 19.0, 16.0),
-            ("transport_play", "PLY", note(41), 517.0, 24.0, 20.0, 16.0),
-            ("transport_rec",  "REC", note(45), 539.0, 24.0, 21.0, 16.0),
+            ("transport_rew",  "<<",  note(43),  2.0, 24.0, 20.0, 16.0),
+            ("transport_ff",   ">>",  note(44), 24.0, 24.0, 20.0, 16.0),
+            ("transport_stop", "STP", note(42), 46.0, 24.0, 20.0, 16.0),
+            ("transport_play", "PLY", note(41), 68.0, 24.0, 20.0, 16.0),
+            ("transport_rec",  "REC", note(45), 90.0, 24.0, 20.0, 16.0),
         ];
         for &(id, label, ref key, x, y, w, h) in playback {
             controls.push(ControlDef { id, label, control_type: ControlType::Button, midi_key: key.clone(), rect: ControlRect::new(x, y, w, h) });
@@ -310,8 +319,8 @@ mod tests {
     }
 
     #[test]
-    fn canvas_size_is_560x110() {
-        assert_eq!(nk().canvas_size(), (560.0, 110.0));
+    fn canvas_size_is_576x110() {
+        assert_eq!(nk().canvas_size(), (576.0, 110.0));
     }
 
     #[test]

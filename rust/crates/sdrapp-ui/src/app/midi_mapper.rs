@@ -59,7 +59,7 @@ impl MidiMapperWindow {
             .into_owned();
         Self {
             layout: Box::new(NanoKontrol2Layout::new()),
-            min_canvas_w: 700.0,
+            min_canvas_w: 750.0,
             selected_page: 0,
             confirm_reset: false,
             export_path: default_path.clone(),
@@ -82,6 +82,7 @@ impl MidiMapperWindow {
         egui::Window::new(window_title)
             .open(open)
             .resizable(true)
+            .constrain(false)
             .min_width(self.min_canvas_w + 24.0)
             .min_height(120.0)
             .show(ctx, |ui| {
