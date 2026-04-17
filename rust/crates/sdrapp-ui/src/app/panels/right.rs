@@ -532,6 +532,126 @@ impl SdrApp {
                     .small(),
             );
         }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // ── Device Diagnostics ────────────────────────────────────────────────
+        egui::CollapsingHeader::new(
+            RichText::new("DEVICE DIAGNOSTICS").color(theme::TEXT_MUTED).small(),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            let (serial, hw_ver, api_version, status, error_count, iq_lag_count, sample_rate, last_errors) = {
+                let s = self.shared.read();
+                let d = &s.device_diagnostics;
+                let last_errors: Vec<String> = d
+                    .error_log
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .map(|e| e.message.clone())
+                    .collect();
+                (
+                    d.serial.clone(),
+                    d.hw_ver,
+                    d.api_version.clone(),
+                    d.status.clone(),
+                    d.error_count,
+                    d.iq_lag_count,
+                    s.sample_rate_sps,
+                    last_errors,
+                )
+            };
+
+            egui::Grid::new("device_diag_grid")
+                .num_columns(2)
+                .spacing([4.0, 2.0])
+                .show(ui, |ui| {
+                    // Serial
+                    ui.label(RichText::new("Serial").small().color(theme::TEXT_MUTED));
+                    ui.label(
+                        RichText::new(if serial.is_empty() { "—".to_string() } else { serial })
+                            .small()
+                            .monospace(),
+                    );
+                    ui.end_row();
+
+                    // HW version
+                    ui.label(RichText::new("HW ver").small().color(theme::TEXT_MUTED));
+                    ui.label(
+                        RichText::new(if hw_ver == 0 {
+                            "—".to_string()
+                        } else {
+                            hw_ver.to_string()
+                        })
+                        .small()
+                        .monospace(),
+                    );
+                    ui.end_row();
+
+                    // API version
+                    ui.label(RichText::new("API ver").small().color(theme::TEXT_MUTED));
+                    ui.label(
+                        RichText::new(if api_version.is_empty() { "—".to_string() } else { api_version })
+                            .small()
+                            .monospace(),
+                    );
+                    ui.end_row();
+
+                    // Status
+                    ui.label(RichText::new("Status").small().color(theme::TEXT_MUTED));
+                    ui.label(
+                        RichText::new(if status.is_empty() { "idle".to_string() } else { status })
+                            .small(),
+                    );
+                    ui.end_row();
+
+                    // Sample rate
+                    ui.label(RichText::new("Rate").small().color(theme::TEXT_MUTED));
+                    let rate_str = if sample_rate >= 1_000_000 {
+                        format!("{:.1} MHz", sample_rate as f32 / 1_000_000.0)
+                    } else if sample_rate > 0 {
+                        format!("{} kHz", sample_rate / 1_000)
+                    } else {
+                        "—".to_string()
+                    };
+                    ui.label(RichText::new(rate_str).small().monospace());
+                    ui.end_row();
+
+                    // IQ lags
+                    ui.label(RichText::new("IQ lags").small().color(theme::TEXT_MUTED));
+                    ui.label(RichText::new(iq_lag_count.to_string()).small().monospace());
+                    ui.end_row();
+
+                    // Errors (only shown when non-zero)
+                    if error_count > 0 {
+                        ui.label(RichText::new("Errors").small().color(theme::TEXT_MUTED));
+                        ui.label(
+                            RichText::new(error_count.to_string())
+                                .small()
+                                .monospace()
+                                .color(egui::Color32::from_rgb(220, 80, 80)),
+                        );
+                        ui.end_row();
+                    }
+                });
+
+            // Last 5 error log entries
+            if !last_errors.is_empty() {
+                ui.add_space(4.0);
+                ui.label(RichText::new("Recent errors:").small().color(theme::TEXT_MUTED));
+                for err in &last_errors {
+                    ui.label(
+                        RichText::new(err)
+                            .small()
+                            .monospace()
+                            .color(egui::Color32::from_rgb(220, 120, 80)),
+                    );
+                }
+            }
+        });
     }
 
     pub(in crate::app) fn draw_vu_meter(&mut self, ui: &mut Ui, left: f32, right: f32) {

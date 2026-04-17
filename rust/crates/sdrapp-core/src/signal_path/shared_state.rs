@@ -101,6 +101,8 @@ pub struct DeviceDiagnostics {
     pub error_count: u32,
     /// Ring buffer of the last 20 errors with timestamps.
     pub error_log: std::collections::VecDeque<ErrorEntry>,
+    /// Cumulative count of IQ broadcast-channel lag events since the source was opened.
+    pub iq_lag_count: u64,
 }
 
 impl DeviceDiagnostics {

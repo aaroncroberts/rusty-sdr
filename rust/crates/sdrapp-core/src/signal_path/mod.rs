@@ -589,6 +589,7 @@ impl SignalPath {
                 let batch = match iq_rx.blocking_recv() {
                     Ok(b) => b,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
+                        shared_clone.write().device_diagnostics.iq_lag_count += 1;
                         // Calculate how much audio was dropped.
                         // Only reset demodulator state for large gaps (>100 ms) where
                         // the FM discriminator phase continuity is definitely broken.
