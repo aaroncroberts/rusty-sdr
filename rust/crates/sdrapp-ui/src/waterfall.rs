@@ -15,6 +15,21 @@ use crate::theme;
 
 const WATERFALL_HEIGHT: usize = 200; // rows of history
 
+/// Parameters for the VFO overlay drawn on top of the waterfall texture.
+///
+/// Mirrors the passband shading already shown on the spectrum above, so the
+/// user can see exactly where they are tuned in the scrolling history.
+pub struct WaterfallOverlay {
+    /// Center frequency of the active VFO in Hz.
+    pub vfo_hz: u64,
+    /// Visible frequency range (lo, hi) in Hz — maps to the left/right edges.
+    pub freq_range: (u64, u64),
+    /// Left edge of the demodulator passband in Hz.
+    pub filter_lo_hz: u64,
+    /// Right edge of the demodulator passband in Hz.
+    pub filter_hi_hz: u64,
+}
+
 pub struct WaterfallWidget {
     /// RGBA pixel buffer: row-major, width × height pixels × 4 bytes
     pixels: Vec<u8>,
@@ -108,7 +123,15 @@ impl WaterfallWidget {
     ///
     /// The texture contains `WATERFALL_HEIGHT` rows of history; the display rect
     /// is stretched to fill all remaining vertical space so there is no dead zone.
-    pub fn show(&mut self, ui: &mut Ui, ctx: &egui::Context) -> egui::Response {
+    ///
+    /// Pass `overlay` to draw a VFO center-line and passband shading on top of
+    /// the spectrogram texture (same visual feedback as the spectrum above).
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &egui::Context,
+        overlay: Option<WaterfallOverlay>,
+    ) -> egui::Response {
         let image = ColorImage::from_rgba_unmultiplied([self.width, self.height], &self.pixels);
 
         let texture = self.texture.get_or_insert_with(|| {
@@ -123,12 +146,49 @@ impl WaterfallWidget {
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
 
         if ui.is_rect_visible(rect) {
-            ui.painter_at(rect).image(
+            let painter = ui.painter_at(rect);
+            painter.image(
                 texture.id(),
                 rect,
                 Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
+
+            // ── VFO overlay ───────────────────────────────────────────────────
+            if let Some(ov) = overlay {
+                let (freq_lo, freq_hi) = ov.freq_range;
+                let span = (freq_hi as f64 - freq_lo as f64).max(1.0);
+
+                // Helper: frequency → x pixel within rect
+                let freq_to_x = |hz: u64| -> f32 {
+                    let t = ((hz as f64 - freq_lo as f64) / span).clamp(0.0, 1.0) as f32;
+                    rect.left() + t * rect.width()
+                };
+
+                // Passband shading (semi-transparent tint matching the spectrum)
+                if ov.filter_lo_hz < ov.filter_hi_hz {
+                    let x0 = freq_to_x(ov.filter_lo_hz);
+                    let x1 = freq_to_x(ov.filter_hi_hz);
+                    if x1 > x0 {
+                        let shade_rect = Rect::from_x_y_ranges(x0..=x1, rect.top()..=rect.bottom());
+                        painter.rect_filled(
+                            shade_rect,
+                            0.0,
+                            Color32::from_rgba_unmultiplied(100, 160, 255, 30),
+                        );
+                    }
+                }
+
+                // VFO center-line (1 px wide, white with moderate alpha)
+                let cx = freq_to_x(ov.vfo_hz);
+                painter.line_segment(
+                    [
+                        egui::pos2(cx, rect.top()),
+                        egui::pos2(cx, rect.bottom()),
+                    ],
+                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 180)),
+                );
+            }
         }
 
         response

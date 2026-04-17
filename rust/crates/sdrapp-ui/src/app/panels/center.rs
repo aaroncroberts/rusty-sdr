@@ -11,6 +11,7 @@ use crate::{
     knob::KnobWidget,
     spectrum::SpectrumWidget,
     theme,
+    waterfall::WaterfallOverlay,
 };
 
 impl SdrApp {
@@ -1216,7 +1217,13 @@ impl SdrApp {
         }
 
         // ── Waterfall ─────────────────────────────────────────────────────────
-        let waterfall_resp = self.waterfall.show(ui, &ctx);
+        let wf_overlay = Some(WaterfallOverlay {
+            vfo_hz: freq,
+            freq_range: (freq.saturating_sub(span), freq + span),
+            filter_lo_hz: show_filter_lo,
+            filter_hi_hz: show_filter_hi,
+        });
+        let waterfall_resp = self.waterfall.show(ui, &ctx, wf_overlay);
 
         // ── Synchronized crosshair: spectrum ↔ waterfall ─────────────────────
         // Whichever view the cursor is in, project the same frequency line into both.

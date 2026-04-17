@@ -124,15 +124,25 @@ fn blackman_harris_window(n: usize) -> Vec<f32> {
 }
 
 /// Reorder FFT output to center-DC and convert power to dBFS.
+///
+/// Normalises by N² so that 0 dBFS corresponds to a full-scale complex
+/// phasor (|I+jQ| = 1) regardless of FFT size.  Without this, doubling the
+/// FFT size would shift displayed levels by +6 dB.
+///
+/// The normalisation factor is `1 / N²` because:
+///   - A full-scale DC phasor gives |X[k]| = N (with rectangular window)
+///   - We want |X[k]| / N = 1 → 0 dBFS, so divide power by N²
 fn fftshift_dbfs(buf: &[Complex<f32>]) -> Vec<f32> {
     let n = buf.len();
     let half = n / 2;
+    // Normalise by N² so dBFS is consistent across FFT sizes.
+    let norm = 1.0 / (n as f32 * n as f32);
     // Concatenate second half (negative freqs) + first half (positive freqs)
     buf[half..]
         .iter()
         .chain(buf[..half].iter())
         .map(|c| {
-            let power = c.re * c.re + c.im * c.im;
+            let power = (c.re * c.re + c.im * c.im) * norm;
             if power > 0.0 {
                 10.0 * power.log10()
             } else {
@@ -215,5 +225,40 @@ mod tests {
             let w = make_window(512, wf);
             assert_eq!(w.len(), 512);
         }
+    }
+
+    /// The dBFS of a signal's peak bin must not shift when the FFT size changes.
+    ///
+    /// Before the N² normalization fix, doubling the FFT size shifted the
+    /// displayed level by +6 dB (for N) or +12 dB (for 2N), which caused
+    /// calibration drift whenever the user changed the FFT size setting.
+    #[test]
+    fn dbfs_consistent_across_fft_sizes() {
+        // Build a rectangular-windowed full-scale DC phasor (I=1, Q=0) for each
+        // FFT size, then find the peak bin level.  The difference must be < 1 dB.
+        let make_peak_db = |size: usize| {
+            let mut proc = FftProcessor::new(size, FftWindow::Rectangular);
+            let samples: Vec<IqSample> = (0..size).map(|_| IqSample::new(1.0, 0.0)).collect();
+            let mags = proc.process(&samples).unwrap();
+            mags.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+        };
+
+        let db_1024 = make_peak_db(1024);
+        let db_2048 = make_peak_db(2048);
+        let db_4096 = make_peak_db(4096);
+
+        assert!(
+            (db_1024 - db_2048).abs() < 1.0,
+            "1024 vs 2048 peak level differs: {db_1024:.1} vs {db_2048:.1} dBFS"
+        );
+        assert!(
+            (db_1024 - db_4096).abs() < 1.0,
+            "1024 vs 4096 peak level differs: {db_1024:.1} vs {db_4096:.1} dBFS"
+        );
+        // Rectangular window, full-scale DC → 0 dBFS (allow ±1 dB for float)
+        assert!(
+            db_1024 > -1.0,
+            "rectangular full-scale DC should be near 0 dBFS, got {db_1024:.1}"
+        );
     }
 }
