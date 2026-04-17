@@ -139,6 +139,14 @@ impl SignalPath {
             // Example: 500 kHz hardware → decim=2, demod at 250 kHz.
             let wbfm_decim: u32 = (sr / 250_000).max(1);
             let demod_sr = sr / wbfm_decim;
+            // Narrow-mode decimation: NFM/AM/SSB/CW only need ~200 kHz of IQ
+            // bandwidth (max signal is 25 kHz for wide NFM).  Decimating here
+            // cuts atan2/norm ops by the same factor as WBFM decimation does for
+            // wide FM.  Target ~200 kHz post-decimation rate.
+            // Examples: 500 kHz → decim=2, narrow_demod_sr=250 kHz
+            //           2 MHz   → decim=10, narrow_demod_sr=200 kHz
+            let narrow_decim: u32 = (sr / 200_000).max(1);
+            let narrow_demod_sr: u32 = sr / narrow_decim;
             let mut fft_size = FFT_SIZE;
             let mut fft_window = crate::dsp::FftWindow::Hann;
             let mut fft = FftProcessor::new(fft_size, fft_window);
@@ -168,7 +176,12 @@ impl SignalPath {
             // Capacity is sized for the largest expected batch (sr / callback_rate).
             let max_batch = (sr as usize / 50).max(8192); // ~20 ms @ any supported rate
             let mut iq_complex_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
+            // Decimated IQ buffer for WBFM (wbfm_decim×) and a separate one
+            // for narrow modes (narrow_decim×).  Keeping them separate avoids
+            // borrow-checker conflicts when both slices would otherwise point
+            // into the same Vec while the next path also needs to write it.
             let mut iq_decimated_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
+            let mut narrow_decimated_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
             // Anti-aliasing FIR lowpass applied before WBFM decimation.
             // Cutoff = 88% of the post-decimation Nyquist (0.88 × demod_sr/2).
             // Example at 2 MSps, 4× decimation: demod_sr=500 kHz, cutoff=220 kHz.
@@ -184,6 +197,17 @@ impl SignalPath {
                 None
             };
             let mut aa_filter_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
+            // Anti-aliasing filter for narrow modes (NFM/AM/SSB/CW).
+            // 63 taps (lighter than WBFM's 127) with Kaiser β=6 → ~60 dB rejection.
+            // Cutoff = 88% of post-decimation Nyquist, same design rule as WBFM.
+            // Only allocated when narrow_decim > 1 (i.e. sr > 200 kHz, always true).
+            let mut narrow_aa_filter: Option<FirLowpass> = if narrow_decim > 1 {
+                let cutoff = 0.88 * (narrow_demod_sr as f32 / 2.0);
+                Some(FirLowpass::new(cutoff, sr as f32, 63, 6.0))
+            } else {
+                None
+            };
+            let mut narrow_aa_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
             // Scanner state
             let mut scan_running = false;
             let mut scan_cursor: usize = 0;
@@ -193,19 +217,34 @@ impl SignalPath {
             let mut scan_dwell_samples: u64 = 0;
 
             /// Create a fresh demodulator for the given mode.
-            /// `demod_sr` is the rate after any decimation (used for WBFM).
-            /// `sr` is the full hardware rate (used for non-decimated modes).
-            fn make_demod(mode: DemodMode, sr: u32, demod_sr: u32, nfm_bw_hz: u32) -> Demod {
+            /// `demod_sr` is the WBFM decimated rate (used for WBFM only).
+            /// `narrow_demod_sr` is the narrow-mode decimated rate (~200 kHz).
+            fn make_demod(
+                mode: DemodMode,
+                _sr: u32,
+                demod_sr: u32,
+                narrow_demod_sr: u32,
+                nfm_bw_hz: u32,
+            ) -> Demod {
                 match mode {
                     DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(demod_sr)),
-                    DemodMode::Nfm => {
-                        Demod::Nfm(FmDemodulator::new(sr, 48_000, nfm_bw_hz as f32, 0.0))
+                    DemodMode::Nfm => Demod::Nfm(FmDemodulator::new(
+                        narrow_demod_sr,
+                        48_000,
+                        nfm_bw_hz as f32,
+                        0.0,
+                    )),
+                    DemodMode::Am => Demod::Am(AmDemodulator::new(narrow_demod_sr, 48_000)),
+                    DemodMode::Usb => {
+                        Demod::Ssb(SsbDemodulator::standard(SsbMode::Usb, narrow_demod_sr))
                     }
-                    DemodMode::Am => Demod::Am(AmDemodulator::new(sr, 48_000)),
-                    DemodMode::Usb => Demod::Ssb(SsbDemodulator::standard(SsbMode::Usb, sr)),
-                    DemodMode::Lsb => Demod::Ssb(SsbDemodulator::standard(SsbMode::Lsb, sr)),
-                    DemodMode::Dsb => Demod::Ssb(SsbDemodulator::standard(SsbMode::Dsb, sr)),
-                    DemodMode::Cw => Demod::Cw(CwDemodulator::new(sr, 48_000)),
+                    DemodMode::Lsb => {
+                        Demod::Ssb(SsbDemodulator::standard(SsbMode::Lsb, narrow_demod_sr))
+                    }
+                    DemodMode::Dsb => {
+                        Demod::Ssb(SsbDemodulator::standard(SsbMode::Dsb, narrow_demod_sr))
+                    }
+                    DemodMode::Cw => Demod::Cw(CwDemodulator::new(narrow_demod_sr, 48_000)),
                 }
             }
 
@@ -254,7 +293,7 @@ impl SignalPath {
                                 shared_clone.write().demod.volume = v;
                             }
                             ReceiverCmd::SetDemodMode(mode) => {
-                                demod = make_demod(mode, sr, demod_sr, nfm_bw_hz);
+                                demod = make_demod(mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
                                 squelch.reset();
                                 audio_bp.reset();
                                 am_audio_bp.reset();
@@ -279,8 +318,12 @@ impl SignalPath {
                             ReceiverCmd::SetNfmBandwidth(bw) => {
                                 nfm_bw_hz = bw;
                                 if matches!(demod, Demod::Nfm(_)) {
-                                    demod =
-                                        Demod::Nfm(FmDemodulator::new(sr, 48_000, bw as f32, 0.0));
+                                    demod = Demod::Nfm(FmDemodulator::new(
+                                        narrow_demod_sr,
+                                        48_000,
+                                        bw as f32,
+                                        0.0,
+                                    ));
                                     audio_bp.reset();
                                     am_audio_bp.reset();
                                     ctcss.reset();
@@ -439,7 +482,7 @@ impl SignalPath {
                                     if let Some(ref atomic) = freq_atomic_clone {
                                         atomic.store(bm_freq, Ordering::Relaxed);
                                     }
-                                    demod = make_demod(bm_mode, sr, demod_sr, nfm_bw_hz);
+                                    demod = make_demod(bm_mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
                                     shared_clone.write().demod.demod_mode = bm_mode;
                                     demod.reset();
                                     rds.reset();
@@ -569,7 +612,7 @@ impl SignalPath {
                                 );
                             }
                             // Rebuild demodulator for current mode (new device, fresh state)
-                            demod = make_demod(demod_mode, sr, demod_sr, nfm_bw_hz);
+                            demod = make_demod(demod_mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
                             demod.reset();
                             rds.reset();
                         }
@@ -611,6 +654,10 @@ impl SignalPath {
                             if let Some(ref mut f) = aa_filter {
                                 f.reset();
                             }
+                            if let Some(ref mut f) = narrow_aa_filter {
+                                f.reset();
+                            }
+                            narrow_aa_buf.clear();
                         } else {
                             tracing::debug!(
                                 dropped = n,
@@ -763,7 +810,7 @@ impl SignalPath {
                             if let Some(ref atomic) = freq_atomic_clone {
                                 atomic.store(bm_freq, Ordering::Relaxed);
                             }
-                            demod = make_demod(bm_mode, sr, demod_sr, nfm_bw_hz);
+                            demod = make_demod(bm_mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
                             shared_clone.write().demod.demod_mode = bm_mode;
                             demod.reset();
                             rds.reset();
@@ -777,7 +824,8 @@ impl SignalPath {
                 // Demodulate IQ → StereoFrame batches at 48 kHz.
                 // For WBFM, anti-alias filter then decimate to demod_sr before the
                 // FM discriminator to reduce atan2/sin_cos calls by wbfm_decim×.
-                // Non-WBFM modes use the full-rate IQ for best SNR.
+                // For NFM/AM/SSB/CW, anti-alias filter then decimate to ~200 kHz
+                // (narrow_demod_sr) for the same CPU savings on narrow-band modes.
                 //
                 // All buffers are pre-allocated and reused — no per-batch heap allocs.
                 iq_complex_buf.clear();
@@ -807,6 +855,34 @@ impl SignalPath {
                     &iq_complex_buf
                 };
 
+                // Build the decimated IQ view for narrow-mode demodulation
+                // (NFM/AM/SSB/CW).  Same AA+decimate pattern as WBFM above.
+                // Only computed when the active demod is not WBFM — skip entirely
+                // in WBFM mode to avoid wasted AA filter work each batch.
+                let iq_for_narrow: &[Complex<f32>] =
+                    if narrow_decim > 1 && !matches!(demod, Demod::Wbfm(_)) {
+                        // 1. Anti-aliasing lowpass
+                        if let Some(ref mut fir) = narrow_aa_filter {
+                            fir.process(&iq_complex_buf, &mut narrow_aa_buf);
+                        } else {
+                            narrow_aa_buf.clear();
+                            narrow_aa_buf.extend_from_slice(&iq_complex_buf);
+                        }
+                        // 2. Integer decimation: average narrow_decim samples.
+                        // (The AA filter has already removed content that would alias.)
+                        let d = narrow_decim as usize;
+                        let scale = 1.0 / d as f32;
+                        narrow_decimated_buf.clear();
+                        narrow_decimated_buf.extend(
+                            narrow_aa_buf.chunks(d).map(|c| {
+                                c.iter().fold(Complex::new(0.0_f32, 0.0), |a, &b| a + b) * scale
+                            }),
+                        );
+                        &narrow_decimated_buf
+                    } else {
+                        &iq_complex_buf
+                    };
+
                 let stereo: Vec<StereoFrame> = match &mut demod {
                     Demod::Wbfm(d) => {
                         let (frames, is_stereo, composite) = d.process_with_composite(iq_for_demod);
@@ -826,7 +902,7 @@ impl SignalPath {
                         frames
                     }
                     Demod::Nfm(d) => {
-                        let mono = d.process(&iq_complex_buf);
+                        let mono = d.process(iq_for_narrow);
                         // Run CTCSS detector on raw demodulated audio (before squelch/filter)
                         if ctcss_enabled {
                             ctcss.process_batch(&mono);
@@ -856,16 +932,16 @@ impl SignalPath {
                         filtered.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Am(d) => {
-                        let mut mono = d.process(&iq_complex_buf);
+                        let mut mono = d.process(iq_for_narrow);
                         am_audio_bp.process_inplace(&mut mono);
                         mono.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Ssb(d) => {
-                        let mono = d.process(&iq_complex_buf);
+                        let mono = d.process(iq_for_narrow);
                         mono.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Cw(d) => {
-                        let mono = d.process(&iq_complex_buf);
+                        let mono = d.process(iq_for_narrow);
                         mono.into_iter().map(StereoFrame::mono).collect()
                     }
                 };
