@@ -106,9 +106,11 @@ impl SdrApp {
                     .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let floor_sample = sorted[n / 10];
                 let ceil_sample = sorted[(n * 99 / 100).min(n - 1)];
-                const ALPHA: f32 = 0.95;
+                // ALPHA=0.98 → τ ≈ 1.6 s at 30 Hz FFT writes, which is slow enough
+                // that normal signal-level flutter doesn't visibly bounce the grid.
+                const ALPHA: f32 = 0.98;
                 // On the very first frame of real data, snap immediately instead
-                // of waiting ~2 seconds for the EMA to converge from the initial guess.
+                // of waiting several seconds for the EMA to converge from the initial guess.
                 if self.noise_floor_ema <= -84.9 {
                     self.noise_floor_ema = floor_sample;
                     self.signal_ceil_ema = ceil_sample;
@@ -118,8 +120,13 @@ impl SdrApp {
                     self.signal_ceil_ema =
                         ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
                 }
-                // Place ref_level so the noise floor is ~10% up from the bottom.
-                self.ref_level = (self.noise_floor_ema + self.dyn_range * 0.9).clamp(-120.0, 20.0);
+                // Only move the grid when the proposed ref_level differs by ≥ 1 dB
+                // from the current value.  This prevents fractional-dB EMA drift from
+                // visibly shifting the grid lines on every frame.
+                let proposed = (self.noise_floor_ema + self.dyn_range * 0.9).clamp(-120.0, 20.0);
+                if (proposed - self.ref_level).abs() >= 1.0 {
+                    self.ref_level = proposed;
+                }
             }
             let _db_floor = self.ref_level - self.dyn_range;
             let _db_ceil = self.ref_level;

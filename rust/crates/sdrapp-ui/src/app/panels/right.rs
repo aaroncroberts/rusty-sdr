@@ -2,7 +2,7 @@
 
 use egui::{Color32, RichText, Stroke, Ui, Vec2};
 
-use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd, RecordingMode, SignalPathCommand};
+use sdrapp_core::signal_path::{DemodMode, DisplayCmd, HardwareCommand, ReceiverCmd, RecordingMode, SignalPathCommand};
 use sdrapp_recorder::RecorderCommand;
 
 use super::super::SdrApp;
@@ -536,6 +536,30 @@ impl SdrApp {
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(6.0);
+
+        // ── Restart Device button ─────────────────────────────────────────────
+        {
+            let is_demo = self.shared.read().source_name
+                .as_deref()
+                .map(|n| n.contains("Demo"))
+                .unwrap_or(false);
+            if !is_demo {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(RichText::new("↺ Restart Device").small())
+                        .on_hover_text(
+                            "Close and reopen the hardware without restarting the app.\n\
+                             Useful after a cable disconnect or API hang.",
+                        )
+                        .clicked()
+                    {
+                        let _ = self.cmd_tx.try_send(HardwareCommand::RestartDevice.into());
+                        tracing::info!("Restart Device requested by user");
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        }
 
         // ── Device Diagnostics ────────────────────────────────────────────────
         egui::CollapsingHeader::new(

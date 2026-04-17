@@ -126,27 +126,22 @@ impl SignalPath {
         let handle = std::thread::Builder::new()
             .name("sdrapp-signal-path".into())
             .spawn(move || {
-            let sr = sample_rate.max(200_000);
-            // WBFM demodulation decimation: run FM demod at ≤500 kHz to cut
+            // These are declared `mut` so the Start handler can refresh them
+            // after the hardware device sets the effective sample rate (which
+            // may differ from the config rate due to hardware decimation).
+            let mut sr = sample_rate.max(200_000);
+            // WBFM demodulation decimation: run FM demod at ≤250 kHz to cut
             // transcendental-math cost (atan2/sin_cos) by the decimation factor.
             // The FFT still sees the full-rate IQ for wide spectrum display.
             // Factor is chosen so demod_sr is in [200_000, 500_000].
-            // Decimate IQ to ≤250 kHz before the FM stereo decoder.
             // FM composite content tops out at 57 kHz (RDS subcarrier);
-            // 250 kHz/2 = 125 kHz Nyquist is sufficient with margin.
-            // Using 250 kHz instead of 500 kHz halves the per-sample DSP cost
-            // (atan2, sin/cos PLL, 10-stage IIR) at the hardware's native rate.
-            // Example: 500 kHz hardware → decim=2, demod at 250 kHz.
-            let wbfm_decim: u32 = (sr / 250_000).max(1);
-            let demod_sr = sr / wbfm_decim;
+            // 125 kHz Nyquist (at 250 kHz demod rate) is sufficient with margin.
+            let mut wbfm_decim: u32 = (sr / 250_000).max(1);
+            let mut demod_sr = sr / wbfm_decim;
             // Narrow-mode decimation: NFM/AM/SSB/CW only need ~200 kHz of IQ
-            // bandwidth (max signal is 25 kHz for wide NFM).  Decimating here
-            // cuts atan2/norm ops by the same factor as WBFM decimation does for
-            // wide FM.  Target ~200 kHz post-decimation rate.
-            // Examples: 500 kHz → decim=2, narrow_demod_sr=250 kHz
-            //           2 MHz   → decim=10, narrow_demod_sr=200 kHz
-            let narrow_decim: u32 = (sr / 200_000).max(1);
-            let narrow_demod_sr: u32 = sr / narrow_decim;
+            // bandwidth (max signal is 25 kHz for wide NFM).
+            let mut narrow_decim: u32 = (sr / 200_000).max(1);
+            let mut narrow_demod_sr: u32 = sr / narrow_decim;
             let mut fft_size = FFT_SIZE;
             let mut fft_window = crate::dsp::FftWindow::Hann;
             let mut fft = FftProcessor::new(fft_size, fft_window);
@@ -546,6 +541,43 @@ impl SignalPath {
                                 if drained > 0 {
                                     tracing::info!(drained, "drained stale IQ batches on start");
                                 }
+
+                                // Re-read the sample rate — the SDRplay device writes
+                                // the effective (post-hardware-decimation) rate to
+                                // SharedState after connecting, which happens AFTER
+                                // this thread starts.  Without this refresh, the
+                                // signal path uses the config rate (2 MHz) while the
+                                // hardware delivers 500 kHz IQ, producing a 8× ratio
+                                // mismatch that corrupts all demodulator coefficients.
+                                let live_sr = shared_clone.read().sample_rate_sps.max(200_000);
+                                if live_sr != sr {
+                                    tracing::info!(
+                                        old_sr = sr,
+                                        new_sr = live_sr,
+                                        "sample rate changed — rebuilding signal path filters and demodulators"
+                                    );
+                                    sr = live_sr;
+                                    wbfm_decim = (sr / 250_000).max(1);
+                                    demod_sr = sr / wbfm_decim;
+                                    narrow_decim = (sr / 200_000).max(1);
+                                    narrow_demod_sr = sr / narrow_decim;
+                                    aa_filter = if wbfm_decim > 1 {
+                                        let cutoff = 0.88 * (demod_sr as f32 / 2.0);
+                                        Some(FirLowpass::new(cutoff, sr as f32, 127, 6.0))
+                                    } else {
+                                        None
+                                    };
+                                    narrow_aa_filter = if narrow_decim > 1 {
+                                        let cutoff = 0.88 * (narrow_demod_sr as f32 / 2.0);
+                                        Some(FirLowpass::new(cutoff, sr as f32, 63, 6.0))
+                                    } else {
+                                        None
+                                    };
+                                    let current_mode = shared_clone.read().demod.demod_mode;
+                                    demod = make_demod(current_mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
+                                    rds = RdsDecoder::new(demod_sr);
+                                }
+
                                 shared_clone.write().is_running = true;
                                 tracing::info!("signal path started");
                             } else {
