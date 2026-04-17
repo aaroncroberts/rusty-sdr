@@ -94,6 +94,16 @@ impl WaterfallWidget {
         self.colormap = colormap;
     }
 
+    /// Clear all waterfall history (fill with black).
+    ///
+    /// Call when the center frequency changes substantially so stale rows
+    /// from the old frequency are not mixed with new data at the new frequency.
+    pub fn clear(&mut self) {
+        self.pixels.iter_mut().for_each(|b| *b = 0);
+        // Force texture re-upload on the next show() call.
+        self.texture = None;
+    }
+
     /// Render the waterfall into the UI.
     ///
     /// The texture contains `WATERFALL_HEIGHT` rows of history; the display rect

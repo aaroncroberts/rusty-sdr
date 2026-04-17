@@ -42,6 +42,21 @@ impl SdrApp {
         }
 
         let freq = self.config.ui.frequency_hz;
+
+        // Clear the waterfall when the center frequency shifts by more than 10% of
+        // the hardware bandwidth.  This prevents stale rows from a different channel
+        // being mixed with new rows at the current channel, which causes persistent
+        // "ghost" vertical lines that never move even after retuning.
+        {
+            let bw = self.shared.read().sample_rate_sps as u64;
+            let threshold = (bw / 10).max(50_000);
+            let delta = freq.abs_diff(self.last_waterfall_freq);
+            if delta > threshold {
+                self.waterfall.clear();
+                self.last_waterfall_freq = freq;
+            }
+        }
+
         let (span, zoom_level, waterfall_speed) = {
             let s = self.shared.read();
             let sr_half = s.sample_rate_sps as u64 / 2;
@@ -1119,9 +1134,12 @@ impl SdrApp {
                     painter.rect_filled(seg_rect, 0.5, color);
                 }
 
-                if !quality_label.is_empty() {
-                    ui.label(RichText::new(quality_label).color(bar_color).small());
-                }
+                // Always allocate a fixed-width slot for the quality label so the
+                // Palette ComboBox (to the right) never shifts as the text changes.
+                ui.add_sized(
+                    [60.0, 14.0],
+                    egui::Label::new(RichText::new(quality_label).color(bar_color).small()),
+                );
                 let hover_text = if let Some(snr) = snr_db {
                     format!("Signal: {:.0} dBFS  SNR: {:.1} dB", signal_level_dbfs, snr)
                 } else {

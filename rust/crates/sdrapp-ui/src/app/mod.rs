@@ -113,6 +113,10 @@ pub struct SdrApp {
     demod_suggest_dismissed: std::collections::HashSet<u64>,
     /// Last frequency bucket seen — used to clear dismissed set when user moves >500 kHz.
     last_freq_bucket: u64,
+    /// Last center frequency for which the waterfall was valid.
+    /// When the center freq changes by more than 10% of the bandwidth,
+    /// the waterfall is cleared so stale rows don't mislead the user.
+    last_waterfall_freq: u64,
     /// Whether the ? keyboard shortcut overlay is open.
     show_shortcut_overlay: bool,
     /// MIDI mapper floating window (nanoKONTROL2 diagram).
@@ -202,6 +206,7 @@ impl SdrApp {
             show_onboarding: !seen_onboarding,
             demod_suggest_dismissed: std::collections::HashSet::new(),
             last_freq_bucket: 0,
+            last_waterfall_freq: freq,
             show_shortcut_overlay: false,
             midi_mapper: MidiMapperWindow::new_nanokontrol2(),
             show_midi_mapper: false,

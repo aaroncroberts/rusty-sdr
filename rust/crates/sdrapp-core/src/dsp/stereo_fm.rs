@@ -149,13 +149,16 @@ impl StereoFmDecoder {
 
         for &s in samples {
             // ── FM discriminator ──────────────────────────────────────────────
+            // arg(prev* × s) = arg(s) − arg(prev): phase difference.
+            // Magnitude of prev cancels in the argument, so normalization is
+            // unnecessary.  Skipping s.norm() (sqrt) saves ~500 K sqrt/sec at
+            // 500 kHz sample rate, eliminating the CPU hot-spot.
             let mult = self.prev.conj() * s;
             let composite = mult.im.atan2(mult.re) / std::f32::consts::PI * self.dev_scale;
-            self.prev = if s.norm_sqr() > 1e-10 {
-                s / s.norm()
-            } else {
-                Complex::new(1.0, 0.0)
-            };
+            // Guard: only advance prev when input is non-zero to avoid NaN.
+            if s.norm_sqr() > 1e-10 {
+                self.prev = s;
+            }
 
             // ── Pilot PLL ─────────────────────────────────────────────────────
             let (sin_p, cos_p) = self.pilot_phase.sin_cos();
@@ -245,11 +248,9 @@ impl StereoFmDecoder {
             // ── FM discriminator ──────────────────────────────────────────────
             let mult = self.prev.conj() * s;
             let composite = mult.im.atan2(mult.re) / std::f32::consts::PI * self.dev_scale;
-            self.prev = if s.norm_sqr() > 1e-10 {
-                s / s.norm()
-            } else {
-                Complex::new(1.0, 0.0)
-            };
+            if s.norm_sqr() > 1e-10 {
+                self.prev = s;
+            }
 
             composite_out.push(composite);
 

@@ -30,7 +30,6 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::{broadcast, mpsc};
-use tokio::task::JoinHandle;
 
 use rustfft::num_complex::Complex;
 
@@ -50,8 +49,8 @@ const AUDIO_FRAME_SIZE: usize = 256;
 pub struct SignalPath {
     shared: Arc<RwLock<SharedState>>,
     pub cmd_tx: crossbeam_channel::Sender<SignalPathCommand>,
-    /// Handles to all running tasks, for awaiting shutdown.
-    _handles: Vec<JoinHandle<()>>,
+    /// Handles to all running threads/tasks, kept alive until SignalPath drops.
+    _handles: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl SignalPath {
@@ -105,7 +104,16 @@ impl SignalPath {
             }
         }
 
-        let handle = tokio::spawn(async move {
+        // Run the signal path on a dedicated OS thread rather than a Tokio task.
+        // The upstream C++ app uses std::thread for DSP for the same reason:
+        // real-time audio processing must not share a cooperative scheduler with
+        // I/O tasks.  With Tokio, the scheduler can starve the signal path for
+        // tens of milliseconds (one UI frame + any blocking I/O), which causes
+        // broadcast channel overflows, demodulator resets, and audio dropouts.
+        // A preemptive OS thread is scheduled independently and never starved.
+        let handle = std::thread::Builder::new()
+            .name("sdrapp-signal-path".into())
+            .spawn(move || {
             let sr = sample_rate.max(200_000);
             // WBFM demodulation decimation: run FM demod at ≤500 kHz to cut
             // transcendental-math cost (atan2/sin_cos) by the decimation factor.
@@ -533,24 +541,49 @@ impl SignalPath {
                 // When the source is dead, sleep briefly and loop to keep
                 // processing commands (so Start/Stop/freq changes still work).
                 if source_dead {
-                    tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                    std::thread::sleep(std::time::Duration::from_millis(16));
                     continue;
                 }
 
-                // Receive a batch of IQ samples
-                let batch = match iq_rx.recv().await {
+                // Receive a batch of IQ samples — blocking call on this OS thread.
+                // Unlike Tokio's .await, blocking_recv() truly sleeps when no
+                // data is available, yielding the CPU to other threads.
+                let batch = match iq_rx.blocking_recv() {
                     Ok(b) => b,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(dropped = n, "signal path lagged — dropped batches");
-                        demod.reset();
-                        rds.reset();
-                        audio_accumulator.clear();
-                        last_is_stereo = false;
-                        // Yield the Tokio worker so other tasks run and the
-                        // broadcast channel can drain.  Without this, the task
-                        // spins at 100% CPU because Lagged returns Poll::Ready
-                        // immediately and the task never suspends.
-                        tokio::task::yield_now().await;
+                        // Calculate how much audio was dropped.
+                        // Only reset demodulator state for large gaps (>100 ms) where
+                        // the FM discriminator phase continuity is definitely broken.
+                        // For small gaps (<= 10 batches ≈ 20 ms at 500 kHz / 1024 samp),
+                        // the demodulator can recover on its own — keeping state
+                        // avoids audio glitches from repeated PLL resync.
+                        let dropped_ms =
+                            n as f64 * 1024.0 * 1000.0 / sr.max(1) as f64;
+                        if dropped_ms > 100.0 {
+                            tracing::warn!(
+                                dropped = n,
+                                dropped_ms = dropped_ms as u32,
+                                "signal path lagged — large gap, resetting demod"
+                            );
+                            demod.reset();
+                            rds.reset();
+                            audio_accumulator.clear();
+                            last_is_stereo = false;
+                            if let Some(ref mut f) = aa_filter {
+                                f.reset();
+                            }
+                        } else {
+                            tracing::debug!(
+                                dropped = n,
+                                dropped_ms = dropped_ms as u32,
+                                "signal path minor lag — continuing without demod reset"
+                            );
+                        }
+                        // Yield this OS thread so other threads run and the
+                        // broadcast channel can drain.  Without this, the thread
+                        // spins at 100% CPU because blocking_recv() on a Lagged
+                        // channel returns immediately with the next available item.
+                        std::thread::yield_now();
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -821,7 +854,8 @@ impl SignalPath {
 
             // Note: the loop above never breaks (signal path runs for the app lifetime).
             // Kept here as a logical boundary; dead code warning is expected.
-        });
+        })
+        .expect("failed to spawn signal path thread");
 
         Self {
             shared,
@@ -1081,11 +1115,12 @@ mod tests {
     // ── Signal path command-dispatch integration tests ────────────────────────
     //
     // Pattern:
-    //   1. Start the signal path (spawns a tokio task).
+    //   1. Start the signal path (spawns an OS thread).
     //   2. Send a command — it queues in the crossbeam channel.
-    //   3. Send an empty IQ batch to unblock the task's `iq_rx.recv().await`.
-    //   4. `yield_now()` — scheduler runs the signal path task until it blocks
-    //      again (after draining the command queue and looping back to recv).
+    //   3. Send an empty IQ batch to unblock the thread's blocking_recv().
+    //   4. Sleep briefly — OS scheduler runs the signal path thread until it
+    //      blocks again (after draining the command queue and looping back to
+    //      blocking_recv).
     //   5. Assert the SharedState mutation.
 
     fn make_signal_path() -> (
@@ -1099,7 +1134,7 @@ mod tests {
         (path, iq_tx, shared)
     }
 
-    /// Send `cmd`, tickle the signal path loop with an empty IQ batch, yield.
+    /// Send `cmd`, tickle the signal path loop with an empty IQ batch, wait.
     async fn tick(
         cmd_tx: &crossbeam_channel::Sender<SignalPathCommand>,
         iq_tx: &broadcast::Sender<Arc<[IqSample]>>,
@@ -1107,7 +1142,10 @@ mod tests {
     ) {
         cmd_tx.try_send(cmd.into()).unwrap();
         let _ = iq_tx.send(Arc::new([]));
-        tokio::task::yield_now().await;
+        // The signal path runs on an OS thread (not a Tokio task), so
+        // yield_now() would not help — sleep briefly to give the thread time
+        // to wake up from blocking_recv(), dispatch the command, and loop back.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
     #[tokio::test]
