@@ -263,13 +263,16 @@ impl<'a> SpectrumWidget<'a> {
         }
 
         // ── Peak signal markers ───────────────────────────────────────────────
-        // Small upward-pointing triangles above the trace at detected peak freqs.
+        // Prominent triangles + frequency labels at detected peak frequencies.
+        // Labels read e.g. "104.7" so the operator can directly see what's there.
         // Drawn before the filter overlay so the overlay tint doesn't occlude them.
         if !self.peak_marker_hz.is_empty() && freq_hi > freq_lo && n > 1 {
             let freq_span = freq_hi - freq_lo;
-            let tri_h = 5.0_f32; // triangle height in pixels
-            let tri_w = 6.0_f32; // triangle base half-width
-            let marker_color = Color32::from_rgba_unmultiplied(80, 200, 255, 160);
+            let tri_h = 8.0_f32;
+            let tri_w = 9.0_f32;
+            let marker_color = Color32::from_rgba_unmultiplied(80, 220, 255, 220);
+            let label_color = Color32::from_rgba_unmultiplied(160, 240, 255, 210);
+            let font = egui::FontId::proportional(9.5);
             for &peak_hz in self.peak_marker_hz {
                 if (peak_hz as f64) < freq_lo || (peak_hz as f64) > freq_hi {
                     continue;
@@ -277,11 +280,11 @@ impl<'a> SpectrumWidget<'a> {
                 let t = ((peak_hz as f64 - freq_lo) / freq_span) as f32;
                 let cx = plot_rect.left() + t * plot_rect.width();
 
-                // Look up trace Y at this position to seat the marker on the signal.
+                // Seat the marker on the signal trace
                 let bin = (t * (n - 1) as f32).round() as usize;
                 let bin = bin.min(n - 1);
                 let trace_y = db_to_y(self.fft_data[bin], db_min, db_max, plot_rect);
-                let tip_y = (trace_y - 3.0).max(plot_rect.top() + 1.0);
+                let tip_y = (trace_y - 4.0).max(plot_rect.top() + 1.0);
 
                 // Upward triangle: tip at top, base below
                 painter.add(egui::Shape::convex_polygon(
@@ -293,6 +296,23 @@ impl<'a> SpectrumWidget<'a> {
                     marker_color,
                     Stroke::NONE,
                 ));
+
+                // Frequency label above the triangle (e.g. "104.7" or "162.4")
+                let label = if peak_hz >= 1_000_000 {
+                    let mhz = peak_hz as f64 / 1_000_000.0;
+                    // Drop trailing zero: "104.7" not "104.70"
+                    format!("{mhz:.1}")
+                } else {
+                    format!("{:.0}k", peak_hz as f64 / 1_000.0)
+                };
+                let label_y = tip_y - 11.0;
+                painter.text(
+                    Pos2::new(cx, label_y.max(plot_rect.top() + 1.0)),
+                    egui::Align2::CENTER_BOTTOM,
+                    label,
+                    font.clone(),
+                    label_color,
+                );
             }
         }
 
