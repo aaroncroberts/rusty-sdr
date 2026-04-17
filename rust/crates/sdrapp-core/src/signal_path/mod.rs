@@ -149,6 +149,7 @@ impl SignalPath {
             let mut squelch = Squelch::new(48_000, -50.0);
             let mut rds = RdsDecoder::new(demod_sr);
             let mut audio_bp = AudioBandpass::voice(48_000.0);
+            let mut am_audio_bp = AudioBandpass::am(48_000.0);
             let mut ctcss = CtcssDetector::with_default_threshold(48_000.0);
             let mut nfm_bw_hz: u32 = 12_500;
             let mut ctcss_enabled: bool = false;
@@ -256,6 +257,7 @@ impl SignalPath {
                                 demod = make_demod(mode, sr, demod_sr, nfm_bw_hz);
                                 squelch.reset();
                                 audio_bp.reset();
+                                am_audio_bp.reset();
                                 ctcss.reset();
                                 rds.reset();
                                 let mut s = shared_clone.write();
@@ -280,6 +282,7 @@ impl SignalPath {
                                     demod =
                                         Demod::Nfm(FmDemodulator::new(sr, 48_000, bw as f32, 0.0));
                                     audio_bp.reset();
+                                    am_audio_bp.reset();
                                     ctcss.reset();
                                     audio_accumulator.clear(); // discard cross-rate samples
                                 }
@@ -852,7 +855,8 @@ impl SignalPath {
                         filtered.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Am(d) => {
-                        let mono = d.process(&iq_complex_buf);
+                        let mut mono = d.process(&iq_complex_buf);
+                        am_audio_bp.process_inplace(&mut mono);
                         mono.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Ssb(d) => {

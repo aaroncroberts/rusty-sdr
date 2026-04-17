@@ -107,6 +107,15 @@ impl AudioBandpass {
         }
     }
 
+    /// AM audio bandpass: 50 Hz high-pass + 5 kHz low-pass.
+    /// Wider than voice() to preserve the full AM audio spectrum.
+    pub fn am(fs_hz: f32) -> Self {
+        Self {
+            hp: Biquad::highpass(50.0, fs_hz),
+            lp: Biquad::lowpass(5_000.0, fs_hz),
+        }
+    }
+
     /// Process a buffer of audio samples in-place.
     pub fn process_inplace(&mut self, samples: &mut [f32]) {
         for s in samples.iter_mut() {
@@ -166,5 +175,33 @@ mod tests {
         let rms: f32 = buf[2400..].iter().map(|&x| x * x).sum::<f32>() / 2400.0;
         let rms = rms.sqrt();
         assert!(rms < 0.1, "8 kHz should be attenuated (rms={rms:.3})");
+    }
+
+    #[test]
+    fn am_bandpass_passes_1khz_attenuates_dc() {
+        let fs = 48_000.0;
+        let n = 10_000;
+        let settle = n / 2;
+
+        // 1 kHz sine should pass through (well within 50 Hz – 5 kHz passband)
+        let mut bp = AudioBandpass::am(fs);
+        let mut buf = sine_buf(1_000.0, fs, n);
+        bp.process_inplace(&mut buf);
+        let rms: f32 = (buf[settle..].iter().map(|&x| x * x).sum::<f32>()
+            / (n - settle) as f32)
+            .sqrt();
+        assert!(
+            rms > 0.5,
+            "1 kHz should pass through AM bandpass (rms={rms:.3})"
+        );
+
+        // DC (constant 1.0) should be attenuated by the 50 Hz high-pass
+        let mut bp = AudioBandpass::am(fs);
+        let mut buf = vec![1.0_f32; n];
+        bp.process_inplace(&mut buf);
+        let rms: f32 = (buf[settle..].iter().map(|&x| x * x).sum::<f32>()
+            / (n - settle) as f32)
+            .sqrt();
+        assert!(rms < 0.05, "DC should be attenuated by AM bandpass (rms={rms:.3})");
     }
 }
