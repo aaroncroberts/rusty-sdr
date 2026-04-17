@@ -53,6 +53,29 @@ struct Biquad {
 }
 
 impl Biquad {
+    /// Construct a 2nd-order RBJ bandpass section (constant skirt gain).
+    ///
+    /// * `fc` — centre frequency in Hz
+    /// * `fs` — sample rate in Hz
+    /// * `q`  — quality factor; bandwidth = fc / q
+    ///
+    /// At Q = 38 and fc = 19 kHz the passband is ≈ 500 Hz — enough to isolate
+    /// the FM stereo pilot while rejecting the 0–15 kHz audio bulk.
+    fn bandpass(fc: f32, fs: f32, q: f32) -> Self {
+        let omega = std::f32::consts::TAU * fc / fs;
+        let alpha = omega.sin() / (2.0 * q);
+        let a0_inv = 1.0 / (1.0 + alpha);
+        Self {
+            b0: alpha * a0_inv,
+            b1: 0.0,
+            b2: -alpha * a0_inv,
+            a1: -2.0 * omega.cos() * a0_inv,
+            a2: (1.0 - alpha) * a0_inv,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
     /// Construct a 2nd-order Butterworth LP section.
     ///
     /// * `fc` — cutoff frequency in Hz
@@ -143,6 +166,10 @@ pub struct StereoFmDecoder {
     /// EMA coefficient for slow level smoothing.
     pilot_slow_alpha: f32,
 
+    // ── Narrow biquad bandpass at 19 kHz — isolates pilot before PLL ─────────
+    /// Q = 38 → bandwidth ≈ 500 Hz, matching the C++ FIR reference passband.
+    pilot_bp: Biquad,
+
     // ── L+R 4th-order Butterworth LP at 15 kHz ───────────────────────────────
     lpr: [Biquad; 2],
 
@@ -196,6 +223,8 @@ impl StereoFmDecoder {
             pilot_level: 0.0,
             pilot_slow_alpha,
 
+            pilot_bp: Biquad::bandpass(19_000.0, sr, 38.0),
+
             lpr: butterworth_lp4(15_000.0, sr),
             lmr: butterworth_lp4(15_000.0, sr),
 
@@ -242,10 +271,13 @@ impl StereoFmDecoder {
             }
 
             // ── Pilot PLL ─────────────────────────────────────────────────────
+            // Narrow-bandpass the composite to ~500 Hz around 19 kHz so that
+            // the dominant 0–15 kHz audio does not bias the phase detector.
+            let pilot_isolated = self.pilot_bp.process(composite);
             let (sin_p, cos_p) = self.pilot_phase.sin_cos();
 
             // Phase detector: quadrature component (drives phase to zero when locked)
-            let phase_err = composite * sin_p;
+            let phase_err = pilot_isolated * sin_p;
 
             // Proportional update: steer pilot_phase toward lock
             self.pilot_phase += self.pilot_step + self.pll_kp * phase_err;
@@ -257,7 +289,7 @@ impl StereoFmDecoder {
             }
 
             // ── Pilot amplitude tracking ──────────────────────────────────────
-            let pilot_in_phase = composite * cos_p;
+            let pilot_in_phase = pilot_isolated * cos_p;
             self.pilot_i = self.pilot_fast_alpha * self.pilot_i
                 + (1.0 - self.pilot_fast_alpha) * pilot_in_phase;
             let instantaneous_amplitude = self.pilot_i.abs();
@@ -326,8 +358,9 @@ impl StereoFmDecoder {
             composite_out.push(composite);
 
             // ── Pilot PLL ─────────────────────────────────────────────────────
+            let pilot_isolated = self.pilot_bp.process(composite);
             let (sin_p, cos_p) = self.pilot_phase.sin_cos();
-            let phase_err = composite * sin_p;
+            let phase_err = pilot_isolated * sin_p;
             self.pilot_phase += self.pilot_step + self.pll_kp * phase_err;
             if self.pilot_phase >= std::f32::consts::TAU {
                 self.pilot_phase -= std::f32::consts::TAU;
@@ -336,7 +369,7 @@ impl StereoFmDecoder {
             }
 
             // ── Pilot amplitude tracking ──────────────────────────────────────
-            let pilot_in_phase = composite * cos_p;
+            let pilot_in_phase = pilot_isolated * cos_p;
             self.pilot_i = self.pilot_fast_alpha * self.pilot_i
                 + (1.0 - self.pilot_fast_alpha) * pilot_in_phase;
             let instantaneous_amplitude = self.pilot_i.abs();
@@ -380,6 +413,7 @@ impl StereoFmDecoder {
         self.pilot_phase = 0.0;
         self.pilot_i = 0.0;
         self.pilot_level = 0.0;
+        self.pilot_bp.reset();
         biquad2_reset(&mut self.lpr);
         biquad2_reset(&mut self.lmr);
         self.deemph_l = 0.0;
@@ -578,6 +612,22 @@ mod tests {
                 f.right
             );
         }
+    }
+
+    #[test]
+    fn pilot_pll_locks_faster_with_bandpass() {
+        // With the pilot bandpass in place the PLL should lock within 0.5 s,
+        // i.e. in half the sample budget used by stereo_detected_when_pilot_present.
+        let mut dec = StereoFmDecoder::new(SR);
+        let half_second = SR as usize / 2;
+        let iq = make_stereo_composite(1_000.0, 0.5, 0.1, 0.3);
+        for chunk in iq[..half_second].chunks(1024) {
+            dec.process(chunk);
+        }
+        assert!(
+            dec.is_stereo(),
+            "pilot bandpass should enable PLL lock within 0.5 s"
+        );
     }
 
     #[test]
