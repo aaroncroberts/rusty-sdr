@@ -165,6 +165,14 @@ pub struct StereoFmDecoder {
     pilot_level: f32,
     /// EMA coefficient for slow level smoothing.
     pilot_slow_alpha: f32,
+    /// Very fast envelope tracker for PLL AGC normalization (~2 ms).
+    /// Normalises the phase-error signal so loop BW is independent of
+    /// pilot amplitude (which varies from ~0.02 at weak stations to ~0.15
+    /// at strong ones — a 7× range that would otherwise shift the effective
+    /// loop bandwidth by 7×).
+    pilot_env: f32,
+    /// EMA coefficient for the pilot envelope tracker (~2 ms).
+    pilot_env_alpha: f32,
 
     // ── Narrow biquad bandpass at 19 kHz — isolates pilot before PLL ─────────
     /// Q = 38 → bandwidth ≈ 500 Hz, matching the C++ FIR reference passband.
@@ -197,12 +205,16 @@ impl StereoFmDecoder {
 
         // Pilot PLL
         let pilot_step = tau * 19_000.0 / sr;
-        // Loop bandwidth ≈ 30 Hz; kp = 2 * BW / sr
+        // Loop bandwidth ≈ 30 Hz, normalised by the pilot envelope so the
+        // effective bandwidth is constant regardless of signal amplitude.
+        // Formula: kp = 2π * BW / sr — the normalisation factor is applied
+        // at runtime by dividing phase_err by pilot_env.
         let pll_kp = tau * 30.0 / sr;
 
         // Pilot EMA constants
         let pilot_fast_alpha = (-1.0 / (0.005 * sr)).exp(); // 5 ms
         let pilot_slow_alpha = (-1.0 / (0.300 * sr)).exp(); // 300 ms
+        let pilot_env_alpha = (-1.0 / (0.002 * sr)).exp(); // 2 ms envelope
 
         // 75 µs de-emphasis at audio rate
         let deemph_alpha = (-1.0 / (75e-6 * audio_rate)).exp();
@@ -222,6 +234,8 @@ impl StereoFmDecoder {
             pilot_fast_alpha,
             pilot_level: 0.0,
             pilot_slow_alpha,
+            pilot_env: 1e-4, // small non-zero seed avoids div-by-zero before first signal
+            pilot_env_alpha,
 
             pilot_bp: Biquad::bandpass(19_000.0, sr, 38.0),
 
@@ -240,6 +254,12 @@ impl StereoFmDecoder {
     /// Returns `true` if a stereo pilot is currently detected.
     pub fn is_stereo(&self) -> bool {
         self.pilot_level >= PILOT_THRESHOLD
+    }
+
+    /// Returns the raw normalised pilot amplitude (0.0–~0.15).
+    /// Threshold for `is_stereo()` is `PILOT_THRESHOLD` = 0.02.
+    pub fn pilot_level(&self) -> f32 {
+        self.pilot_level
     }
 
     /// Reset only the FM discriminator's previous sample reference.
@@ -274,10 +294,24 @@ impl StereoFmDecoder {
             // Narrow-bandpass the composite to ~500 Hz around 19 kHz so that
             // the dominant 0–15 kHz audio does not bias the phase detector.
             let pilot_isolated = self.pilot_bp.process(composite);
+
+            // Pilot envelope AGC: track |pilot_isolated| with a fast EMA.
+            // Dividing the phase error by this envelope normalises the loop
+            // gain so the ~30 Hz bandwidth is constant across pilot amplitudes
+            // (without normalisation, weak pilots → near-zero loop gain →
+            // PLL won't lock when hardware sample rate has even 1–2 Hz drift).
+            self.pilot_env = self.pilot_env_alpha * self.pilot_env
+                + (1.0 - self.pilot_env_alpha) * pilot_isolated.abs();
+            let env_inv = if self.pilot_env > 1e-5 {
+                1.0 / self.pilot_env
+            } else {
+                0.0 // no signal — let PLL free-run
+            };
+
             let (sin_p, cos_p) = self.pilot_phase.sin_cos();
 
-            // Phase detector: quadrature component (drives phase to zero when locked)
-            let phase_err = pilot_isolated * sin_p;
+            // Phase detector: quadrature component, normalised by pilot amplitude.
+            let phase_err = pilot_isolated * sin_p * env_inv;
 
             // Proportional update: steer pilot_phase toward lock
             self.pilot_phase += self.pilot_step + self.pll_kp * phase_err;
@@ -359,8 +393,15 @@ impl StereoFmDecoder {
 
             // ── Pilot PLL ─────────────────────────────────────────────────────
             let pilot_isolated = self.pilot_bp.process(composite);
+            self.pilot_env = self.pilot_env_alpha * self.pilot_env
+                + (1.0 - self.pilot_env_alpha) * pilot_isolated.abs();
+            let env_inv = if self.pilot_env > 1e-5 {
+                1.0 / self.pilot_env
+            } else {
+                0.0
+            };
             let (sin_p, cos_p) = self.pilot_phase.sin_cos();
-            let phase_err = pilot_isolated * sin_p;
+            let phase_err = pilot_isolated * sin_p * env_inv;
             self.pilot_phase += self.pilot_step + self.pll_kp * phase_err;
             if self.pilot_phase >= std::f32::consts::TAU {
                 self.pilot_phase -= std::f32::consts::TAU;

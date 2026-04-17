@@ -213,7 +213,7 @@ impl SdrApp {
             range_scan_step_hz: 100_000,
             range_scan_squelch: -60.0,
             range_scan_dwell: 0.3,
-            range_scan_stereo_only: true,
+            range_scan_stereo_only: false,
             show_settings: false,
             auto_start_pending: auto_start,
             last_clipping_time: None,
