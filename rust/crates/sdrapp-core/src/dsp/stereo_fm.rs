@@ -643,4 +643,124 @@ mod tests {
             assert!((-1.0..=1.0).contains(&f.right));
         }
     }
+
+    // ── Production-path integration tests ────────────────────────────────────
+    //
+    // These tests model the ACTUAL signal path:
+    //   SDRplay RSPdx-R2 → 4× hardware decimation → 500 kHz effective IQ
+    //   signal path: 2× software decimation → 250 kHz demod_sr
+    //   StereoFmDecoder(250_000) → 48 kHz audio
+    //
+    // Together they prove:
+    //   1. The demodulator runs at the correct 250 kHz production rate
+    //   2. The audio output is non-silent for a real FM signal
+    //   3. A 1 kHz audio tone is demodulated with detectable amplitude
+    //   4. Silence (IQ = zeros) produces silence, not garbage
+
+    /// Make 1 second of IQ at the given sample rate representing an FM signal
+    /// carrying a mono audio tone at `f_audio` Hz with 75 kHz deviation.
+    fn make_fm_iq(sample_rate: u32, f_audio: f32, audio_amplitude: f32) -> Vec<Complex<f32>> {
+        let n = sample_rate as usize;
+        let dev = 75_000.0_f32;
+        let mut phase = 0.0_f32;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sample_rate as f32;
+                let audio = audio_amplitude * (std::f32::consts::TAU * f_audio * t).cos();
+                phase += std::f32::consts::TAU * dev / sample_rate as f32 * audio;
+                Complex::new(phase.cos(), phase.sin())
+            })
+            .collect()
+    }
+
+    /// Decimate IQ by an integer factor using boxcar averaging (matches signal path).
+    fn decimate(iq: &[Complex<f32>], factor: usize) -> Vec<Complex<f32>> {
+        let scale = 1.0 / factor as f32;
+        iq.chunks(factor)
+            .map(|c| c.iter().fold(Complex::new(0.0_f32, 0.0), |a, &b| a + b) * scale)
+            .collect()
+    }
+
+    /// Compute RMS amplitude of the left channel over a slice of frames.
+    fn rms(frames: &[StereoFrame]) -> f32 {
+        let sq_sum: f32 = frames.iter().map(|f| f.left * f.left).sum();
+        (sq_sum / frames.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn production_path_250khz_produces_correct_frame_count() {
+        // At the production rate (500 kHz IQ → 2× decimate → 250 kHz demod_sr),
+        // one second of IQ should yield ~48000 audio frames.
+        let iq_500k = make_fm_iq(500_000, 1_000.0, 0.5);
+        let iq_250k = decimate(&iq_500k, 2);
+        let mut dec = StereoFmDecoder::new(250_000);
+        let (frames, _) = dec.process(&iq_250k);
+        let diff = (frames.len() as i64 - 48_000_i64).abs();
+        assert!(
+            diff <= 2,
+            "expected ~48000 audio frames at 250 kHz demod_sr, got {}",
+            frames.len()
+        );
+    }
+
+    #[test]
+    fn production_path_1khz_tone_is_audible() {
+        // A 1 kHz tone at 75% deviation should survive the production path and
+        // produce non-silent audio well above any noise floor.
+        //
+        // This is the key "does audio work?" proof: if this test fails, the FM
+        // demodulator is producing silence or pure noise, and the user would
+        // hear static regardless of signal strength.
+        let iq_500k = make_fm_iq(500_000, 1_000.0, 0.5);
+        let iq_250k = decimate(&iq_500k, 2);
+        let mut dec = StereoFmDecoder::new(250_000);
+        let (frames, _) = dec.process(&iq_250k);
+        // Skip the first 0.5 s while the de-emphasis and LP filters settle.
+        let steady = &frames[24_000..];
+        let amplitude = rms(steady);
+        assert!(
+            amplitude > 0.05,
+            "expected RMS amplitude > 0.05 for a 1 kHz FM signal; got {amplitude:.4} (silent or noise)"
+        );
+        assert!(
+            amplitude < 1.0,
+            "expected RMS amplitude < 1.0 (not clipping); got {amplitude:.4}"
+        );
+    }
+
+    #[test]
+    fn production_path_silence_in_silence_out() {
+        // Zero IQ (no signal / carrier off) must produce near-silence, not noise.
+        // The FM discriminator arg(prev* × s) with s=0 is guarded (norm_sqr < 1e-10),
+        // so zero IQ should produce zero composite → zero audio.
+        let zeros = vec![Complex::new(0.0_f32, 0.0); 250_000];
+        let mut dec = StereoFmDecoder::new(250_000);
+        let (frames, _) = dec.process(&zeros);
+        let amplitude = rms(&frames);
+        assert!(
+            amplitude < 0.001,
+            "expected near-silence for zero IQ; got RMS={amplitude:.6}"
+        );
+    }
+
+    #[test]
+    fn production_path_output_is_clamped_with_strong_signal() {
+        // Even with maximum deviation (amplitude=1.0, 75 kHz), output stays in [-1, 1].
+        let iq_500k = make_fm_iq(500_000, 1_000.0, 1.0);
+        let iq_250k = decimate(&iq_500k, 2);
+        let mut dec = StereoFmDecoder::new(250_000);
+        let (frames, _) = dec.process(&iq_250k);
+        for f in &frames {
+            assert!(
+                (-1.0..=1.0).contains(&f.left),
+                "left={} out of [-1,1]",
+                f.left
+            );
+            assert!(
+                (-1.0..=1.0).contains(&f.right),
+                "right={} out of [-1,1]",
+                f.right
+            );
+        }
+    }
 }
