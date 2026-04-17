@@ -53,10 +53,19 @@ pub struct RspdxConfig {
     /// FM broadcast / DAB notch filter.
     #[serde(default)]
     pub fm_notch_enabled: bool,
+    /// Hardware decimation factor applied by the RSPdx-R2 (1 = off, 2/4/8/16/32 = enabled).
+    /// At factor 4 the hardware streams at 2 MHz / 4 = 500 kHz, reducing IQ pipeline load 4×.
+    /// Stored as `u32` but only values that are a power-of-two in [1..=32] are valid per the API.
+    #[serde(default = "default_decimation_factor")]
+    pub decimation_factor: u32,
 }
 
 fn default_agc_setpoint() -> i32 {
     -60
+}
+
+fn default_decimation_factor() -> u32 {
+    4
 }
 
 impl Default for RspdxConfig {
@@ -74,6 +83,7 @@ impl Default for RspdxConfig {
             hdr_mode: false,
             am_notch_enabled: false,
             fm_notch_enabled: false,
+            decimation_factor: 4,
         }
     }
 }
@@ -90,5 +100,6 @@ mod tests {
         assert_eq!(cfg.frequency_hz, restored.frequency_hz);
         assert_eq!(cfg.antenna, restored.antenna);
         assert_eq!(cfg.agc_enabled, restored.agc_enabled);
+        assert_eq!(cfg.decimation_factor, restored.decimation_factor);
     }
 }

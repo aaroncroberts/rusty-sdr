@@ -182,6 +182,7 @@ fn main() -> anyhow::Result<()> {
                 hdr_mode: config.source.hdr_mode,
                 am_notch_enabled: config.source.am_notch_enabled,
                 fm_notch_enabled: config.source.fm_notch_enabled,
+                decimation_factor: config.source.decimation_factor,
                 if_mode: match config.source.if_mode.as_str() {
                     "LowIF200kHz" => sdrapp_sdrplay::IfMode::LowIf200kHz,
                     "LowIF500kHz" => sdrapp_sdrplay::IfMode::LowIf500kHz,
@@ -301,6 +302,7 @@ fn main() -> anyhow::Result<()> {
             hdr_mode: config.source.hdr_mode,
             am_notch_enabled: config.source.am_notch_enabled,
             fm_notch_enabled: config.source.fm_notch_enabled,
+            decimation_factor: config.source.decimation_factor,
             if_mode: match config.source.if_mode.as_str() {
                 "LowIF200kHz" => sdrapp_sdrplay::IfMode::LowIf200kHz,
                 "LowIF500kHz" => sdrapp_sdrplay::IfMode::LowIf500kHz,

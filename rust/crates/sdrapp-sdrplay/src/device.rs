@@ -630,7 +630,35 @@ fn try_run_sdrplay_session(
             sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
             sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_RfDabNotchControl);
         tracing::debug!(error_code = e, reason = "RspDx_RfDabNotchControl", "sdrplay_api_Update");
+
+        // Hardware decimation — reduces the USB/IQ stream rate from the hardware
+        // sample rate down to sample_rate / decimation_factor.
+        // At decimation_factor=4 and sample_rate=2 MHz the API streams 500 kHz,
+        // cutting IQ pipeline load (FFT, FIR, demod) by 4×.
+        // wideBandSignal=1 is required for RSPdx wideband (Zero-IF) mode.
+        if config.decimation_factor > 1 {
+            ch.ctrlParams.decimation.enable = 1;
+            ch.ctrlParams.decimation.decimationFactor = config.decimation_factor as u8;
+            ch.ctrlParams.decimation.wideBandSignal = 1;
+            let e = sys::sdrplay_api_Update(dev_handle,
+                sys::sdrplay_api_TunerSelectT_sdrplay_api_Tuner_A,
+                sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Decimation,
+                sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None);
+            tracing::info!(
+                decimation_factor = config.decimation_factor,
+                effective_rate_hz = config.sample_rate_sps / config.decimation_factor,
+                error_code = e,
+                "Hardware decimation enabled"
+            );
+        }
     }
+
+    // Compute the effective sample rate seen by the signal path after decimation.
+    let effective_sample_rate = if config.decimation_factor > 1 {
+        config.sample_rate_sps / config.decimation_factor
+    } else {
+        config.sample_rate_sps
+    };
 
     // ── Publish Running status + update diagnostics ───────────────────────────
     let _ = status_tx.send(DeviceStatus::Running {
@@ -643,11 +671,16 @@ fn try_run_sdrplay_session(
         diag.device_diagnostics.hw_ver = hw_ver;
         diag.device_diagnostics.api_version = api_version;
         diag.device_diagnostics.status = "Running".into();
+        // Update the signal path's view of the sample rate to the effective
+        // post-decimation rate so FFT bins and demod decimation factors are correct.
+        diag.sample_rate_sps = effective_sample_rate;
     }
 
     tracing::info!(
         freq_hz = config.frequency_hz,
-        sample_rate = config.sample_rate_sps,
+        hw_sample_rate = config.sample_rate_sps,
+        decimation_factor = config.decimation_factor,
+        effective_sample_rate,
         serial = %serial,
         "RSPdx-R2 streaming started"
     );
