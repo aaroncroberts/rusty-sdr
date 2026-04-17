@@ -95,23 +95,20 @@ impl SdrApp {
                 }
             }
 
-            // Auto-ref: anchor ref_level to the noise floor so the full signal
-            // range stays visible regardless of signal strength.
-            // ref_level = noise_floor + dyn_range * 0.9  means the noise floor
-            // sits at ~10% from the bottom of the display, and signals up to
-            // 90% of dyn_range above the floor remain on-screen.
+            // Auto-ref: track fft_floor/fft_ceil from live FFT data.
+            // floor = noise_floor_ema - 5 dB margin (noise sits just above the dark end)
+            // ceil  = signal_ceil_ema  + 5 dB margin (signals sit just below the bright end)
             if self.auto_ref && n >= 10 {
                 let mut sorted = fft_data.to_vec();
                 sorted
                     .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let floor_sample = sorted[n / 10];
                 let ceil_sample = sorted[(n * 99 / 100).min(n - 1)];
-                // ALPHA=0.98 → τ ≈ 1.6 s at 30 Hz FFT writes, which is slow enough
-                // that normal signal-level flutter doesn't visibly bounce the grid.
+                // ALPHA=0.98 → τ ≈ 1.6 s at 30 Hz FFT writes — slow enough that
+                // noise floor flutter doesn't bounce the grid on every frame.
                 const ALPHA: f32 = 0.98;
-                // On the very first frame of real data, snap immediately instead
-                // of waiting several seconds for the EMA to converge from the initial guess.
                 if self.noise_floor_ema <= -84.9 {
+                    // Snap on the very first real-data frame.
                     self.noise_floor_ema = floor_sample;
                     self.signal_ceil_ema = ceil_sample;
                 } else {
@@ -120,35 +117,30 @@ impl SdrApp {
                     self.signal_ceil_ema =
                         ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
                 }
-                // Only move the grid when the proposed ref_level differs by ≥ 1 dB
-                // from the current value.  This prevents fractional-dB EMA drift from
-                // visibly shifting the grid lines on every frame.
-                let proposed = (self.noise_floor_ema + self.dyn_range * 0.9).clamp(-120.0, 20.0);
-                if (proposed - self.ref_level).abs() >= 1.0 {
-                    self.ref_level = proposed;
+                // Move display range when it differs by ≥ 1 dB from the EMA target.
+                let new_floor = (self.noise_floor_ema - 5.0).clamp(-160.0, -10.0);
+                let new_ceil = (self.signal_ceil_ema + 5.0).clamp(new_floor + 10.0, 0.0);
+                if (new_floor - self.fft_floor).abs() >= 1.0 {
+                    self.fft_floor = new_floor;
+                    self.config.ui.fft_floor = new_floor;
+                    self.config_dirty = true;
+                }
+                if (new_ceil - self.fft_ceil).abs() >= 1.0 {
+                    self.fft_ceil = new_ceil;
+                    self.config.ui.fft_ceil = new_ceil;
+                    self.config_dirty = true;
                 }
             }
-            let _db_floor = self.ref_level - self.dyn_range;
-            let _db_ceil = self.ref_level;
 
-            // Waterfall auto-range: re-arm if 10 s have passed since last manual drag.
+            // Re-arm auto-ref after 10 s of no manual adjustment.
             let now = ui.ctx().input(|i| i.time);
             if !self.wf_auto_armed && (now - self.wf_last_manual_drag) > 10.0 {
                 self.wf_auto_armed = true;
-            }
-            // When armed, keep wf_level so the signal ceiling sits ~5 dB below the top.
-            // Threshold: signal_ceil_ema > wf_level + 77 (i.e. within 3 dB of clipping white).
-            if self.wf_auto_armed && self.signal_ceil_ema > self.wf_level + 77.0 {
-                self.wf_level = (self.signal_ceil_ema - 75.0).clamp(-120.0, 0.0);
-                self.config.ui.wf_level = self.wf_level;
-                self.config_dirty = true;
+                self.auto_ref = true;
             }
 
-            // Waterfall range: wf_level is the absolute dBFS floor (darkest colour);
-            // wf_gain shifts that floor down to reveal weaker signals.
-            // The ceiling is wf_level + 80 dB, giving a consistent 80 dB window.
-            let wf_floor = self.wf_level - self.wf_gain;
-            self.waterfall.set_db_range((wf_floor, self.wf_level + 80.0));
+            // Spectrum and waterfall share the same fft_floor/fft_ceil range.
+            self.waterfall.set_db_range((self.fft_floor, self.fft_ceil));
             // Fractional accumulator: push_row fires once per integer crossed.
             // Speed 1.0 = 1 row/frame, 2.0 = 2 rows/frame, 0.5 = every other frame.
             self.waterfall_row_frac += waterfall_speed.clamp(0.1, 10.0);
@@ -158,8 +150,8 @@ impl SdrApp {
             }
         }
 
-        let db_floor = self.ref_level - self.dyn_range;
-        let db_ceil = self.ref_level;
+        let db_floor = self.fft_floor;
+        let db_ceil = self.fft_ceil;
         let db_range = (db_floor, db_ceil);
 
         // ── Hint strip ───────────────────────────────────────────────────────
@@ -717,56 +709,58 @@ impl SdrApp {
                 self.auto_ref = !self.auto_ref;
             }
 
-            // Ref Level knob
-            let mut rl = self.ref_level;
-            let ref_resp = KnobWidget {
-                value: &mut rl,
-                range: -120.0_f32..=20.0_f32,
-                default_value: -30.0,
-                step: 2.0,
-                diameter: 40.0,
-                label: Some("Level"),
-                unit: "dB",
-                midi_cc: None,
-                learn_active: false,
-            }.show(ui);
-            if ref_resp.changed() {
-                self.ref_level = rl;
-                self.auto_ref = false;
-            }
+            // MAX / MIN dBFS display-range controls.
+            // These directly set the top and bottom of the spectrum Y-axis and the
+            // waterfall colour range — the same pair drives both displays so what
+            // you see on the spectrum matches what you see on the waterfall.
+            ui.vertical(|ui| {
+                ui.label(RichText::new("MAX").small().color(theme::TEXT_MUTED));
+                let mut ceil_val = self.fft_ceil;
+                let ceil_drag = egui::DragValue::new(&mut ceil_val)
+                    .range((self.fft_floor + 10.0)..=0.0_f32)
+                    .speed(1.0)
+                    .suffix(" dB");
+                if ui.add(ceil_drag).on_hover_text("Spectrum/waterfall ceiling (dBFS). Drag down to zoom in on weaker signals.").changed() {
+                    self.fft_ceil = ceil_val.clamp(self.fft_floor + 10.0, 0.0);
+                    self.config.ui.fft_ceil = self.fft_ceil;
+                    self.config_dirty = true;
+                    self.auto_ref = false;
+                    self.wf_auto_armed = false;
+                    self.wf_last_manual_drag = ui.ctx().input(|i| i.time);
+                }
+                ui.label(RichText::new("MIN").small().color(theme::TEXT_MUTED));
+                let mut floor_val = self.fft_floor;
+                let floor_drag = egui::DragValue::new(&mut floor_val)
+                    .range(-160.0_f32..=(self.fft_ceil - 10.0))
+                    .speed(1.0)
+                    .suffix(" dB");
+                if ui.add(floor_drag).on_hover_text("Spectrum/waterfall floor (dBFS). Drag down to reveal weaker signals.").changed() {
+                    self.fft_floor = floor_val.clamp(-160.0, self.fft_ceil - 10.0);
+                    self.config.ui.fft_floor = self.fft_floor;
+                    self.config_dirty = true;
+                    self.auto_ref = false;
+                    self.wf_auto_armed = false;
+                    self.wf_last_manual_drag = ui.ctx().input(|i| i.time);
+                }
+            });
 
-            // Dynamic Range knob
-            let mut dr = self.dyn_range;
-            let range_resp = KnobWidget {
-                value: &mut dr,
-                range: 20.0_f32..=160.0_f32,
-                default_value: 60.0,
-                step: 5.0,
-                diameter: 40.0,
-                label: Some("Range"),
-                unit: "dB",
-                midi_cc: None,
-                learn_active: false,
-            }.show(ui);
-            if range_resp.changed() {
-                self.dyn_range = dr;
-            }
-
-            // WF Gain knob
-            let mut wg = self.wf_gain;
-            let wfg_resp = KnobWidget {
-                value: &mut wg,
-                range: -40.0_f32..=40.0_f32,
-                default_value: 0.0,
-                step: 2.0,
-                diameter: 40.0,
-                label: Some("WF GAIN"),
-                unit: "dB",
-                midi_cc: None,
-                learn_active: false,
-            }.show(ui);
-            if wfg_resp.changed() {
-                self.wf_gain = wg;
+            // Auto-range button: immediately set floor/ceil from live FFT data.
+            if ui.small_button(RichText::new("Auto").color(if self.auto_ref { theme::ACCENT } else { theme::TEXT_MUTED }))
+                .on_hover_text("Auto: continuously track signal level. Click once to snap to current signal, click again to keep tracking.")
+                .clicked()
+            {
+                if !self.auto_ref {
+                    // Snap immediately to current EMA values.
+                    if self.noise_floor_ema > -120.0 {
+                        self.fft_floor = (self.noise_floor_ema - 5.0).clamp(-160.0, -10.0);
+                        self.fft_ceil = (self.signal_ceil_ema + 5.0).clamp(self.fft_floor + 10.0, 0.0);
+                        self.config.ui.fft_floor = self.fft_floor;
+                        self.config.ui.fft_ceil = self.fft_ceil;
+                        self.config_dirty = true;
+                    }
+                }
+                self.auto_ref = !self.auto_ref;
+                self.wf_auto_armed = self.auto_ref;
             }
 
             // Zoom knob + In/Out/Full step buttons
@@ -872,28 +866,8 @@ impl SdrApp {
                 self.config_dirty = true;
             }
 
-            // WF Level knob (6th knob — waterfall floor in dBFS)
-            let mut wf_lv = self.wf_level;
-            let wflvl_resp = KnobWidget {
-                value: &mut wf_lv,
-                range: -120.0_f32..=-40.0_f32,
-                default_value: -70.0,
-                step: 1.0,
-                diameter: 40.0,
-                label: Some("WF Lvl"),
-                unit: "dB",
-                midi_cc: None,
-                learn_active: false,
-            }
-            .show(ui);
-            if wflvl_resp.changed() {
-                self.wf_level = wf_lv;
-                self.config.ui.wf_level = wf_lv;
-                self.config_dirty = true;
-                // Disarm auto-range on manual adjustment; re-arms after 10 s idle.
-                self.wf_auto_armed = false;
-                self.wf_last_manual_drag = ui.ctx().input(|i| i.time);
-            }
+            // WF Level knob removed — waterfall is now driven by the unified
+            // MIN/MAX dBFS controls above, not a separate wf_level offset.
 
             // ── Audio health VU bar ──────────────────────────────────────────
             // Compact segmented bar showing post-demod audio output level.

@@ -161,6 +161,11 @@ impl SignalPath {
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
             // Track previous values to skip write-lock acquisitions when nothing changed.
             let mut last_is_stereo: bool = false;
+            // Rate-limit audio RMS log to once per 5 seconds in WBFM mode.
+            let mut last_rms_log = std::time::Instant::now();
+            const RMS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+            let mut rms_accum_sq: f64 = 0.0;
+            let mut rms_accum_n: u64 = 0;
             // Rate-limit FFT shared-state writes and UI repaints to ~30 Hz (33ms).
             let mut last_fft_write = std::time::Instant::now();
             const FFT_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
@@ -203,13 +208,21 @@ impl SignalPath {
                 None
             };
             let mut narrow_aa_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
-            // Scanner state
+            // Scanner state — bookmark mode
             let mut scan_running = false;
             let mut scan_cursor: usize = 0;
             let mut scan_category = String::new();
             let mut scan_dwell_secs: f32 = 2.0;
             // Accumulates IQ sample count for dwell timer; compare to sample_rate * dwell_secs
             let mut scan_dwell_samples: u64 = 0;
+            // Scanner state — range sweep mode
+            let mut scan_range_mode = false;
+            let mut scan_range_freq: u64 = 87_500_000;
+            let mut scan_range_lo: u64 = 87_500_000;
+            let mut scan_range_hi: u64 = 108_000_000;
+            let mut scan_range_step: u64 = 100_000;
+            let mut scan_range_squelch: f32 = -60.0;
+            let mut scan_range_stereo_only = false;
 
             /// Create a fresh demodulator for the given mode.
             /// `demod_sr` is the WBFM decimated rate (used for WBFM only).
@@ -455,6 +468,47 @@ impl SignalPath {
                             }
                         },
                         SignalPathCommand::Scan(c) => match c {
+                            ScanCmd::StartRange {
+                                freq_lo, freq_hi, step_hz, dwell_secs,
+                                squelch_dbfs, mode, stereo_only,
+                            } => {
+                                scan_range_lo = freq_lo;
+                                scan_range_hi = freq_hi;
+                                scan_range_step = step_hz;
+                                scan_range_squelch = squelch_dbfs;
+                                scan_range_stereo_only = stereo_only;
+                                scan_dwell_secs = dwell_secs.clamp(0.1, 10.0);
+                                scan_range_freq = freq_lo;
+                                scan_range_mode = true;
+                                scan_running = true;
+                                scan_dwell_samples = 0;
+                                {
+                                    let mut s = shared_clone.write();
+                                    s.scanner.scan_running = true;
+                                    s.scanner.range_mode = true;
+                                    s.scanner.range_freq_hz = freq_lo;
+                                    s.scanner.range_freq_lo = freq_lo;
+                                    s.scanner.range_freq_hi = freq_hi;
+                                    s.scanner.range_step_hz = step_hz;
+                                    s.scanner.range_squelch_dbfs = squelch_dbfs;
+                                    s.scanner.range_stereo_only = stereo_only;
+                                    s.scanner.scan_dwell_secs = dwell_secs;
+                                    s.center_freq_hz = freq_lo;
+                                }
+                                if let Some(ref atomic) = freq_atomic_clone {
+                                    atomic.store(freq_lo, Ordering::Relaxed);
+                                }
+                                demod = make_demod(mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
+                                shared_clone.write().demod.demod_mode = mode;
+                                demod.reset();
+                                rds.reset();
+                                audio_accumulator.clear();
+                                iq_accumulator.clear();
+                                tracing::info!(
+                                    freq_lo, freq_hi, step_hz, squelch_dbfs, stereo_only,
+                                    "FM range scanner started"
+                                );
+                            }
                             ScanCmd::Start(cat) => {
                                 scan_category = cat.clone();
                                 scan_running = true;
@@ -501,7 +555,10 @@ impl SignalPath {
                             ScanCmd::Stop => {
                                 tracing::debug!("scanner stopped");
                                 scan_running = false;
-                                shared_clone.write().scanner.scan_running = false;
+                                scan_range_mode = false;
+                                let mut s = shared_clone.write();
+                                s.scanner.scan_running = false;
+                                s.scanner.range_mode = false;
                             }
                             ScanCmd::Next => {
                                 if scan_running {
@@ -808,7 +865,55 @@ impl SignalPath {
                     let dwell_target = (scan_dwell_secs * sr as f32) as u64;
                     if scan_dwell_samples >= dwell_target {
                         scan_dwell_samples = 0;
-                        // Advance to next matching bookmark.
+
+                        // ── Range sweep mode ─────────────────────────────────
+                        if scan_range_mode {
+                            let signal_level = shared_clone.read().fft.signal_level_dbfs;
+                            let is_stereo = shared_clone.read().rds.is_stereo;
+                            let locked = signal_level >= scan_range_squelch
+                                && (!scan_range_stereo_only || is_stereo);
+
+                            if locked {
+                                tracing::info!(
+                                    freq_hz = scan_range_freq,
+                                    signal_level_dbfs = signal_level,
+                                    is_stereo,
+                                    "FM range scanner: station locked"
+                                );
+                                scan_running = false;
+                                scan_range_mode = false;
+                                let mut s = shared_clone.write();
+                                s.scanner.scan_running = false;
+                                s.scanner.range_mode = false;
+                            } else {
+                                // Advance to next frequency, wrap around.
+                                let next = scan_range_freq + scan_range_step;
+                                scan_range_freq = if next > scan_range_hi {
+                                    scan_range_lo
+                                } else {
+                                    next
+                                };
+                                tracing::debug!(
+                                    freq_hz = scan_range_freq,
+                                    signal_level_dbfs = signal_level,
+                                    "FM range scanner: advancing"
+                                );
+                                shared_clone.write().scanner.range_freq_hz = scan_range_freq;
+                                shared_clone.write().center_freq_hz = scan_range_freq;
+                                if let Some(ref atomic) = freq_atomic_clone {
+                                    atomic.store(scan_range_freq, Ordering::Relaxed);
+                                }
+                                // Reset demod so no stale audio bleeds into the new frequency.
+                                demod.reset();
+                                rds.reset();
+                                audio_accumulator.clear();
+                                iq_accumulator.clear();
+                                last_is_stereo = false;
+                            }
+                            continue;
+                        }
+
+                        // ── Bookmark mode ────────────────────────────────────
                         let next_idx = scan_cursor + 1;
                         let (bm_freq, bm_mode, new_idx) = {
                             let s = shared_clone.read();
@@ -922,6 +1027,28 @@ impl SignalPath {
                         if is_stereo != last_is_stereo {
                             shared_clone.write().rds.is_stereo = is_stereo;
                             last_is_stereo = is_stereo;
+                            if is_stereo {
+                                tracing::info!("WBFM: stereo pilot acquired — locked to FM station");
+                            } else {
+                                tracing::info!("WBFM: stereo pilot lost — signal weak or noise");
+                            }
+                        }
+                        // Accumulate audio RMS; log every 5 seconds so we can confirm
+                        // real audio vs static from the terminal output.
+                        for f in &frames {
+                            rms_accum_sq += (f.left * f.left + f.right * f.right) as f64;
+                            rms_accum_n += 2;
+                        }
+                        if last_rms_log.elapsed() >= RMS_LOG_INTERVAL && rms_accum_n > 0 {
+                            let rms = (rms_accum_sq / rms_accum_n as f64).sqrt() as f32;
+                            tracing::info!(
+                                rms = format_args!("{rms:.4}"),
+                                stereo = is_stereo,
+                                "WBFM audio level"
+                            );
+                            rms_accum_sq = 0.0;
+                            rms_accum_n = 0;
+                            last_rms_log = std::time::Instant::now();
                         }
                         if rds.process(&composite) {
                             let mut s = shared_clone.write();

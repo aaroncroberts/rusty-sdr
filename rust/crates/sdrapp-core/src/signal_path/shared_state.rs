@@ -184,6 +184,21 @@ pub struct ScannerState {
     pub scan_dwell_secs: f32,
     /// Category filter for scanner (empty = scan all bookmarks).
     pub scan_category: String,
+    // ── Range scan state ──────────────────────────────────────────────────────
+    /// When true, scanner is in range-sweep mode rather than bookmark-cycle mode.
+    pub range_mode: bool,
+    /// Current frequency in range-sweep mode (Hz).
+    pub range_freq_hz: u64,
+    /// Upper bound of the sweep range (Hz).
+    pub range_freq_hi: u64,
+    /// Lower bound of the sweep range (Hz).
+    pub range_freq_lo: u64,
+    /// Step size for range sweep (Hz).
+    pub range_step_hz: u64,
+    /// Squelch gate threshold: scanner stops when signal_level_dbfs ≥ this.
+    pub range_squelch_dbfs: f32,
+    /// When true, require stereo pilot detection before stopping (WBFM only).
+    pub range_stereo_only: bool,
 }
 
 /// FFT / spectrum display settings and data.

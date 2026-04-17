@@ -261,4 +261,65 @@ mod tests {
             "rectangular full-scale DC should be near 0 dBFS, got {db_1024:.1}"
         );
     }
+
+    /// A full-scale off-DC complex exponential must peak near 0 dBFS
+    /// when the tone is bin-aligned (no spectral leakage) with a rectangular window.
+    ///
+    /// This verifies the normalisation formula `10·log10(|X[k]|² / N²)` matches
+    /// the upstream C++ `volk_32fc_s32f_power_spectrum_32f` scale — the function
+    /// that SDR++ uses internally (upstream-cpp/core/src/signal_path/iq_frontend.cpp
+    /// line 262).  A ±3 dB tolerance covers float rounding and bin-centering
+    /// effects.  The Hann-window variant documents the expected -6 dB window loss
+    /// so display-range defaults can be calibrated against it.
+    #[test]
+    fn full_scale_tone_peaks_near_0_dbfs_rectangular() {
+        let fft_size = 2048usize;
+        let bin = 128usize; // arbitrary non-DC bin
+        // Bin-aligned complex exponential: e^{j·2π·bin·n/N} at unit amplitude
+        let samples: Vec<IqSample> = (0..fft_size)
+            .map(|n| {
+                let phase = 2.0 * std::f32::consts::PI * bin as f32 * n as f32 / fft_size as f32;
+                IqSample::new(phase.cos(), phase.sin())
+            })
+            .collect();
+
+        let mut proc = FftProcessor::new(fft_size, FftWindow::Rectangular);
+        let mags = proc.process(&samples).unwrap();
+        let peak = mags.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+        // Full-scale → 0 dBFS ± 3 dB
+        assert!(
+            peak > -3.0 && peak <= 0.5,
+            "full-scale bin-aligned tone should peak near 0 dBFS, got {peak:.2} dBFS"
+        );
+    }
+
+    /// Hann window attenuates the peak by its coherent gain (~−6 dB).
+    ///
+    /// This documents the expected window loss so waterfall display-range defaults
+    /// can be set to compensate.  The default display floor of −80 dBFS (not −120)
+    /// is calibrated against this: noise at −85 dBFS with Hann window sits just at
+    /// or below the floor, while a −50 dBFS signal occupies ~37% of the colour range.
+    #[test]
+    fn hann_window_tone_peaks_near_minus6_dbfs() {
+        let fft_size = 4096usize;
+        let bin = 256usize;
+        let samples: Vec<IqSample> = (0..fft_size)
+            .map(|n| {
+                let phase = 2.0 * std::f32::consts::PI * bin as f32 * n as f32 / fft_size as f32;
+                IqSample::new(phase.cos(), phase.sin())
+            })
+            .collect();
+
+        let mut proc = FftProcessor::new(fft_size, FftWindow::Hann);
+        let mags = proc.process(&samples).unwrap();
+        let peak = mags.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+        // Hann coherent gain ≈ 0.5 → −6.0 dBFS.  Allow ±2 dB for float rounding
+        // and the fact that the Hann window spreads energy into adjacent bins.
+        assert!(
+            peak > -8.0 && peak < -4.0,
+            "Hann-windowed full-scale tone should peak near −6 dBFS, got {peak:.2} dBFS"
+        );
+    }
 }

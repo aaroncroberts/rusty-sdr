@@ -171,6 +171,15 @@ pub struct UiConfig {
     /// colour.  Positive wf_gain values shift this down to reveal weaker signals.
     #[serde(default = "default_wf_level")]
     pub wf_level: f32,
+    /// Spectrum / waterfall display floor in dBFS.
+    /// Maps to the darkest colour on the waterfall and the bottom of the spectrum Y-axis.
+    /// Saved so the user's manual adjustment persists across restarts.
+    #[serde(default = "default_fft_floor")]
+    pub fft_floor: f32,
+    /// Spectrum / waterfall display ceiling in dBFS.
+    /// Maps to the brightest colour on the waterfall and the top of the spectrum Y-axis.
+    #[serde(default = "default_fft_ceil")]
+    pub fft_ceil: f32,
     /// Set to true after the first-run onboarding overlay is dismissed.
     /// When false (or absent from config), the overlay is shown on next launch.
     #[serde(default)]
@@ -217,6 +226,12 @@ fn default_spectrum_split() -> f32 {
 fn default_wf_level() -> f32 {
     -80.0
 }
+fn default_fft_floor() -> f32 {
+    -100.0
+}
+fn default_fft_ceil() -> f32 {
+    -20.0
+}
 
 impl Default for UiConfig {
     fn default() -> Self {
@@ -238,6 +253,8 @@ impl Default for UiConfig {
             font_scale: 1.0,
             spectrum_split: 0.45,
             wf_level: -80.0,
+            fft_floor: -100.0,
+            fft_ceil: -20.0,
             seen_onboarding: false,
             handbook_section: 0,
             handbook_page: 0,

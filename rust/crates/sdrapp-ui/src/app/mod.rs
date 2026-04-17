@@ -51,19 +51,14 @@ pub struct SdrApp {
     /// Peak-hold buffer: tracks per-bin maximum with slow decay
     peak_hold: Vec<f32>,
     // ── Display range ─────────────────────────────────────────────────────────
-    /// Top of the spectrum display in dBFS (like "max" or "ref level" in SDR# / GQRX).
-    /// db_ceil = ref_level;  db_floor = ref_level - dyn_range.
-    ref_level: f32,
-    /// How many dB of range to show (vertical span of spectrum/waterfall).
-    dyn_range: f32,
-    /// When true, ref_level tracks the signal ceiling automatically.
+    /// Unified spectrum + waterfall floor in dBFS (bottom of Y-axis / darkest colour).
+    /// Persisted in AppConfig.ui.fft_floor.
+    fft_floor: f32,
+    /// Unified spectrum + waterfall ceiling in dBFS (top of Y-axis / brightest colour).
+    /// Persisted in AppConfig.ui.fft_ceil.
+    fft_ceil: f32,
+    /// When true, fft_ceil and fft_floor track the signal level automatically.
     auto_ref: bool,
-    /// Waterfall brightness offset in dB (positive = brighter / more sensitive).
-    /// Shifts the effective floor down by this many dB; does not affect spectrum.
-    wf_gain: f32,
-    /// Absolute dBFS floor for waterfall colouring — the value that maps to the
-    /// darkest colour in the palette.  Persisted in AppConfig.ui.wf_level.
-    wf_level: f32,
     /// Slow EMA of 10th-percentile FFT bin — noise floor estimate for auto-ref.
     noise_floor_ema: f32,
     /// Slow EMA of 99th-percentile FFT bin — signal ceiling estimate for auto-ref.
@@ -94,6 +89,19 @@ pub struct SdrApp {
     scan_dwell_ui: f32,
     /// Category filter for scanner (empty = all bookmarks).
     scan_cat_ui: String,
+    // ── Range scanner UI state ────────────────────────────────────────────────
+    /// FM range scan lower bound (Hz).
+    range_scan_lo_hz: u64,
+    /// FM range scan upper bound (Hz).
+    range_scan_hi_hz: u64,
+    /// FM range scan step size (Hz).
+    range_scan_step_hz: u64,
+    /// FM range scan squelch threshold (dBFS).
+    range_scan_squelch: f32,
+    /// FM range scan dwell time (seconds).
+    range_scan_dwell: f32,
+    /// Require stereo pilot before locking.
+    range_scan_stereo_only: bool,
     // ── App settings ──────────────────────────────────────────────────────────
     /// Whether the settings window (Ctrl+,) is open.
     show_settings: bool,
@@ -156,12 +164,16 @@ impl SdrApp {
         };
 
         let freq = config.ui.frequency_hz;
-        let wf_level = config.ui.wf_level;
+        let fft_floor = config.ui.fft_floor;
+        let fft_ceil = config.ui.fft_ceil;
         let seen_onboarding = config.ui.seen_onboarding;
         let handbook_section = config.ui.handbook_section;
         let handbook_page = config.ui.handbook_page;
         let show_handbook = config.ui.show_handbook;
-        let mut waterfall_widget = WaterfallWidget::new_with_colormap(1024, (-120.0, 0.0));
+        // Initial range uses the persisted fft_floor/fft_ceil from config.
+        // Both spectrum Y-axis and waterfall colormap use this same range so that
+        // a single pair of MIN/MAX controls drives the entire display.
+        let mut waterfall_widget = WaterfallWidget::new_with_colormap(1024, (fft_floor, fft_ceil));
         waterfall_widget.set_colormap(wf_colormap.build());
 
         Self {
@@ -175,11 +187,9 @@ impl SdrApp {
             config_dirty: false,
             vu_peak: 0.0,
             peak_hold: Vec::new(),
-            ref_level: -30.0,
-            dyn_range: 60.0,
+            fft_floor,
+            fft_ceil,
             auto_ref: true,
-            wf_gain: 40.0,
-            wf_level,
             noise_floor_ema: -85.0,
             signal_ceil_ema: -40.0,
             waterfall_row_frac: 0.0,
@@ -198,6 +208,12 @@ impl SdrApp {
             bookmark_sort_by_freq: false,
             scan_dwell_ui: 2.0,
             scan_cat_ui: String::new(),
+            range_scan_lo_hz: 87_500_000,
+            range_scan_hi_hz: 108_000_000,
+            range_scan_step_hz: 100_000,
+            range_scan_squelch: -60.0,
+            range_scan_dwell: 0.3,
+            range_scan_stereo_only: true,
             show_settings: false,
             auto_start_pending: auto_start,
             last_clipping_time: None,

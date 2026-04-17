@@ -530,6 +530,166 @@ impl SdrApp {
         ui.separator();
         ui.add_space(6.0);
 
+        // ── FM Band Scanner ───────────────────────────────────────────────────
+        ui.label(RichText::new("FM BAND SCAN").color(theme::TEXT_MUTED).small());
+        ui.add_space(4.0);
+
+        let range_running = {
+            let s = self.shared.read();
+            s.scanner.scan_running && s.scanner.range_mode
+        };
+
+        // Freq range row
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Lo").color(theme::TEXT_MUTED).small());
+            let mut lo_mhz = self.range_scan_lo_hz as f64 / 1_000_000.0;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut lo_mhz)
+                        .range(70.0..=200.0)
+                        .speed(0.1)
+                        .suffix(" MHz"),
+                )
+                .changed()
+            {
+                self.range_scan_lo_hz = (lo_mhz * 1_000_000.0) as u64;
+            }
+            ui.label(RichText::new("Hi").color(theme::TEXT_MUTED).small());
+            let mut hi_mhz = self.range_scan_hi_hz as f64 / 1_000_000.0;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut hi_mhz)
+                        .range(70.0..=200.0)
+                        .speed(0.1)
+                        .suffix(" MHz"),
+                )
+                .changed()
+            {
+                self.range_scan_hi_hz = (hi_mhz * 1_000_000.0) as u64;
+            }
+        });
+
+        // Step + dwell row
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Step").color(theme::TEXT_MUTED).small());
+            let mut step_khz = self.range_scan_step_hz as f64 / 1_000.0;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut step_khz)
+                        .range(10.0..=500.0)
+                        .speed(10.0)
+                        .suffix(" kHz"),
+                )
+                .changed()
+            {
+                self.range_scan_step_hz = (step_khz * 1_000.0) as u64;
+            }
+            ui.label(RichText::new("Dwell").color(theme::TEXT_MUTED).small());
+            ui.add(
+                egui::DragValue::new(&mut self.range_scan_dwell)
+                    .range(0.1_f32..=5.0_f32)
+                    .speed(0.05)
+                    .suffix(" s"),
+            );
+        });
+
+        // Squelch threshold
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Squelch").color(theme::TEXT_MUTED).small());
+            ui.add(
+                egui::Slider::new(&mut self.range_scan_squelch, -120.0_f32..=-10.0_f32)
+                    .suffix(" dB")
+                    .show_value(true),
+            );
+        });
+
+        // Stereo-only checkbox
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.range_scan_stereo_only, "")
+                .on_hover_text("Stop only when 19 kHz stereo pilot detected (WBFM)");
+            ui.label(
+                RichText::new("Stereo only (pilot lock)")
+                    .color(theme::TEXT_MUTED)
+                    .small(),
+            );
+        });
+
+        // Start / Stop button
+        ui.horizontal(|ui| {
+            if range_running {
+                let stop_btn =
+                    egui::Button::new(RichText::new("■  Stop").color(theme::DANGER).strong())
+                        .fill(theme::WIDGET_BG);
+                if ui.add_sized(Vec2::new(80.0, 22.0), stop_btn).clicked() {
+                    let _ = self.cmd_tx.try_send(ScanCmd::Stop.into());
+                }
+                ui.label(
+                    RichText::new("SCANNING FM")
+                        .color(theme::STATUS_OK)
+                        .small()
+                        .strong(),
+                );
+            } else {
+                let scan_color = if is_running {
+                    theme::STATUS_OK
+                } else {
+                    theme::TEXT_MUTED
+                };
+                let start_btn =
+                    egui::Button::new(RichText::new("▶  FM Scan").color(scan_color).strong())
+                        .fill(theme::WIDGET_BG);
+                let tip = if is_running {
+                    format!(
+                        "Sweep {:.1}–{:.1} MHz in {:.0} kHz steps",
+                        self.range_scan_lo_hz as f64 / 1e6,
+                        self.range_scan_hi_hz as f64 / 1e6,
+                        self.range_scan_step_hz as f64 / 1e3
+                    )
+                } else {
+                    "Start the radio first".to_string()
+                };
+                let resp = ui
+                    .add_sized(Vec2::new(80.0, 22.0), start_btn)
+                    .on_hover_text(tip);
+                if resp.clicked() && is_running {
+                    let _ = self.cmd_tx.try_send(
+                        ScanCmd::StartRange {
+                            freq_lo: self.range_scan_lo_hz,
+                            freq_hi: self.range_scan_hi_hz,
+                            step_hz: self.range_scan_step_hz,
+                            dwell_secs: self.range_scan_dwell,
+                            squelch_dbfs: self.range_scan_squelch,
+                            mode: sdrapp_core::signal_path::DemodMode::Wbfm,
+                            stereo_only: self.range_scan_stereo_only,
+                        }
+                        .into(),
+                    );
+                }
+            }
+        });
+
+        // Status line when range scan is running
+        if range_running {
+            let (freq, signal) = {
+                let s = self.shared.read();
+                (s.scanner.range_freq_hz, s.fft.signal_level_dbfs)
+            };
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(format!(
+                    "{:.3} MHz  {:.1} dBFS",
+                    freq as f64 / 1_000_000.0,
+                    signal
+                ))
+                .color(theme::ACCENT_DIM)
+                .small(),
+            );
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
         // ── Device settings ────────────────────────────────────────────────────
         self.device_settings_section(ui, is_running, is_demo);
     }

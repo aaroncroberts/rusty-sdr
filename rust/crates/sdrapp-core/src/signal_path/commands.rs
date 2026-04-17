@@ -91,6 +91,24 @@ pub enum BookmarkCmd {
 pub enum ScanCmd {
     /// Start cycling through bookmarks in the given category (empty = all).
     Start(String),
+    /// Start a frequency-range sweep.
+    ///
+    /// Steps from `freq_lo` to `freq_hi` in `step_hz` increments, dwelling
+    /// `dwell_secs` on each frequency before checking signal level.  Stops
+    /// when `signal_level_dbfs ≥ squelch_dbfs` (signal found).
+    ///
+    /// If `stereo_only` is true and `mode` is WBFM, the scanner only stops
+    /// when the stereo pilot (19 kHz) is also detected — this proves a real
+    /// FM broadcast was found rather than a noise spike.
+    StartRange {
+        freq_lo: u64,
+        freq_hi: u64,
+        step_hz: u64,
+        dwell_secs: f32,
+        squelch_dbfs: f32,
+        mode: DemodMode,
+        stereo_only: bool,
+    },
     /// Stop the scanner.
     Stop,
     /// Skip to the next bookmark immediately (also works during scan).
