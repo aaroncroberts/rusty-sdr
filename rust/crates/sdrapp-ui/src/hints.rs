@@ -56,11 +56,11 @@ struct HintDef {
 }
 
 static ALL_HINTS: &[HintDef] = &[
-    // P0 — ADC saturation: hardware is clipping
+    // P0 — ADC saturation: hardware is clipping (no action button — prevents accidental max-atten)
     HintDef {
         priority: 0,
-        message: "⚡ ADC saturated — input overloaded",
-        action: Some(("Max Atten", HintAction::MaxAttenuation)),
+        message: "⚡ ADC saturated — reduce LNA State in Device Settings",
+        action: None,
         condition: |c| c.is_running && c.fft_clipping,
     },
     // P1 — FM notch active while tuned to FM broadcast band

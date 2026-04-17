@@ -122,13 +122,9 @@ impl SdrApp {
                 let new_ceil = (self.signal_ceil_ema + 5.0).clamp(new_floor + 10.0, 0.0);
                 if (new_floor - self.fft_floor).abs() >= 1.0 {
                     self.fft_floor = new_floor;
-                    self.config.ui.fft_floor = new_floor;
-                    self.config_dirty = true;
                 }
                 if (new_ceil - self.fft_ceil).abs() >= 1.0 {
                     self.fft_ceil = new_ceil;
-                    self.config.ui.fft_ceil = new_ceil;
-                    self.config_dirty = true;
                 }
             }
 
@@ -179,11 +175,18 @@ impl SdrApp {
                 theme::TEXT_MUTED
             }
         });
-        // ui.horizontal always allocates one row; empty when no hint is active.
+        // Always render one fixed-height row for the hint strip so the spectrum
+        // below never shifts when a hint appears or disappears.
+        // We always emit a label (invisible when no hint) to pin the row height
+        // to the font metric regardless of whether a hint is active.
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            if let (Some(hint), Some(color)) = (hint, strip_color) {
-                ui.label(RichText::new(hint.message).color(color).small());
+            let (msg, color) = match (&hint, strip_color) {
+                (Some(h), Some(c)) => (h.message, c),
+                _ => ("", egui::Color32::TRANSPARENT),
+            };
+            ui.label(RichText::new(msg).color(color).small());
+            if let (Some(hint), Some(_)) = (hint, strip_color) {
                 if let Some((label, action)) = hint.action {
                     if ui.small_button(label).clicked() {
                         match action {
@@ -386,8 +389,10 @@ impl SdrApp {
             let mut sorted = fft_data.clone();
             sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let noise_floor = sorted[n / 5];
-            let threshold = noise_floor + 8.0;
-            let min_spacing = (n / 32).max(2);
+            // 18 dB above noise, and must be a real signal (> -90 dBFS absolute).
+            // High threshold prevents noise peaks from flickering with labels.
+            let threshold = (noise_floor + 18.0).max(-90.0);
+            let min_spacing = (n / 20).max(4);
 
             let mut peaks: Vec<u64> = Vec::new();
             let mut last_peak_bin: Option<usize> = None;

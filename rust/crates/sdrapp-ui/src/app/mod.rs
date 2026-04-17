@@ -242,12 +242,29 @@ impl SdrApp {
 
 // ── eframe::App ───────────────────────────────────────────────────────────────
 
+/// Parse a demod mode string (as stored in AppConfig) to DemodMode.
+pub(crate) fn parse_config_demod_mode(s: &str) -> sdrapp_core::signal_path::DemodMode {
+    use sdrapp_core::signal_path::DemodMode;
+    match s {
+        "Nfm" => DemodMode::Nfm,
+        "Am" => DemodMode::Am,
+        "Usb" => DemodMode::Usb,
+        "Lsb" => DemodMode::Lsb,
+        "Dsb" => DemodMode::Dsb,
+        "Cw" => DemodMode::Cw,
+        _ => DemodMode::Wbfm,
+    }
+}
+
 impl eframe::App for SdrApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // ── --auto-start: fire Start on the very first rendered frame ─────────
         if self.auto_start_pending {
             tracing::info!("--auto-start: sending Start command");
             let _ = self.cmd_tx.send(SignalPathCommand::Start);
+            // Restore saved demod mode so the signal path doesn't default to WBFM.
+            let saved_mode = parse_config_demod_mode(&self.config.ui.demod_mode.clone());
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(saved_mode).into());
             self.auto_start_pending = false;
         }
 

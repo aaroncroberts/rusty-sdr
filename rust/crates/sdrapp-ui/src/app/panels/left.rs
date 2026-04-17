@@ -89,6 +89,9 @@ impl SdrApp {
                 if self.cmd_tx.try_send(SignalPathCommand::Start).is_err() {
                     tracing::error!("failed to send Start command");
                 }
+                // Restore saved demod mode so the signal path doesn't default to WBFM.
+                let saved_mode = crate::app::parse_config_demod_mode(&self.config.ui.demod_mode.clone());
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(saved_mode).into());
             }
         }
 
@@ -188,6 +191,8 @@ impl SdrApp {
                 let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
                 if ui.selectable_label(selected, text).on_hover_text(tooltip).clicked() && !selected {
                     let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
+                    self.config.ui.demod_mode = format!("{mode:?}");
+                    self.config_dirty = true;
                 }
             }
         });
@@ -204,6 +209,8 @@ impl SdrApp {
                 let text = if selected { text.color(theme::ACCENT).strong() } else { text.color(theme::TEXT_MUTED) };
                 if ui.selectable_label(selected, text).on_hover_text(tooltip).clicked() && !selected {
                     let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
+                    self.config.ui.demod_mode = format!("{mode:?}");
+                    self.config_dirty = true;
                 }
             }
         });
@@ -400,6 +407,48 @@ impl SdrApp {
         ui.separator();
         ui.add_space(6.0);
 
+        // ── Rigctl (Hamlib) server ────────────────────────────────────────────
+        ui.label(RichText::new("RIGCTL").color(theme::TEXT_MUTED).small());
+        ui.add_space(4.0);
+
+        let rigctl_enabled = self.config.rigctl.enabled;
+        ui.horizontal(|ui| {
+            let en_color = if rigctl_enabled { theme::STATUS_OK } else { theme::TEXT_MUTED };
+            let en_label = RichText::new(if rigctl_enabled { "ON" } else { "OFF" })
+                .color(en_color).small().strong();
+            if ui.selectable_label(rigctl_enabled, en_label)
+                .on_hover_text("Enable Hamlib-compatible CAT server (requires app restart to take effect)")
+                .clicked()
+            {
+                self.config.rigctl.enabled = !rigctl_enabled;
+                self.config_dirty = true;
+            }
+            if rigctl_enabled {
+                ui.label(
+                    RichText::new(format!("port {}", self.config.rigctl.port))
+                        .color(theme::TEXT_MUTED).small(),
+                );
+            }
+        });
+        if rigctl_enabled {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Port").color(theme::TEXT_MUTED).small());
+                let mut port = self.config.rigctl.port as i32;
+                if ui.add(egui::DragValue::new(&mut port).range(1024..=65535)).changed() {
+                    self.config.rigctl.port = port as u16;
+                    self.config_dirty = true;
+                }
+            });
+            ui.label(
+                RichText::new("Connect: nc 127.0.0.1 <port>")
+                    .color(theme::TEXT_DISABLED).small(),
+            );
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
         // ── Bookmarks ─────────────────────────────────────────────────────────
         self.bookmarks_section(ui);
 
@@ -526,11 +575,5 @@ impl SdrApp {
             );
         }
 
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(6.0);
-
-        // ── Device settings ────────────────────────────────────────────────────
-        self.device_settings_section(ui, is_running, is_demo);
     }
 }

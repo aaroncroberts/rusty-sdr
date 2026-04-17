@@ -180,6 +180,10 @@ pub struct UiConfig {
     /// Maps to the brightest colour on the waterfall and the top of the spectrum Y-axis.
     #[serde(default = "default_fft_ceil")]
     pub fft_ceil: f32,
+    /// Last-used demodulator mode: "Wbfm", "Nfm", "Am", "Usb", "Lsb", "Dsb", "Cw".
+    /// Restored on next launch so the user's mode choice persists.
+    #[serde(default = "default_demod_mode")]
+    pub demod_mode: String,
     /// Set to true after the first-run onboarding overlay is dismissed.
     /// When false (or absent from config), the overlay is shown on next launch.
     #[serde(default)]
@@ -223,6 +227,9 @@ fn default_font_scale() -> f32 {
 fn default_spectrum_split() -> f32 {
     0.45
 }
+fn default_demod_mode() -> String {
+    "Nfm".into()
+}
 fn default_wf_level() -> f32 {
     -80.0
 }
@@ -259,6 +266,7 @@ impl Default for UiConfig {
             handbook_section: 0,
             handbook_page: 0,
             show_handbook: false,
+            demod_mode: "Nfm".into(),
         }
     }
 }
