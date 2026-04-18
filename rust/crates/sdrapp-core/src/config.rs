@@ -220,7 +220,7 @@ pub struct UiConfig {
     #[serde(default = "default_adsb_center_lat")]
     pub adsb_map_lat: f64,
     /// ADS-B map center longitude (degrees).
-    #[serde(default)]
+    #[serde(default = "default_adsb_center_lon")]
     pub adsb_map_lon: f64,
     /// ADS-B map zoom (pixels per degree of longitude).
     #[serde(default = "default_adsb_zoom")]
@@ -261,10 +261,13 @@ fn default_squelch_threshold_dbfs() -> f32 {
     -50.0
 }
 fn default_adsb_center_lat() -> f64 {
-    51.5
+    41.5  // Cleveland OH
+}
+fn default_adsb_center_lon() -> f64 {
+    -81.7 // Cleveland OH
 }
 fn default_adsb_zoom() -> f32 {
-    8.0
+    12.0 // regional view (~200 mi radius)
 }
 fn default_tune_step_hz() -> u64 {
     1_000
@@ -309,9 +312,9 @@ impl Default for UiConfig {
             show_handbook: false,
             demod_mode: "Wbfm".into(),
             show_adsb_map: false,
-            adsb_map_lat: 51.5,
-            adsb_map_lon: 0.0,
-            adsb_map_zoom: 8.0,
+            adsb_map_lat: 41.5,   // Cleveland OH
+            adsb_map_lon: -81.7,  // Cleveland OH
+            adsb_map_zoom: 12.0,
         }
     }
 }
@@ -496,9 +499,9 @@ mod tests {
         let cfg: UiConfig = serde_json::from_str(old_json).unwrap();
 
         assert!(!cfg.show_adsb_map);
-        assert!((cfg.adsb_map_lat - 51.5).abs() < 1e-6);  // default_adsb_center_lat
-        assert!((cfg.adsb_map_lon - 0.0).abs() < 1e-6);   // serde(default) → 0.0
-        assert!((cfg.adsb_map_zoom - 8.0).abs() < 1e-4);  // default_adsb_zoom
+        assert!((cfg.adsb_map_lat - 41.5).abs() < 1e-6);   // default_adsb_center_lat → Cleveland OH
+        assert!((cfg.adsb_map_lon - -81.7).abs() < 1e-6);  // default_adsb_center_lon → Cleveland OH
+        assert!((cfg.adsb_map_zoom - 12.0).abs() < 1e-4);  // default_adsb_zoom
     }
 
     #[test]

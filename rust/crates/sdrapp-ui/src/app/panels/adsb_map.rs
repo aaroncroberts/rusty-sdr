@@ -139,9 +139,9 @@ pub struct AdsbMapWindow {
 }
 
 impl AdsbMapWindow {
-    /// Create a new map centered over Europe (suitable for most SDR setups).
+    /// Create a new map centered over Cleveland OH.
     pub fn new() -> Self {
-        Self::with_viewport(51.5, 0.0, 8.0)
+        Self::with_viewport(41.5, -81.7, 12.0)
     }
 
     /// Create a map with a specific initial viewport (restored from config).
@@ -921,11 +921,11 @@ mod tests {
     }
 
     #[test]
-    fn new_defaults_to_europe_viewport() {
+    fn new_defaults_to_cleveland_viewport() {
         let map = AdsbMapWindow::new();
-        assert!((map.center_lat() - 51.5).abs() < 1e-9);
-        assert!((map.center_lon() - 0.0).abs() < 1e-9);
-        assert!((map.zoom_ppd() - 8.0).abs() < 1e-4);
+        assert!((map.center_lat() - 41.5).abs() < 1e-9);
+        assert!((map.center_lon() - -81.7).abs() < 1e-9);
+        assert!((map.zoom_ppd() - 12.0).abs() < 1e-4);
     }
 
     // ── AircraftTrail::push ───────────────────────────────────────────────────

@@ -148,6 +148,128 @@ impl SdrApp {
         let level = self.vu_peak * self.config.ui.volume;
         self.draw_vu_meter(ui, level, level * 0.92); // slight L/R difference for visual interest
 
+        // ── ADS-B Flight Tracker ──────────────────────────────────────────────
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        {
+            let decoder_running = self.adsb_decoder
+                .as_ref()
+                .map(|d| d.is_running())
+                .unwrap_or(false);
+            let count = self.adsb_store.lock().len();
+
+            // Header row: label + live aircraft count badge + ✈ Map button
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("ADS-B").color(theme::TEXT_MUTED).small());
+                if decoder_running && count > 0 {
+                    ui.label(
+                        RichText::new(format!("✈ {count}"))
+                            .color(theme::STATUS_OK)
+                            .small()
+                            .strong(),
+                    );
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // ✈ Map — the single entry point. One click:
+                    //   • tunes to 1090 MHz
+                    //   • starts the decoder (if not already running)
+                    //   • opens the map window
+                    // When already running, just toggles the map window.
+                    let map_lbl = if self.show_adsb_map { "▼ Map" } else { "✈ Map" };
+                    let map_color = if decoder_running { theme::STATUS_OK } else { theme::ACCENT };
+                    let map_btn = egui::Button::new(
+                        RichText::new(map_lbl).color(map_color).small(),
+                    )
+                    .fill(theme::WIDGET_BG)
+                    .stroke(Stroke::new(
+                        1.0,
+                        if self.show_adsb_map { map_color } else { theme::BORDER },
+                    ));
+                    let hover = if decoder_running {
+                        "Toggle aircraft map"
+                    } else {
+                        "Open map · tune to 1090 MHz · start decoder"
+                    };
+                    if ui.add(map_btn).on_hover_text(hover).clicked() {
+                        if !decoder_running {
+                            // Auto-tune to ADS-B frequency
+                            let _ = self.cmd_tx.try_send(
+                                ReceiverCmd::SetFrequency(1_090_000_000).into(),
+                            );
+                            self.config.ui.frequency_hz = 1_090_000_000;
+                            self.frequency_widget = FrequencyWidget::new(1_090_000_000);
+                            self.config_dirty = true;
+                            // Auto-start decoder
+                            if let Some(tx) = self.adsb_iq_tx.as_ref() {
+                                let iq_rx = tx.subscribe();
+                                let sr = self.shared.read().sample_rate_sps;
+                                self.adsb_decoder =
+                                    Some(crate::adsb_decoder::AdsbDecoder::start(
+                                        iq_rx,
+                                        std::sync::Arc::clone(&self.adsb_store),
+                                        sr,
+                                    ));
+                            }
+                        }
+                        self.show_adsb_map = !self.show_adsb_map;
+                    }
+
+                    // ■ Stop button (only shown when running)
+                    if decoder_running {
+                        let stop_btn = egui::Button::new(
+                            RichText::new("■ Stop").color(theme::AMBER).small(),
+                        )
+                        .fill(theme::WIDGET_BG)
+                        .stroke(Stroke::new(1.0, theme::BORDER));
+                        if ui.add(stop_btn).on_hover_text("Stop ADS-B decoder").clicked() {
+                            if let Some(mut d) = self.adsb_decoder.take() {
+                                d.stop();
+                            }
+                        }
+                    }
+                });
+            });
+
+            // Status line
+            if decoder_running {
+                let frames = self.adsb_decoder
+                    .as_ref()
+                    .map(|d| d.frames_decoded())
+                    .unwrap_or(0);
+                let status = if count > 0 {
+                    format!("  ● LIVE  {count} aircraft  {frames} frames")
+                } else {
+                    format!("  ● LIVE  listening…  {frames} frames")
+                };
+                ui.label(RichText::new(status).color(theme::STATUS_OK).small());
+                let decoder_sr = self.adsb_decoder.as_ref().map(|d| d.sample_rate).unwrap_or(0);
+                if decoder_sr != 2_000_000 {
+                    ui.label(
+                        RichText::new(format!(
+                            "  ⚠ Sample rate {:.1} MHz — decoder needs 2 MHz",
+                            decoder_sr as f32 / 1_000_000.0,
+                        ))
+                        .color(theme::AMBER)
+                        .small(),
+                    );
+                }
+            } else if count > 0 {
+                ui.label(
+                    RichText::new(format!("  ○ {count} aircraft cached"))
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            } else {
+                ui.label(
+                    RichText::new("  Press ✈ Map to tune and start")
+                        .color(theme::TEXT_DISABLED)
+                        .small(),
+                );
+            }
+        }
+
         // ── RDS (FM only) ─────────────────────────────────────────────────────
         let (demod_mode, rds_ps, rds_pty, rds_ta, rds_rt) = {
             let s = self.shared.read();
@@ -416,117 +538,6 @@ impl SdrApp {
                 );
             }
         });
-
-        ui.add_space(8.0);
-
-        // ── ADS-B ─────────────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("ADS-B").color(theme::TEXT_MUTED).small());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Map toggle button
-                let map_lbl = if self.show_adsb_map { "▼ Map" } else { "✈ Map" };
-                let map_btn = egui::Button::new(
-                    RichText::new(map_lbl).color(theme::ACCENT).small(),
-                )
-                .fill(theme::WIDGET_BG)
-                .stroke(Stroke::new(
-                    1.0,
-                    if self.show_adsb_map { theme::ACCENT } else { theme::BORDER },
-                ));
-                if ui.add(map_btn).on_hover_text("Open ADS-B aircraft map").clicked() {
-                    self.show_adsb_map = !self.show_adsb_map;
-                }
-
-                // Start / Stop decoder button
-                let decoder_running = self.adsb_decoder
-                    .as_ref()
-                    .map(|d| d.is_running())
-                    .unwrap_or(false);
-                let can_start = self.adsb_iq_tx.is_some() && !decoder_running;
-                let (rx_lbl, rx_color) = if decoder_running {
-                    ("■ Stop", theme::AMBER)
-                } else {
-                    ("▶ Start", theme::STATUS_OK)
-                };
-                let rx_btn = egui::Button::new(
-                    RichText::new(rx_lbl).color(rx_color).small(),
-                )
-                .fill(theme::WIDGET_BG)
-                .stroke(Stroke::new(1.0, theme::BORDER));
-                let rx_resp = ui
-                    .add_enabled(can_start || decoder_running, rx_btn)
-                    .on_hover_text(if decoder_running {
-                        "Stop ADS-B decoder"
-                    } else if self.adsb_iq_tx.is_some() {
-                        "Start ADS-B decoder (tune to 1090 MHz first)"
-                    } else {
-                        "No IQ source available"
-                    });
-                if rx_resp.clicked() {
-                    if decoder_running {
-                        if let Some(mut d) = self.adsb_decoder.take() {
-                            d.stop();
-                        }
-                    } else if let Some(tx) = self.adsb_iq_tx.as_ref() {
-                        // Subscribe fresh each time — allows unlimited stop/restart
-                        let iq_rx = tx.subscribe();
-                        let sr = self.shared.read().sample_rate_sps;
-                        self.adsb_decoder = Some(crate::adsb_decoder::AdsbDecoder::start(
-                            iq_rx,
-                            std::sync::Arc::clone(&self.adsb_store),
-                            sr,
-                        ));
-                    }
-                }
-            });
-        });
-
-        // Status line
-        {
-            let decoder_running = self.adsb_decoder
-                .as_ref()
-                .map(|d| d.is_running())
-                .unwrap_or(false);
-            let count = self.adsb_store.lock().len();
-            let frames = self.adsb_decoder
-                .as_ref()
-                .map(|d| d.frames_decoded())
-                .unwrap_or(0);
-
-            if decoder_running {
-                let status = if count > 0 {
-                    format!("  ● LIVE  {count} aircraft  {frames} frames")
-                } else {
-                    format!("  ● LIVE  listening…  {frames} frames")
-                };
-                ui.label(RichText::new(status).color(theme::STATUS_OK).small());
-
-                // Warn if the running decoder was started at a rate that won't work
-                let decoder_sr = self.adsb_decoder.as_ref().map(|d| d.sample_rate).unwrap_or(0);
-                if decoder_sr != 2_000_000 {
-                    ui.label(
-                        RichText::new(format!(
-                            "  ⚠ Sample rate {:.1} MHz — decoder needs 2 MHz",
-                            decoder_sr as f32 / 1_000_000.0
-                        ))
-                        .color(theme::AMBER)
-                        .small(),
-                    );
-                }
-            } else if count > 0 {
-                ui.label(
-                    RichText::new(format!("  ○ {count} aircraft (decoder stopped)"))
-                        .color(theme::TEXT_MUTED)
-                        .small(),
-                );
-            } else {
-                ui.label(
-                    RichText::new("  ○ Stopped — tune to 1090 MHz and press ▶ Start")
-                        .color(theme::TEXT_MUTED)
-                        .small(),
-                );
-            }
-        }
 
         ui.add_space(4.0);
         ui.separator();
