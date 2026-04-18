@@ -1,5 +1,6 @@
 //! Unit and integration tests for the signal path.
 use super::*;
+use crate::dsp::fft::{any_bin_clipping, compute_snr_db};
 
 // ── audio_frames_dropped ─────────────────────────────────────────────────
 
@@ -33,28 +34,28 @@ async fn audio_frames_dropped_increments_when_channel_full() {
     assert_eq!(shared.read().audio_frames_dropped, 1);
 }
 
-// ── min_zoom_for_mode ─────────────────────────────────────────────────────
+// ── DemodMode::min_zoom ─────────────────────────────────────────────────────
 
 #[test]
 fn min_zoom_wbfm_is_0_05() {
-    assert_eq!(min_zoom_for_mode(DemodMode::Wbfm), 0.05);
+    assert_eq!(DemodMode::Wbfm.min_zoom(), 0.05);
 }
 
 #[test]
 fn min_zoom_cw_is_0_05() {
-    assert_eq!(min_zoom_for_mode(DemodMode::Cw), 0.05);
+    assert_eq!(DemodMode::Cw.min_zoom(), 0.05);
 }
 
 #[test]
 fn min_zoom_nfm_is_0_02() {
-    assert_eq!(min_zoom_for_mode(DemodMode::Nfm), 0.02);
+    assert_eq!(DemodMode::Nfm.min_zoom(), 0.02);
 }
 
 #[test]
 fn min_zoom_am_usb_lsb_dsb_are_0_02() {
     for mode in [DemodMode::Am, DemodMode::Usb, DemodMode::Lsb, DemodMode::Dsb] {
         assert_eq!(
-            min_zoom_for_mode(mode), 0.02,
+            mode.min_zoom(), 0.02,
             "{mode:?} should have 0.02 min zoom"
         );
     }
@@ -66,7 +67,7 @@ fn min_zoom_is_never_below_0() {
         DemodMode::Wbfm, DemodMode::Nfm, DemodMode::Am,
         DemodMode::Usb, DemodMode::Lsb, DemodMode::Dsb, DemodMode::Cw,
     ] {
-        assert!(min_zoom_for_mode(mode) > 0.0);
+        assert!(mode.min_zoom() > 0.0);
     }
 }
 

@@ -47,6 +47,26 @@ pub enum DemodMode {
     Cw,
 }
 
+impl DemodMode {
+    /// Minimum spectrum zoom level for this mode.
+    ///
+    /// Prevents the user from zooming so tight that the active signal becomes
+    /// invisible in the spectrum panel:
+    /// * WBFM needs ≥ 5 % of hardware bandwidth (≥ 100 kHz on a 2 MHz SDR)
+    /// * CW is a very narrow mode but still needs context — keep at 5 %
+    /// * Narrowband modes (NFM, AM, SSB) can zoom tighter but stop at 2 %
+    pub fn min_zoom(self) -> f32 {
+        match self {
+            DemodMode::Wbfm | DemodMode::Cw => 0.05,
+            DemodMode::Nfm
+            | DemodMode::Am
+            | DemodMode::Usb
+            | DemodMode::Lsb
+            | DemodMode::Dsb => 0.02,
+        }
+    }
+}
+
 /// A saved frequency bookmark.
 #[derive(Debug, Clone)]
 pub struct Bookmark {

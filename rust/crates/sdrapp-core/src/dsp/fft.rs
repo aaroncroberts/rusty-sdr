@@ -152,6 +152,42 @@ fn fftshift_dbfs(buf: &[Complex<f32>]) -> Vec<f32> {
         .collect()
 }
 
+// ── Passband analysis helpers ─────────────────────────────────────────────────
+
+/// Compute SNR (dB) for a signal centred at `center` bin with half-width
+/// `half_bw_bins`.
+///
+/// * Signal power  = max bin in `[center−half_bw, center+half_bw]`
+/// * Noise floor   = median of all bins **outside** that window
+pub(crate) fn compute_snr_db(bins: &[f32], center: usize, half_bw_bins: usize) -> f32 {
+    let n = bins.len();
+    let sig_lo = center.saturating_sub(half_bw_bins);
+    let sig_hi = (center + half_bw_bins).min(n - 1);
+    let peak = bins[sig_lo..=sig_hi]
+        .iter()
+        .cloned()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut noise: Vec<f32> = bins[..sig_lo]
+        .iter()
+        .chain(bins[sig_hi + 1..].iter())
+        .cloned()
+        .collect();
+    let noise_floor = if noise.is_empty() {
+        -120.0_f32
+    } else {
+        noise.sort_by(|a, b| a.total_cmp(b));
+        noise[noise.len() / 2]
+    };
+    peak - noise_floor
+}
+
+/// Returns `true` when any bin in `bins` has reached or exceeded 0 dBFS —
+/// a reliable indicator of ADC saturation.
+#[inline]
+pub(crate) fn any_bin_clipping(bins: &[f32]) -> bool {
+    bins.iter().any(|&v| v >= 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

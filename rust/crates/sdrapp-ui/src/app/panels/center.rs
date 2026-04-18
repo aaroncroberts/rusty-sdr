@@ -2,7 +2,7 @@
 
 use egui::{RichText, Ui, Vec2};
 
-use sdrapp_core::signal_path::{min_zoom_for_mode, DemodMode, DisplayCmd};
+use sdrapp_core::signal_path::{DemodMode, DisplayCmd};
 
 use super::super::SdrApp;
 use crate::{
@@ -64,7 +64,7 @@ impl SdrApp {
             // Apply zoom: zoom_level 1.0 = full hardware bandwidth, min per mode.
             // Prefer SharedState zoom when sample rate is known; fall back to config span_hz.
             let effective_span = if sr_half > 0 {
-                let z = s.zoom_level.clamp(min_zoom_for_mode(s.demod.demod_mode), 1.0);
+                let z = s.zoom_level.clamp(s.demod.demod_mode.min_zoom(), 1.0);
                 (sr_half as f64 * z as f64) as u64
             } else {
                 self.config.ui.span_hz
@@ -193,7 +193,7 @@ impl SdrApp {
                     if ui.small_button(label).clicked() {
                         match action {
                             HintAction::ZoomOut => {
-                                let min_zoom = sdrapp_core::signal_path::min_zoom_for_mode(demod_mode);
+                                let min_zoom = demod_mode.min_zoom();
                                 let new_z = (zoom_level * 1.8).clamp(min_zoom, 1.0);
                                 let _ = self.cmd_tx.try_send(
                                     sdrapp_core::signal_path::DisplayCmd::SetZoom(new_z).into(),
@@ -315,7 +315,7 @@ impl SdrApp {
             if ctrl_held {
                 // Ctrl+scroll → zoom
                 let factor = if scroll_delta > 0.0 { 0.8_f32 } else { 1.25_f32 };
-                let new_zoom = (zoom_level * factor).clamp(min_zoom_for_mode(demod_mode), 1.0);
+                let new_zoom = (zoom_level * factor).clamp(demod_mode.min_zoom(), 1.0);
                 let _ = self.cmd_tx.try_send(DisplayCmd::SetZoom(new_zoom).into());
                 self.config.ui.zoom_level = new_zoom;
                 self.config_dirty = true;
@@ -849,7 +849,7 @@ impl SdrApp {
             }
 
             // Zoom knob + In/Out/Full step buttons
-            let min_zoom = min_zoom_for_mode(demod_mode);
+            let min_zoom = demod_mode.min_zoom();
             let mut z = zoom_level;
             let zoom_resp = KnobWidget {
                 value: &mut z,

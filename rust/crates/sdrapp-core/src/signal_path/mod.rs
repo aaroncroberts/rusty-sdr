@@ -19,10 +19,17 @@
 //! - [`commands`]: Command enums sent from UI/MIDI to the signal path
 
 mod commands;
+mod demod_dispatch;
+mod fft_pipeline;
+mod scanner;
 mod shared_state;
 
 pub use commands::*;
 pub use shared_state::*;
+
+use demod_dispatch::{make_demod, Demod};
+use fft_pipeline::FftPipeline;
+use scanner::{scan_next_bookmark, ScanThreadState};
 
 use parking_lot::RwLock;
 use std::sync::{
@@ -34,9 +41,8 @@ use tokio::sync::{broadcast, mpsc};
 use rustfft::num_complex::Complex;
 
 use crate::dsp::{
-    volume::soft_limit, AmDemodulator, AudioBandpass, CtcssDetector, CwDemodulator, FftProcessor,
-    FirLowpass, FmDemodulator, RdsDecoder, Squelch, SsbDemodulator, SsbMode, StereoFmDecoder,
-    Volume,
+    volume::soft_limit,
+    AudioBandpass, CtcssDetector, FirLowpass, RdsDecoder, Squelch, Volume,
 };
 use crate::sample::{IqSample, StereoFrame};
 
@@ -81,41 +87,6 @@ impl SignalPath {
         // Read initial sample rate before moving shared into the task
         let sample_rate = shared.read().sample_rate_sps;
 
-        // Demodulator state — switched at runtime by SetDemodMode.
-        // WBFM uses StereoFmDecoder (outputs Vec<StereoFrame> + is_stereo flag).
-        // NFM, AM, SSB, and CW use mono demodulators converted to StereoFrame.
-        enum Demod {
-            Wbfm(StereoFmDecoder),
-            Nfm(FmDemodulator),
-            Am(AmDemodulator),
-            Ssb(SsbDemodulator),
-            Cw(CwDemodulator),
-        }
-
-        impl Demod {
-            fn reset(&mut self) {
-                match self {
-                    Self::Wbfm(d) => d.reset(),
-                    Self::Nfm(d) => d.reset(),
-                    Self::Am(d) => d.reset(),
-                    Self::Ssb(d) => d.reset(),
-                    Self::Cw(d) => d.reset(),
-                }
-            }
-
-            /// Clear only the FM discriminator's phase reference after an IQ gap.
-            ///
-            /// Unlike `reset()` this does NOT flush the PLL, LP filters, or
-            /// resampler state — it only invalidates the single `prev` sample so
-            /// the next discriminator call doesn't produce a garbage phase-spike
-            /// from a stale sample reference across a Lagged boundary.
-            fn clear_prev(&mut self) {
-                if let Self::Wbfm(d) = self {
-                    d.clear_prev();
-                }
-            }
-        }
-
         // Run the signal path on a dedicated OS thread rather than a Tokio task.
         // The upstream C++ app uses std::thread for DSP for the same reason:
         // real-time audio processing must not share a cooperative scheduler with
@@ -142,13 +113,9 @@ impl SignalPath {
             // bandwidth (max signal is 25 kHz for wide NFM).
             let mut narrow_decim: u32 = (sr / 200_000).max(1);
             let mut narrow_demod_sr: u32 = sr / narrow_decim;
-            let mut fft_size = FFT_SIZE;
-            let mut fft_window = crate::dsp::FftWindow::Hann;
-            let mut fft = FftProcessor::new(fft_size, fft_window);
-            let mut fft_averaging: u8 = 4;
-            let mut fft_avg_buf: Vec<f32> = vec![-120.0; fft_size];
+            let mut fftp = FftPipeline::new(FFT_SIZE, crate::dsp::FftWindow::Hann, 4);
             let mut vol = Volume::new(0.8);
-            let mut demod: Demod = Demod::Wbfm(StereoFmDecoder::new(demod_sr));
+            let mut demod: Demod = make_demod(DemodMode::Wbfm, sr, demod_sr, narrow_demod_sr, 12_500);
             let mut squelch = Squelch::new(48_000, -50.0);
             let mut rds = RdsDecoder::new(demod_sr);
             let mut audio_bp = AudioBandpass::voice(48_000.0);
@@ -157,7 +124,6 @@ impl SignalPath {
             let mut nfm_bw_hz: u32 = 12_500;
             let mut ctcss_enabled: bool = false;
             let mut ctcss_was_detected: bool = false;
-            let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
             // Reuse buffer for mono→stereo conversion in non-WBFM arms (NFM/AM/SSB/CW).
             // clear() + extend() reuses the allocation; first call allocates, rest are free.
@@ -169,10 +135,6 @@ impl SignalPath {
             const RMS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
             let mut rms_accum_sq: f64 = 0.0;
             let mut rms_accum_n: u64 = 0;
-            // Rate-limit FFT shared-state writes and UI repaints to ~30 Hz (33ms).
-            let mut last_fft_write = std::time::Instant::now();
-            const FFT_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
-
             // ── Pre-allocated hot-path working buffers ──────────────────────────
             // Reusing these Vec<_>s across iterations eliminates thousands of
             // allocator round-trips per second in the IQ processing hot loop.
@@ -211,70 +173,8 @@ impl SignalPath {
                 None
             };
             let mut narrow_aa_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
-            // Scanner state — bookmark mode
-            let mut scan_running = false;
-            let mut scan_cursor: usize = 0;
-            let mut scan_category = String::new();
-            let mut scan_dwell_secs: f32 = 2.0;
-            // Accumulates IQ sample count for dwell timer; compare to sample_rate * dwell_secs
-            let mut scan_dwell_samples: u64 = 0;
-            // Scanner state — range sweep mode
-            let mut scan_range_mode = false;
-            let mut scan_range_freq: u64 = 87_500_000;
-            let mut scan_range_lo: u64 = 87_500_000;
-            let mut scan_range_hi: u64 = 108_000_000;
-            let mut scan_range_step: u64 = 100_000;
-            let mut scan_range_squelch: f32 = -60.0;
-            let mut scan_range_stereo_only = false;
-            // Demod mode to restore when range scanner stops (lock or manual stop).
-            let mut scan_pre_mode: Option<DemodMode> = None;
-
-            /// Create a fresh demodulator for the given mode.
-            /// `demod_sr` is the WBFM decimated rate (used for WBFM only).
-            /// `narrow_demod_sr` is the narrow-mode decimated rate (~200 kHz).
-            fn make_demod(
-                mode: DemodMode,
-                _sr: u32,
-                demod_sr: u32,
-                narrow_demod_sr: u32,
-                nfm_bw_hz: u32,
-            ) -> Demod {
-                match mode {
-                    DemodMode::Wbfm => Demod::Wbfm(StereoFmDecoder::new(demod_sr)),
-                    DemodMode::Nfm => Demod::Nfm(FmDemodulator::new(
-                        narrow_demod_sr,
-                        48_000,
-                        nfm_bw_hz as f32,
-                        0.0,
-                    )),
-                    DemodMode::Am => Demod::Am(AmDemodulator::new(narrow_demod_sr, 48_000)),
-                    DemodMode::Usb => {
-                        Demod::Ssb(SsbDemodulator::standard(SsbMode::Usb, narrow_demod_sr))
-                    }
-                    DemodMode::Lsb => {
-                        Demod::Ssb(SsbDemodulator::standard(SsbMode::Lsb, narrow_demod_sr))
-                    }
-                    DemodMode::Dsb => {
-                        Demod::Ssb(SsbDemodulator::standard(SsbMode::Dsb, narrow_demod_sr))
-                    }
-                    DemodMode::Cw => Demod::Cw(CwDemodulator::new(narrow_demod_sr, 48_000)),
-                }
-            }
-
-            /// Find the next bookmark at or after `start_idx` matching `category`.
-            /// Returns (index, freq_hz, mode) or None.
-            fn scan_next_bookmark(
-                bookmarks: &[Bookmark],
-                category: &str,
-                start_idx: usize,
-            ) -> Option<(usize, u64, DemodMode)> {
-                bookmarks
-                    .iter()
-                    .enumerate()
-                    .skip(start_idx)
-                    .find(|(_, b)| category.is_empty() || b.category == category)
-                    .map(|(i, b)| (i, b.freq_hz, b.mode))
-            }
+            // All scanner state in one place — bookmark and range-sweep modes.
+            let mut sc = ScanThreadState::default();
 
             // Start paused — the UI must send `Start` to begin processing.
             shared_clone.write().is_running = false;
@@ -314,8 +214,8 @@ impl SignalPath {
                                 rds.reset();
                                 // If a range scan is in progress, update the restore target so
                                 // the user's explicit choice is honoured when the scan stops/locks.
-                                if scan_pre_mode.is_some() {
-                                    scan_pre_mode = Some(mode);
+                                if sc.pre_mode.is_some() {
+                                    sc.pre_mode = Some(mode);
                                 }
                                 let mut s = shared_clone.write();
                                 s.demod.demod_mode = mode;
@@ -336,12 +236,7 @@ impl SignalPath {
                             ReceiverCmd::SetNfmBandwidth(bw) => {
                                 nfm_bw_hz = bw;
                                 if matches!(demod, Demod::Nfm(_)) {
-                                    demod = Demod::Nfm(FmDemodulator::new(
-                                        narrow_demod_sr,
-                                        48_000,
-                                        bw as f32,
-                                        0.0,
-                                    ));
+                                    demod = make_demod(DemodMode::Nfm, sr, demod_sr, narrow_demod_sr, bw);
                                     audio_bp.reset();
                                     am_audio_bp.reset();
                                     ctcss.reset();
@@ -414,23 +309,19 @@ impl SignalPath {
                             }
                             DisplayCmd::SetFftSize(sz) => {
                                 if sz.is_power_of_two() && (512..=8192).contains(&sz) {
-                                    fft_size = sz;
-                                    fft = FftProcessor::new(fft_size, fft_window);
-                                    fft_avg_buf = vec![-120.0; fft_size];
-                                    iq_accumulator.clear();
+                                    fftp.resize(sz, fftp.window);
                                     shared_clone.write().fft.fft_size = sz;
                                     shared_clone.write().fft.fft_magnitudes = vec![-120.0; sz];
                                 }
                             }
                             DisplayCmd::SetFftWindow(wf) => {
-                                fft_window = wf;
-                                fft = FftProcessor::new(fft_size, fft_window);
+                                fftp.resize(fftp.fft_size, wf);
                                 shared_clone.write().fft.fft_window = wf;
                             }
                             DisplayCmd::SetFftAveraging(n) => {
-                                fft_averaging = n.clamp(1, 16);
-                                fft_avg_buf = vec![-120.0; fft_size];
-                                shared_clone.write().fft.fft_averaging = fft_averaging;
+                                fftp.fft_averaging = n.clamp(1, 16);
+                                fftp.fft_avg_buf = vec![-120.0; fftp.fft_size];
+                                shared_clone.write().fft.fft_averaging = fftp.fft_averaging;
                             }
                             DisplayCmd::SetBandPlanEnabled(en) => {
                                 shared_clone.write().fft.band_plan_enabled = en;
@@ -482,22 +373,22 @@ impl SignalPath {
                                 freq_lo, freq_hi, step_hz, dwell_secs,
                                 squelch_dbfs, mode, stereo_only,
                             } => {
-                                scan_range_lo = freq_lo;
-                                scan_range_hi = freq_hi;
+                                sc.range_lo = freq_lo;
+                                sc.range_hi = freq_hi;
                                 // Guard against zero step which would stall the
                                 // scanner thread in an infinite loop.
-                                scan_range_step = step_hz.max(1);
-                                scan_range_squelch = squelch_dbfs;
-                                scan_range_stereo_only = stereo_only;
-                                scan_dwell_secs = dwell_secs.clamp(0.1, 10.0);
-                                scan_range_freq = freq_lo;
-                                scan_range_mode = true;
-                                scan_running = true;
-                                scan_dwell_samples = 0;
+                                sc.range_step = step_hz.max(1);
+                                sc.range_squelch = squelch_dbfs;
+                                sc.range_stereo_only = stereo_only;
+                                sc.dwell_secs = dwell_secs.clamp(0.1, 10.0);
+                                sc.range_freq = freq_lo;
+                                sc.range_mode = true;
+                                sc.running = true;
+                                sc.dwell_samples = 0;
                                 {
                                     let mut s = shared_clone.write();
                                     // Save current demod mode so we can restore it when scan stops.
-                                    scan_pre_mode = Some(s.demod.demod_mode);
+                                    sc.pre_mode = Some(s.demod.demod_mode);
                                     s.scanner.scan_running = true;
                                     s.scanner.range_mode = true;
                                     s.scanner.range_freq_hz = freq_lo;
@@ -520,17 +411,17 @@ impl SignalPath {
                                 demod.reset();
                                 rds.reset();
                                 audio_accumulator.clear();
-                                iq_accumulator.clear();
+                                fftp.clear_accumulator();
                                 tracing::info!(
                                     freq_lo, freq_hi, step_hz, squelch_dbfs, stereo_only,
                                     "FM range scanner started"
                                 );
                             }
                             ScanCmd::Start(cat) => {
-                                scan_category = cat.clone();
-                                scan_running = true;
-                                scan_cursor = 0;
-                                scan_dwell_samples = 0;
+                                sc.category = cat.clone();
+                                sc.running = true;
+                                sc.cursor = 0;
+                                sc.dwell_samples = 0;
                                 {
                                     let mut s = shared_clone.write();
                                     s.scanner.scan_running = true;
@@ -539,10 +430,10 @@ impl SignalPath {
                                 }
                                 let first = {
                                     let s = shared_clone.read();
-                                    scan_next_bookmark(&s.bookmarks, &scan_category, scan_cursor)
+                                    scan_next_bookmark(&s.bookmarks, &sc.category, sc.cursor)
                                 };
                                 if let Some((idx, bm_freq, bm_mode)) = first {
-                                    scan_cursor = idx;
+                                    sc.cursor = idx;
                                     shared_clone.write().scanner.scan_cursor = idx;
                                     shared_clone.write().center_freq_hz = bm_freq;
                                     if let Some(ref atomic) = freq_atomic_clone {
@@ -553,44 +444,44 @@ impl SignalPath {
                                     demod.reset();
                                     rds.reset();
                                     audio_accumulator.clear();
-                                    iq_accumulator.clear();
+                                    fftp.clear_accumulator();
                                     tracing::debug!(
-                                        category = %scan_category,
+                                        category = %sc.category,
                                         first_freq_hz = bm_freq,
-                                        dwell_secs = scan_dwell_secs,
+                                        dwell_secs = sc.dwell_secs,
                                         "scanner started"
                                     );
                                 } else {
                                     tracing::warn!(
-                                        category = %scan_category,
+                                        category = %sc.category,
                                         "scanner started but no matching bookmarks found — stopping"
                                     );
-                                    scan_running = false;
+                                    sc.running = false;
                                     shared_clone.write().scanner.scan_running = false;
                                 }
                             }
                             ScanCmd::Stop => {
                                 tracing::debug!("scanner stopped");
-                                scan_running = false;
-                                scan_range_mode = false;
+                                sc.running = false;
+                                sc.range_mode = false;
                                 let mut s = shared_clone.write();
                                 s.scanner.scan_running = false;
                                 s.scanner.range_mode = false;
                                 // Restore demod mode that was active before the range scan.
-                                if let Some(prev_mode) = scan_pre_mode.take() {
+                                if let Some(prev_mode) = sc.pre_mode.take() {
                                     s.demod.demod_mode = prev_mode;
                                     demod = make_demod(prev_mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
                                 }
                             }
                             ScanCmd::Next => {
-                                if scan_running {
+                                if sc.running {
                                     tracing::debug!("scanner: manual next requested");
-                                    scan_dwell_samples = u64::MAX;
+                                    sc.dwell_samples = u64::MAX;
                                 }
                             }
                             ScanCmd::SetDwell(secs) => {
-                                scan_dwell_secs = secs.clamp(0.5, 30.0);
-                                shared_clone.write().scanner.scan_dwell_secs = scan_dwell_secs;
+                                sc.dwell_secs = secs.clamp(0.5, 30.0);
+                                shared_clone.write().scanner.scan_dwell_secs = sc.dwell_secs;
                             }
                         },
                         SignalPathCommand::StartRecording => {
@@ -602,7 +493,7 @@ impl SignalPath {
                         SignalPathCommand::Start => {
                             if paused {
                                 paused = false;
-                                iq_accumulator.clear();
+                                fftp.clear_accumulator();
                                 audio_accumulator.clear();
                                 // Drain IQ that accumulated while the hardware was
                                 // initialising (typically ~3 s worth of batches).
@@ -669,7 +560,7 @@ impl SignalPath {
                                 // dwell timer doesn't silently stall while paused.
                                 if s.scanner.scan_running {
                                     s.scanner.scan_running = false;
-                                    scan_running = false;
+                                    sc.running = false;
                                 }
                                 tracing::info!("signal path stopped");
                             } else {
@@ -683,7 +574,7 @@ impl SignalPath {
                             iq_rx = new_rx;
                             hw_cmd_tx = new_hw_tx;
                             source_dead = false;
-                            iq_accumulator.clear();
+                            fftp.clear_accumulator();
                             audio_accumulator.clear();
                             tracing::info!("IQ source hot-swapped — signal path live");
 
@@ -804,159 +695,89 @@ impl SignalPath {
                     continue;
                 }
 
-                // Accumulate for FFT
-                iq_accumulator.extend_from_slice(&batch);
-                if iq_accumulator.len() >= fft_size {
-                    if let Some(mags) = fft.process(&iq_accumulator) {
-                        // Exponential moving average: alpha ≈ 2/(N+1) for N-frame avg.
-                        let alpha = if fft_averaging <= 1 {
-                            1.0_f32
-                        } else {
-                            2.0 / (fft_averaging as f32 + 1.0)
-                        };
-                        for (avg, &new) in fft_avg_buf.iter_mut().zip(mags.iter()) {
-                            *avg = alpha * new + (1.0 - alpha) * *avg;
-                        }
-                        // Rate-limit shared-state writes to ~30 Hz so the write
-                        // lock doesn't fire 977×/sec and stall UI read locks.
-                        // Passband metrics are computed only when needed (inside
-                        // the gate) to avoid per-frame Vec allocations + sorting.
-                        let now = std::time::Instant::now();
-                        if now.duration_since(last_fft_write) >= FFT_WRITE_INTERVAL {
-                            last_fft_write = now;
-                            // half_bw_bins = half-bandwidth of the active demod
-                            // channel in FFT bins; widened 1.5× for WBFM to
-                            // capture stereo-subcarrier sidebands.
-                            let (snr, signal_level_dbfs) = {
-                                let n = fft_avg_buf.len();
-                                let center = n / 2;
-                                let (bw_hz, is_wbfm, sr_hz) = {
-                                    let s = shared_clone.read();
-                                    let bw = match s.demod.demod_mode {
-                                        DemodMode::Wbfm => 200_000_u32,
-                                        DemodMode::Nfm => s.demod.nfm_bandwidth_hz,
-                                        DemodMode::Am
-                                        | DemodMode::Usb
-                                        | DemodMode::Lsb
-                                        | DemodMode::Dsb => 10_000,
-                                        DemodMode::Cw => 1_000,
-                                    };
-                                    let wbfm = s.demod.demod_mode == DemodMode::Wbfm;
-                                    let rate = s.sample_rate_sps.max(1) as f32;
-                                    (bw, wbfm, rate)
-                                };
-                                let mut half_bw_bins =
-                                    ((bw_hz as f32 / sr_hz * n as f32) as usize)
-                                        .max(2)
-                                        .min(n / 4);
-                                if is_wbfm {
-                                    half_bw_bins = (half_bw_bins * 3 / 2).min(n / 4);
-                                }
-                                let snr = compute_snr_db(&fft_avg_buf, center, half_bw_bins);
-                                let lo = center.saturating_sub(half_bw_bins);
-                                let hi = (center + half_bw_bins + 1).min(n);
-                                let sig = fft_avg_buf[lo..hi]
-                                    .iter()
-                                    .cloned()
-                                    .fold(f32::NEG_INFINITY, f32::max);
-                                (snr, sig)
-                            };
-                            let clipping = any_bin_clipping(&fft_avg_buf);
-                            {
-                                let mut s = shared_clone.write();
-                                s.fft.fft_magnitudes = fft_avg_buf.clone();
-                                s.fft.snr_db = Some(snr);
-                                s.fft.fft_clipping_detected = clipping;
-                                s.fft.signal_level_dbfs = signal_level_dbfs;
-                            }
-                            if let Some(ref ctx) = egui_ctx {
-                                ctx.request_repaint();
-                            }
-                        }
-                    }
-                    iq_accumulator.drain(..fft_size);
-                }
+                // FFT: accumulate → EMA average → rate-limited shared-state write (~30 Hz).
+                fftp.tick(&batch, &shared_clone, &egui_ctx);
 
                 // ── Scanner tick ─────────────────────────────────────────────
-                if scan_running {
-                    scan_dwell_samples += batch.len() as u64;
-                    let dwell_target = (scan_dwell_secs * sr as f32) as u64;
-                    if scan_dwell_samples >= dwell_target {
-                        scan_dwell_samples = 0;
+                if sc.running {
+                    sc.dwell_samples += batch.len() as u64;
+                    let dwell_target = (sc.dwell_secs * sr as f32) as u64;
+                    if sc.dwell_samples >= dwell_target {
+                        sc.dwell_samples = 0;
 
                         // ── Range sweep mode ─────────────────────────────────
-                        if scan_range_mode {
+                        if sc.range_mode {
                             let signal_level = shared_clone.read().fft.signal_level_dbfs;
                             let is_stereo = shared_clone.read().rds.is_stereo;
-                            let locked = signal_level >= scan_range_squelch
-                                && (!scan_range_stereo_only || is_stereo);
+                            let locked = signal_level >= sc.range_squelch
+                                && (!sc.range_stereo_only || is_stereo);
 
                             if locked {
                                 tracing::info!(
-                                    freq_hz = scan_range_freq,
+                                    freq_hz = sc.range_freq,
                                     signal_level_dbfs = signal_level,
                                     is_stereo,
                                     "FM range scanner: station locked"
                                 );
-                                scan_running = false;
-                                scan_range_mode = false;
+                                sc.running = false;
+                                sc.range_mode = false;
                                 {
                                     let mut s = shared_clone.write();
                                     s.scanner.scan_running = false;
                                     s.scanner.range_mode = false;
-                                    s.scanner.last_locked_freq_hz = Some(scan_range_freq);
+                                    s.scanner.last_locked_freq_hz = Some(sc.range_freq);
                                     // Restore the demod mode that was active before the scan.
                                     // This ensures e.g. NFM users aren't left in WBFM after an
                                     // FM band scan; the locked frequency is held but mode reverts.
-                                    if let Some(prev_mode) = scan_pre_mode.take() {
+                                    if let Some(prev_mode) = sc.pre_mode.take() {
                                         s.demod.demod_mode = prev_mode;
                                         demod = make_demod(prev_mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
                                     }
                                 }
                             } else {
                                 // Advance to next frequency, wrap around.
-                                let next = scan_range_freq + scan_range_step;
-                                scan_range_freq = if next > scan_range_hi {
-                                    scan_range_lo
+                                let next = sc.range_freq + sc.range_step;
+                                sc.range_freq = if next > sc.range_hi {
+                                    sc.range_lo
                                 } else {
                                     next
                                 };
                                 tracing::debug!(
-                                    freq_hz = scan_range_freq,
+                                    freq_hz = sc.range_freq,
                                     signal_level_dbfs = signal_level,
                                     "FM range scanner: advancing"
                                 );
                                 {
                                     let mut s = shared_clone.write();
-                                    s.scanner.range_freq_hz = scan_range_freq;
-                                    s.center_freq_hz = scan_range_freq;
+                                    s.scanner.range_freq_hz = sc.range_freq;
+                                    s.center_freq_hz = sc.range_freq;
                                     // Clear stale signal level so the dwell at the new
                                     // frequency doesn't read a value from the old frequency.
                                     s.fft.signal_level_dbfs = -120.0;
                                 }
                                 if let Some(ref atomic) = freq_atomic_clone {
-                                    atomic.store(scan_range_freq, Ordering::Relaxed);
+                                    atomic.store(sc.range_freq, Ordering::Relaxed);
                                 }
                                 // Reset demod so no stale audio bleeds into the new frequency.
                                 demod.reset();
                                 rds.reset();
                                 audio_accumulator.clear();
-                                iq_accumulator.clear();
+                                fftp.clear_accumulator();
                                 last_is_stereo = false;
                             }
                             continue;
                         }
 
                         // ── Bookmark mode ────────────────────────────────────
-                        let next_idx = scan_cursor + 1;
+                        let next_idx = sc.cursor + 1;
                         let (bm_freq, bm_mode, new_idx) = {
                             let s = shared_clone.read();
                             if let Some((idx, freq, mode)) =
-                                scan_next_bookmark(&s.bookmarks, &scan_category, next_idx)
+                                scan_next_bookmark(&s.bookmarks, &sc.category, next_idx)
                             {
                                 (freq, mode, idx)
                             } else if let Some((idx, freq, mode)) =
-                                scan_next_bookmark(&s.bookmarks, &scan_category, 0)
+                                scan_next_bookmark(&s.bookmarks, &sc.category, 0)
                             {
                                 (freq, mode, idx) // wrap around
                             } else {
@@ -965,17 +786,17 @@ impl SignalPath {
                             }
                         };
                         if new_idx == usize::MAX {
-                            tracing::warn!(category = %scan_category, "scanner: no bookmarks to advance to — stopping");
-                            scan_running = false;
+                            tracing::warn!(category = %sc.category, "scanner: no bookmarks to advance to — stopping");
+                            sc.running = false;
                             shared_clone.write().scanner.scan_running = false;
                         } else {
                             tracing::debug!(
                                 new_freq_hz = bm_freq,
                                 cursor = new_idx,
-                                dwell_secs = scan_dwell_secs,
+                                dwell_secs = sc.dwell_secs,
                                 "scanner: dwell expired, advancing to next bookmark"
                             );
-                            scan_cursor = new_idx;
+                            sc.cursor = new_idx;
                             shared_clone.write().scanner.scan_cursor = new_idx;
                             shared_clone.write().center_freq_hz = bm_freq;
                             if let Some(ref atomic) = freq_atomic_clone {
@@ -987,7 +808,7 @@ impl SignalPath {
                             rds.reset();
                             // Clear accumulators so no stale audio/IQ bleeds into the new channel.
                             audio_accumulator.clear();
-                            iq_accumulator.clear();
+                            fftp.clear_accumulator();
                         }
                     }
                 }
@@ -1227,60 +1048,6 @@ pub mod egui_repaint {
 
 /// Returns the minimum allowed zoom level for the given demodulation mode.
 ///
-/// Prevents the user from zooming so tight that the active signal becomes
-/// invisible in the spectrum panel:
-/// * WBFM needs ≥ 5 % of hardware bandwidth (≥ 100 kHz on a 2 MHz SDR)
-/// * CW is a very narrow mode but still needs context — keep at 5 %
-/// * Narrowband modes (NFM, AM, SSB) can zoom tighter but stop at 2 %
-pub fn min_zoom_for_mode(mode: DemodMode) -> f32 {
-    match mode {
-        DemodMode::Wbfm | DemodMode::Cw => 0.05,
-        DemodMode::Nfm
-        | DemodMode::Am
-        | DemodMode::Usb
-        | DemodMode::Lsb
-        | DemodMode::Dsb => 0.02,
-    }
-}
-
-// ── FFT analysis helpers ──────────────────────────────────────────────────────
-
-/// Compute SNR (dB) for a signal centred at `center` bin with half-width
-/// `half_bw_bins`.
-///
-/// * Signal power  = max bin in `[center−half_bw, center+half_bw]`
-/// * Noise floor   = median of all bins **outside** that window
-///
-/// Extracted from the signal-path loop so it is unit-testable without spinning
-/// up the full async machinery.
-pub(crate) fn compute_snr_db(bins: &[f32], center: usize, half_bw_bins: usize) -> f32 {
-    let n = bins.len();
-    let sig_lo = center.saturating_sub(half_bw_bins);
-    let sig_hi = (center + half_bw_bins).min(n - 1);
-    let peak = bins[sig_lo..=sig_hi]
-        .iter()
-        .cloned()
-        .fold(f32::NEG_INFINITY, f32::max);
-    let mut noise: Vec<f32> = bins[..sig_lo]
-        .iter()
-        .chain(bins[sig_hi + 1..].iter())
-        .cloned()
-        .collect();
-    let noise_floor = if noise.is_empty() {
-        -120.0_f32
-    } else {
-        noise.sort_by(|a, b| a.total_cmp(b));
-        noise[noise.len() / 2]
-    };
-    peak - noise_floor
-}
-
-/// Returns `true` when any bin in `bins` has reached or exceeded 0 dBFS —
-/// a reliable indicator of ADC saturation.
-#[inline]
-pub(crate) fn any_bin_clipping(bins: &[f32]) -> bool {
-    bins.iter().any(|&v| v >= 0.0)
-}
 
 
 #[cfg(test)]
