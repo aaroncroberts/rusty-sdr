@@ -9,6 +9,7 @@ members = [
     "crates/sdrapp-midi",
     "crates/sdrapp-rtlsdr",
     "crates/sdrapp-ui",
+    "crates/sdrapp-adsb",
     ".",
 ]
 

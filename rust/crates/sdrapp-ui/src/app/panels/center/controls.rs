@@ -24,7 +24,7 @@ impl SdrApp {
         zoom_level: f32,
         waterfall_speed: f32,
         demod_mode: DemodMode,
-        nfm_bw_hz: u32,
+        _nfm_bw_hz: u32,
         band_plan_enabled: bool,
         peak_hold_enabled: bool,
         peak_hold_decay_db: f32,

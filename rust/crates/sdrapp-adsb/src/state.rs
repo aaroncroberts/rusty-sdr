@@ -1,0 +1,291 @@
+//! Aircraft state store with 30-second expiry.
+//!
+//! Maintains a `HashMap<u32, AircraftState>` keyed by ICAO address.
+//! Call [`AircraftStore::update`] with decoded messages, then
+//! [`AircraftStore::prune_expired`] periodically (e.g. once per second).
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use crate::parser::{AdsbDecoded, AdsbMessage};
+use crate::cpr::{decode_global, CprFrame};
+
+/// Expiry window for aircraft entries.
+pub const EXPIRY: Duration = Duration::from_secs(30);
+
+/// CPR frame window: pair must arrive within this interval to be decoded.
+const CPR_WINDOW: Duration = Duration::from_secs(10);
+
+/// Decoded state for one aircraft.
+#[derive(Debug, Clone)]
+pub struct AircraftState {
+    /// 24-bit ICAO address.
+    pub icao: u32,
+    /// 8-char callsign, if received.
+    pub callsign: Option<String>,
+    /// Decoded latitude (degrees), if a CPR pair has been received.
+    pub lat: Option<f64>,
+    /// Decoded longitude (degrees).
+    pub lon: Option<f64>,
+    /// Barometric altitude in feet.
+    pub altitude_ft: Option<i32>,
+    /// Ground speed in knots.
+    pub speed_kt: Option<f32>,
+    /// Track heading in degrees (0 = N, clockwise).
+    pub heading_deg: Option<f32>,
+    /// Vertical rate in feet per minute.
+    pub vert_rate_fpm: Option<i32>,
+    /// Wall-clock time of the most-recent message from this aircraft.
+    pub last_seen: Instant,
+    // Pending CPR even/odd frames for position decoding.
+    pending_even: Option<(CprFrame, Instant)>,
+    pending_odd: Option<(CprFrame, Instant)>,
+}
+
+impl AircraftState {
+    fn new(icao: u32) -> Self {
+        Self {
+            icao,
+            callsign: None,
+            lat: None,
+            lon: None,
+            altitude_ft: None,
+            speed_kt: None,
+            heading_deg: None,
+            vert_rate_fpm: None,
+            last_seen: Instant::now(),
+            pending_even: None,
+            pending_odd: None,
+        }
+    }
+}
+
+/// Thread-local aircraft state store.
+///
+/// Not `Send` or `Sync` by itself — wrap in `Arc<Mutex<AircraftStore>>` or
+/// `Arc<RwLock<AircraftStore>>` for shared access.
+#[derive(Debug, Default)]
+pub struct AircraftStore {
+    map: HashMap<u32, AircraftState>,
+}
+
+impl AircraftStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Apply a decoded ADS-B message to the store.
+    pub fn update(&mut self, msg: &AdsbDecoded) {
+        let now = Instant::now();
+        let entry = self.map.entry(msg.icao).or_insert_with(|| AircraftState::new(msg.icao));
+        entry.last_seen = now;
+
+        match &msg.message {
+            AdsbMessage::Identification { callsign } => {
+                let cs = callsign
+                    .iter()
+                    .map(|&b| b as char)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string();
+                entry.callsign = Some(cs);
+            }
+            AdsbMessage::AirbornePosition { cpr_odd, lat_cpr, lon_cpr, altitude_ft } => {
+                if let Some(alt) = altitude_ft {
+                    entry.altitude_ft = Some(*alt);
+                }
+
+                let frame = CprFrame {
+                    odd: *cpr_odd,
+                    lat_cpr: *lat_cpr,
+                    lon_cpr: *lon_cpr,
+                };
+
+                if *cpr_odd {
+                    entry.pending_odd = Some((frame, now));
+                } else {
+                    entry.pending_even = Some((frame, now));
+                }
+
+                // Try to decode position if we have a recent even+odd pair.
+                let position = match (entry.pending_even, entry.pending_odd) {
+                    (Some((even, t_even)), Some((odd, t_odd))) => {
+                        let age = if t_even > t_odd { t_even - t_odd } else { t_odd - t_even };
+                        if age <= CPR_WINDOW {
+                            decode_global(even, odd)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                if let Some((lat, lon)) = position {
+                    entry.lat = Some(lat);
+                    entry.lon = Some(lon);
+                }
+            }
+            AdsbMessage::AirborneVelocity { speed_kt, heading_deg, vert_rate_fpm } => {
+                entry.speed_kt = Some(*speed_kt);
+                entry.heading_deg = Some(*heading_deg);
+                entry.vert_rate_fpm = Some(*vert_rate_fpm);
+            }
+            AdsbMessage::Other { .. } => {}
+        }
+    }
+
+    /// Remove aircraft not heard from in the last 30 seconds.
+    pub fn prune_expired(&mut self) {
+        self.prune_expired_at(Instant::now());
+    }
+
+    /// Prune expired entries relative to an explicit `now` (for testing).
+    pub fn prune_expired_at(&mut self, now: Instant) {
+        self.map.retain(|_, v| now.duration_since(v.last_seen) < EXPIRY);
+    }
+
+    /// All currently tracked aircraft (sorted by ICAO for determinism).
+    pub fn aircraft(&self) -> Vec<&AircraftState> {
+        let mut v: Vec<&AircraftState> = self.map.values().collect();
+        v.sort_by_key(|a| a.icao);
+        v
+    }
+
+    /// Look up a single aircraft by ICAO address.
+    pub fn get(&self, icao: u32) -> Option<&AircraftState> {
+        self.map.get(&icao)
+    }
+
+    /// Number of tracked aircraft.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::{AdsbDecoded, AdsbMessage};
+
+    fn ident_msg(icao: u32, callsign: &str) -> AdsbDecoded {
+        let mut cs = [b' '; 8];
+        for (i, &b) in callsign.as_bytes().iter().take(8).enumerate() {
+            cs[i] = b;
+        }
+        AdsbDecoded {
+            icao,
+            message: AdsbMessage::Identification { callsign: cs },
+        }
+    }
+
+    fn pos_msg(icao: u32, cpr_odd: bool, lat_cpr: u32, lon_cpr: u32, alt: i32) -> AdsbDecoded {
+        AdsbDecoded {
+            icao,
+            message: AdsbMessage::AirbornePosition {
+                cpr_odd,
+                lat_cpr,
+                lon_cpr,
+                altitude_ft: Some(alt),
+            },
+        }
+    }
+
+    fn vel_msg(icao: u32, speed: f32, hdg: f32, vr: i32) -> AdsbDecoded {
+        AdsbDecoded {
+            icao,
+            message: AdsbMessage::AirborneVelocity {
+                speed_kt: speed,
+                heading_deg: hdg,
+                vert_rate_fpm: vr,
+            },
+        }
+    }
+
+    /// Identification message stores trimmed callsign.
+    #[test]
+    fn store_callsign() {
+        let mut store = AircraftStore::new();
+        store.update(&ident_msg(0x4840D6, "KLM1023 "));
+        let ac = store.get(0x4840D6).unwrap();
+        assert_eq!(ac.callsign.as_deref(), Some("KLM1023"));
+    }
+
+    /// Velocity message stores speed/heading/vert-rate.
+    #[test]
+    fn store_velocity() {
+        let mut store = AircraftStore::new();
+        store.update(&vel_msg(0x111111, 450.0, 270.0, -512));
+        let ac = store.get(0x111111).unwrap();
+        assert_eq!(ac.speed_kt, Some(450.0));
+        assert_eq!(ac.heading_deg, Some(270.0));
+        assert_eq!(ac.vert_rate_fpm, Some(-512));
+    }
+
+    /// CPR even+odd pair decodes to position.
+    #[test]
+    fn store_cpr_position_decodes() {
+        let mut store = AircraftStore::new();
+        // Known pair: 52.2572°N, 3.9194°E
+        store.update(&pos_msg(0x40621D, false, 93000, 51372, 38000)); // even
+        store.update(&pos_msg(0x40621D, true, 74158, 50194, 38000));  // odd
+        let ac = store.get(0x40621D).unwrap();
+        let lat = ac.lat.expect("Lat should be set after even+odd pair");
+        let lon = ac.lon.expect("Lon should be set after even+odd pair");
+        assert!((lat - 52.2572).abs() < 0.01, "lat={lat:.4}");
+        assert!((lon - 3.9194).abs() < 0.01, "lon={lon:.4}");
+    }
+
+    /// Single CPR frame (no pair yet) → no position.
+    #[test]
+    fn store_single_cpr_no_position() {
+        let mut store = AircraftStore::new();
+        store.update(&pos_msg(0x111111, false, 93000, 51372, 38000)); // even only
+        let ac = store.get(0x111111).unwrap();
+        assert!(ac.lat.is_none(), "Should not have position from single frame");
+    }
+
+    /// Prune removes entries older than 30 s.
+    #[test]
+    fn prune_expired_removes_old_entries() {
+        let mut store = AircraftStore::new();
+        store.update(&ident_msg(0xAABBCC, "OLD     "));
+
+        // Fast-forward by 31 s: craft the `now` as 31 s after the entry's last_seen
+        let ac = store.get(0xAABBCC).unwrap();
+        let past_expiry = ac.last_seen + Duration::from_secs(31);
+        store.prune_expired_at(past_expiry);
+
+        assert!(store.is_empty(), "Expired aircraft should be pruned");
+    }
+
+    /// Prune keeps entries seen recently.
+    #[test]
+    fn prune_keeps_fresh_entries() {
+        let mut store = AircraftStore::new();
+        store.update(&ident_msg(0xAABBCC, "FRESH   "));
+
+        // Only 10 s elapsed: should survive
+        let ac = store.get(0xAABBCC).unwrap();
+        let still_fresh = ac.last_seen + Duration::from_secs(10);
+        store.prune_expired_at(still_fresh);
+
+        assert_eq!(store.len(), 1, "Fresh aircraft should not be pruned");
+    }
+
+    /// Multiple aircraft tracked independently.
+    #[test]
+    fn tracks_multiple_aircraft() {
+        let mut store = AircraftStore::new();
+        for i in 0u32..5 {
+            store.update(&ident_msg(i, &format!("FLT{i:05}")));
+        }
+        assert_eq!(store.len(), 5);
+        assert_eq!(store.get(2).unwrap().callsign.as_deref(), Some("FLT00002"));
+    }
+}

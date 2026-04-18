@@ -4,6 +4,7 @@
 //! focused while still sharing `SdrApp`'s private fields (Rust allows
 //! `impl` blocks in child modules to access parent-module private fields).
 
+pub(super) mod adsb_map;
 pub(super) mod center;
 pub(super) mod left;
 mod left_bookmarks;

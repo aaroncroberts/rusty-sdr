@@ -10,7 +10,7 @@ use super::super::SdrApp;
 use crate::{
     frequency::FrequencyWidget,
     hints::{self, HintAction, HintCtx},
-    knob::KnobWidget,
+
     spectrum::SpectrumWidget,
     theme,
     waterfall::WaterfallOverlay,

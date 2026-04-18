@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 sdrapp-core = { path = "../sdrapp-core" }
+sdrapp-adsb = { path = "../sdrapp-adsb" }
 sdrapp-midi = { path = "../sdrapp-midi" }
 sdrapp-recorder = { path = "../sdrapp-recorder" }
 egui = { workspace = true }

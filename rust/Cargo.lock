@@ -3349,6 +3349,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdrapp-adsb"
+version = "0.1.0"
+dependencies = [
+ "approx",
+]
+
+[[package]]
 name = "sdrapp-audio"
 version = "0.1.0"
 dependencies = [
@@ -3464,6 +3471,7 @@ dependencies = [
  "egui_plot",
  "image",
  "parking_lot",
+ "sdrapp-adsb",
  "sdrapp-core",
  "sdrapp-midi",
  "sdrapp-recorder",

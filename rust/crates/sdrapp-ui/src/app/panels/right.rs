@@ -643,6 +643,44 @@ impl SdrApp {
         }
 
         ui.add_space(8.0);
+
+        // ── ADS-B Map ─────────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("ADS-B").color(theme::TEXT_MUTED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let lbl = if self.show_adsb_map { "▼ Map" } else { "✈ Map" };
+                let btn = egui::Button::new(
+                    RichText::new(lbl).color(theme::ACCENT).small(),
+                )
+                .fill(theme::WIDGET_BG)
+                .stroke(Stroke::new(
+                    1.0,
+                    if self.show_adsb_map { theme::ACCENT } else { theme::BORDER },
+                ));
+                if ui.add(btn).on_hover_text("Open ADS-B aircraft map (1090 MHz)").clicked() {
+                    self.show_adsb_map = !self.show_adsb_map;
+                }
+            });
+        });
+
+        {
+            let count = self.adsb_store.lock().len();
+            if count > 0 {
+                ui.label(
+                    RichText::new(format!("  {} aircraft tracked", count))
+                        .color(theme::STATUS_OK)
+                        .small(),
+                );
+            } else {
+                ui.label(
+                    RichText::new("  No aircraft (port B not active)")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            }
+        }
+
+        ui.add_space(4.0);
         ui.separator();
         ui.add_space(6.0);
 

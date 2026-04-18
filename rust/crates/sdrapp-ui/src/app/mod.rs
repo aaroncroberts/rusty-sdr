@@ -141,6 +141,12 @@ pub struct SdrApp {
     handbook: HandbookWindow,
     /// Whether the Operators Handbook window is open.
     show_handbook: bool,
+    /// ADS-B aircraft map window.
+    adsb_map: panels::adsb_map::AdsbMapWindow,
+    /// Whether the ADS-B map window is open.
+    show_adsb_map: bool,
+    /// Shared ADS-B aircraft store (populated when port B decoder is running).
+    adsb_store: std::sync::Arc<parking_lot::Mutex<sdrapp_adsb::AircraftStore>>,
 }
 
 impl SdrApp {
@@ -236,6 +242,11 @@ impl SdrApp {
             show_midi_mapper: false,
             handbook: HandbookWindow::with_state(handbook_section, handbook_page),
             show_handbook,
+            adsb_map: panels::adsb_map::AdsbMapWindow::new(),
+            show_adsb_map: false,
+            adsb_store: std::sync::Arc::new(parking_lot::Mutex::new(
+                sdrapp_adsb::AircraftStore::new(),
+            )),
         }
     }
 }
@@ -439,6 +450,12 @@ impl eframe::App for SdrApp {
         if self.show_midi_mapper {
             self.midi_mapper
                 .show(ctx, &mut self.show_midi_mapper, &self.shared, &self.midi_bindings);
+        }
+
+        // ── ADS-B Aircraft Map window ─────────────────────────────────────────
+        if self.show_adsb_map {
+            let aircraft: Vec<_> = self.adsb_store.lock().aircraft().into_iter().cloned().collect();
+            self.adsb_map.show(ctx, &mut self.show_adsb_map, &aircraft);
         }
 
         // ── Operators Handbook window ─────────────────────────────────────────
