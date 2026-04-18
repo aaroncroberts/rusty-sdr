@@ -36,6 +36,11 @@ pub enum HardwareCommand {
     /// Close and reopen the hardware device without restarting the app.
     /// The device thread completes a clean RAII shutdown then starts a new session.
     RestartDevice,
+    /// Change hardware decimation factor live (no restart required on RSPdx-R2).
+    /// Valid values: 1 (off), 2, 4, 8, 16, 32.
+    /// The device thread applies this via sdrplay_api_Update_Ctrl_Decimation and
+    /// updates SharedState.sample_rate_sps to reflect the new effective rate.
+    SetDecimationFactor(u32),
 }
 
 /// Core receiver tuning and demodulation commands.

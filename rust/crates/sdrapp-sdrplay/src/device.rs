@@ -842,6 +842,28 @@ fn try_run_sdrplay_session(
                          sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_None,
                          sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_RspDx_AntennaControl)
                     }
+                    HardwareCommand::SetDecimationFactor(n) => {
+                        // Live decimation change — no device restart required.
+                        // sdrplay_api_Update_Ctrl_Decimation applies the new value
+                        // to the running stream immediately.
+                        let n = n.clamp(1, 32);
+                        ch.ctrlParams.decimation.enable = if n > 1 { 1 } else { 0 };
+                        ch.ctrlParams.decimation.decimationFactor = n as u8;
+                        ch.ctrlParams.decimation.wideBandSignal = 1;
+                        // Update the effective sample rate visible to the signal path.
+                        let effective = config.sample_rate_sps / n;
+                        if let Some(s) = shared {
+                            s.write().sample_rate_sps = effective;
+                        }
+                        tracing::info!(
+                            decimation_factor = n,
+                            effective_rate_hz = effective,
+                            "SetDecimationFactor applied live"
+                        );
+                        ("SetDecimationFactor",
+                         sys::sdrplay_api_ReasonForUpdateT_sdrplay_api_Update_Ctrl_Decimation,
+                         sys::sdrplay_api_ReasonForUpdateExtension1T_sdrplay_api_Update_Ext1_None)
+                    }
                     HardwareCommand::RestartDevice => unreachable!(),
                 };
                 let e = sys::sdrplay_api_Update(

@@ -351,9 +351,11 @@ impl SignalPath {
                                     HardwareCommand::SetAntenna(port) => {
                                         s.hardware.antenna_port = *port
                                     }
-                                    // RestartDevice has no SharedState mirror — forwarded
-                                    // directly to the device thread without a state update.
+                                    // RestartDevice / SetDecimationFactor have no optimistic
+                                    // SharedState mirror — the device thread updates
+                                    // sample_rate_sps after the API call succeeds.
                                     HardwareCommand::RestartDevice => {}
+                                    HardwareCommand::SetDecimationFactor(_) => {}
                                 }
                             }
                             // Forward verbatim to the device thread
