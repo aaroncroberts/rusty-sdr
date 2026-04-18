@@ -34,7 +34,10 @@ pub struct AppConfig {
 }
 
 fn default_bookmarks() -> Vec<BookmarkConfig> {
-    vec![BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm")]
+    vec![
+        BookmarkConfig::new("BBC Radio 4 — 93.5 MHz", 93_500_000, "Wbfm"),
+        BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm"),
+    ]
 }
 
 /// Hamlib-compatible rigctl TCP server configuration.

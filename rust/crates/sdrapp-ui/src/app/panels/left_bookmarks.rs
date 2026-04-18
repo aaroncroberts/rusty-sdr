@@ -12,19 +12,24 @@ use super::category_color;
 use crate::{frequency::FrequencyWidget, theme};
 
 impl SdrApp {
-    /// Render the BOOKMARKS section of the left panel.
+    /// Render the BOOKMARKS section of the left panel (collapsible).
     pub(in crate::app) fn bookmarks_section(&mut self, ui: &mut Ui) {
+        // Header row: collapsing label + sort toggle right-aligned
+        let header_id = ui.make_persistent_id("bookmarks_open");
+        let open = ui.ctx().data_mut(|d| *d.get_persisted_mut_or_insert_with(header_id, || true));
+
         ui.horizontal(|ui| {
-            ui.label(RichText::new("BOOKMARKS").color(theme::TEXT_MUTED).small());
+            let arrow = if open { "▼" } else { "▶" };
+            let header_text = RichText::new(format!("{arrow} BOOKMARKS")).color(theme::TEXT_MUTED).small();
+            if ui.add(egui::Label::new(header_text).sense(egui::Sense::click())).clicked() {
+                ui.ctx().data_mut(|d| {
+                    let v: &mut bool = d.get_persisted_mut_or_insert_with(header_id, || true);
+                    *v = !*v;
+                });
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Sort toggle
-                let sort_color = if self.bookmark_sort_by_freq {
-                    theme::ACCENT
-                } else {
-                    theme::TEXT_MUTED
-                };
-                if ui
-                    .small_button(RichText::new("↕f").color(sort_color))
+                let sort_color = if self.bookmark_sort_by_freq { theme::ACCENT } else { theme::TEXT_MUTED };
+                if ui.small_button(RichText::new("↕f").color(sort_color))
                     .on_hover_text("Sort by frequency")
                     .clicked()
                 {
@@ -32,6 +37,10 @@ impl SdrApp {
                 }
             });
         });
+
+        if !open {
+            return;
+        }
         ui.add_space(2.0);
 
         // Category filter chips
