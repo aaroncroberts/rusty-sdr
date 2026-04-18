@@ -201,7 +201,7 @@ fn run_audio_thread(
     {
         let prefill = stream_config.sample_rate.0 as usize / 10 * 2; // 100 ms × 2 ch
         let mut buf = ring.lock();
-        buf.extend(std::iter::repeat(0.0f32).take(prefill));
+        buf.extend(std::iter::repeat_n(0.0f32, prefill));
     }
 
     stream.play()?;

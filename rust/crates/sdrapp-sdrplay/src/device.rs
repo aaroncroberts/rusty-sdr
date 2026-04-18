@@ -335,6 +335,7 @@ enum SessionOutcome {
 /// → configure → poll until stop/restart/error → Uninit → ReleaseDevice → Close.
 ///
 /// RAII guards ensure the cleanup sequence always runs even when bailing via `?`.
+#[allow(clippy::too_many_arguments)]
 fn try_run_sdrplay_session(
     config: &RspdxConfig,
     iq_tx: crossbeam_channel::Sender<Arc<[IqSample]>>,
@@ -345,8 +346,6 @@ fn try_run_sdrplay_session(
     shared: Option<&Arc<RwLock<SharedState>>>,
     restart_requested: &Arc<AtomicBool>,
 ) -> SessionOutcome {
-    use anyhow::Context as _;
-
     let _session_span = tracing::info_span!("sdrplay_session").entered();
 
     // ── Open API ──────────────────────────────────────────────────────────────
