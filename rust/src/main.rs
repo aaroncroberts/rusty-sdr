@@ -151,7 +151,7 @@ fn main() -> anyhow::Result<()> {
         false
     };
 
-    let (iq_rx, iq_recorder_rx, iq_adsb_rx, freq_atomic, hardware_cmd_tx) =
+    let (iq_rx, iq_recorder_rx, iq_adsb_tx, freq_atomic, hardware_cmd_tx) =
         if sdrplay_available {
             tracing::info!("SDRplay device found — starting in hardware mode");
             shared.write().source_name = Some("SDRplay RSPdx-R2".to_string());
@@ -196,7 +196,7 @@ fn main() -> anyhow::Result<()> {
             .with_shared(Arc::clone(&shared));
             let rx = src.subscribe();
             let iq_rec_rx = src.subscribe();
-            let iq_adsb = src.subscribe();
+            let iq_adsb = src.iq_sender();
             let fa = Source::frequency_atomic(&src);
             let hw_tx = src.hardware_cmd_tx();
             // Watch device status and update source_name in SharedState.
@@ -237,7 +237,7 @@ fn main() -> anyhow::Result<()> {
             shared.write().source_name = Some(caps_name);
             let rx = src.subscribe();
             let iq_rec_rx = src.subscribe();
-            let iq_adsb = src.subscribe();
+            let iq_adsb = src.iq_sender();
             let fa = Source::frequency_atomic(&src);
             drop(src.start());
             _rtlsdr_source = Some(src);
@@ -254,7 +254,7 @@ fn main() -> anyhow::Result<()> {
             );
             let rx = src.subscribe();
             let iq_rec_rx = src.subscribe();
-            let iq_adsb = src.subscribe();
+            let iq_adsb = src.iq_sender();
             let fa = Source::frequency_atomic(&src);
             drop(src.start());
             _demo_source = Some(src);
@@ -438,7 +438,7 @@ fn main() -> anyhow::Result<()> {
                 recorder_cmd_tx,
                 midi_bindings,
                 auto_start,
-                Some(iq_adsb_rx),
+                Some(iq_adsb_tx),
             )))
         }),
     )

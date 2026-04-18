@@ -147,9 +147,10 @@ pub struct SdrApp {
     show_adsb_map: bool,
     /// Shared ADS-B aircraft store (populated when decoder is running).
     adsb_store: std::sync::Arc<parking_lot::Mutex<sdrapp_adsb::AircraftStore>>,
-    /// IQ broadcast receiver for the ADS-B decoder — held here so the UI can
-    /// hand it off to the decoder thread on demand.
-    adsb_iq_rx: Option<tokio::sync::broadcast::Receiver<std::sync::Arc<[sdrapp_core::sample::IqSample]>>>,
+    /// IQ broadcast sender — held so the UI can call `.subscribe()` to obtain a
+    /// fresh Receiver each time the user starts the ADS-B decoder.  Using the
+    /// Sender (not a pre-subscribed Receiver) allows unlimited stop/restart.
+    adsb_iq_tx: Option<tokio::sync::broadcast::Sender<std::sync::Arc<[sdrapp_core::sample::IqSample]>>>,
     /// Running ADS-B decoder thread (Some = running, None = stopped).
     adsb_decoder: Option<crate::adsb_decoder::AdsbDecoder>,
 }
@@ -164,7 +165,7 @@ impl SdrApp {
         recorder_cmd_tx: tokio::sync::mpsc::Sender<RecorderCommand>,
         midi_bindings: Vec<(usize, String, String)>,
         auto_start: bool,
-        adsb_iq_rx: Option<tokio::sync::broadcast::Receiver<std::sync::Arc<[sdrapp_core::sample::IqSample]>>>,
+        adsb_iq_tx: Option<tokio::sync::broadcast::Sender<std::sync::Arc<[sdrapp_core::sample::IqSample]>>>,
     ) -> Self {
         // Apply our beautiful dark theme
         theme::apply(&cc.egui_ctx);
@@ -260,7 +261,7 @@ impl SdrApp {
             adsb_store: std::sync::Arc::new(parking_lot::Mutex::new(
                 sdrapp_adsb::AircraftStore::new(),
             )),
-            adsb_iq_rx,
+            adsb_iq_tx,
             adsb_decoder: None,
         }
     }

@@ -163,6 +163,10 @@ impl Source for RtlSdrSource {
         self.tx.subscribe()
     }
 
+    fn iq_sender(&self) -> broadcast::Sender<Arc<[IqSample]>> {
+        self.tx.clone()
+    }
+
     fn set_frequency(&self, hz: u64) -> Result<(), SourceError> {
         self.frequency_hz.store(hz, Ordering::Relaxed);
         Ok(())

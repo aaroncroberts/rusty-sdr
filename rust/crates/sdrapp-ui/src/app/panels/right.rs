@@ -667,7 +667,7 @@ impl SdrApp {
                     .as_ref()
                     .map(|d| d.is_running())
                     .unwrap_or(false);
-                let can_start = self.adsb_iq_rx.is_some() && !decoder_running;
+                let can_start = self.adsb_iq_tx.is_some() && !decoder_running;
                 let (rx_lbl, rx_color) = if decoder_running {
                     ("■ Stop", theme::AMBER)
                 } else {
@@ -682,7 +682,7 @@ impl SdrApp {
                     .add_enabled(can_start || decoder_running, rx_btn)
                     .on_hover_text(if decoder_running {
                         "Stop ADS-B decoder"
-                    } else if self.adsb_iq_rx.is_some() {
+                    } else if self.adsb_iq_tx.is_some() {
                         "Start ADS-B decoder (tune to 1090 MHz first)"
                     } else {
                         "No IQ source available"
@@ -692,7 +692,9 @@ impl SdrApp {
                         if let Some(mut d) = self.adsb_decoder.take() {
                             d.stop();
                         }
-                    } else if let Some(iq_rx) = self.adsb_iq_rx.take() {
+                    } else if let Some(tx) = self.adsb_iq_tx.as_ref() {
+                        // Subscribe fresh each time — allows unlimited stop/restart
+                        let iq_rx = tx.subscribe();
                         let sr = self.shared.read().sample_rate_sps;
                         self.adsb_decoder = Some(crate::adsb_decoder::AdsbDecoder::start(
                             iq_rx,

@@ -32,6 +32,14 @@ pub trait Source: Block {
     /// to allow zero-copy fan-out to multiple consumers (UI, recorder).
     fn subscribe(&self) -> broadcast::Receiver<Arc<[IqSample]>>;
 
+    /// The broadcast sender end of the IQ stream.
+    ///
+    /// Callers that need to subscribe on demand (e.g. the ADS-B decoder that
+    /// can be started and stopped at will) should hold this Sender and call
+    /// `.subscribe()` each time they want a fresh Receiver, rather than holding
+    /// a pre-subscribed Receiver that gets consumed on first use.
+    fn iq_sender(&self) -> broadcast::Sender<Arc<[IqSample]>>;
+
     fn set_frequency(&self, hz: u64) -> Result<(), SourceError>;
     fn set_sample_rate(&self, sps: u32) -> Result<(), SourceError>;
     fn frequency(&self) -> u64;

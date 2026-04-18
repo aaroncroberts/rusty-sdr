@@ -258,6 +258,10 @@ impl Source for RspdxSource {
         self.tx.subscribe()
     }
 
+    fn iq_sender(&self) -> broadcast::Sender<Arc<[IqSample]>> {
+        self.tx.clone()
+    }
+
     fn set_frequency(&self, hz: u64) -> Result<(), SourceError> {
         const MIN_HZ: u64 = 1_000;
         const MAX_HZ: u64 = 2_000_000_000;

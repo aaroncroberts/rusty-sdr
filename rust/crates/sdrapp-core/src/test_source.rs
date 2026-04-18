@@ -129,6 +129,10 @@ impl Source for TestSignalSource {
         self.tx.subscribe()
     }
 
+    fn iq_sender(&self) -> broadcast::Sender<Arc<[IqSample]>> {
+        self.tx.clone()
+    }
+
     fn set_frequency(&self, hz: u64) -> Result<(), SourceError> {
         // Demo source: accept any frequency; actual signal is unaffected.
         self.frequency_hz.store(hz, Ordering::Relaxed);

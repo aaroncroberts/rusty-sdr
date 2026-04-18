@@ -230,6 +230,28 @@ mod tests {
         assert!(!decoder.is_running());
     }
 
+    /// Verify that re-subscribing from a Sender produces a working decoder.
+    /// This is the pattern used by the fix: SdrApp holds the Sender, each
+    /// Start click calls tx.subscribe() rather than consuming a stored Receiver.
+    #[test]
+    fn decoder_can_restart_via_sender_resubscribe() {
+        let (tx, _) = tokio::sync::broadcast::channel::<Arc<[IqSample]>>(16);
+        let store = Arc::new(Mutex::new(AircraftStore::new()));
+
+        // First start
+        let rx1 = tx.subscribe();
+        let mut decoder1 = AdsbDecoder::start(rx1, Arc::clone(&store), 2_000_000);
+        assert!(decoder1.is_running());
+        decoder1.stop();
+        assert!(!decoder1.is_running());
+
+        // Second start — fresh subscriber from the same sender
+        let rx2 = tx.subscribe();
+        let mut decoder2 = AdsbDecoder::start(rx2, Arc::clone(&store), 2_000_000);
+        assert!(decoder2.is_running(), "decoder should restart after re-subscribing from sender");
+        decoder2.stop();
+    }
+
     #[test]
     fn decoder_records_sample_rate() {
         let (_tx, rx) = tokio::sync::broadcast::channel::<Arc<[IqSample]>>(4);
