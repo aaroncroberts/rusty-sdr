@@ -223,6 +223,8 @@ impl SignalPath {
             let mut scan_range_step: u64 = 100_000;
             let mut scan_range_squelch: f32 = -60.0;
             let mut scan_range_stereo_only = false;
+            // Demod mode to restore when range scanner stops (lock or manual stop).
+            let mut scan_pre_mode: Option<DemodMode> = None;
 
             /// Create a fresh demodulator for the given mode.
             /// `demod_sr` is the WBFM decimated rate (used for WBFM only).
@@ -484,6 +486,8 @@ impl SignalPath {
                                 scan_dwell_samples = 0;
                                 {
                                     let mut s = shared_clone.write();
+                                    // Save current demod mode so we can restore it when scan stops.
+                                    scan_pre_mode = Some(s.demod.demod_mode);
                                     s.scanner.scan_running = true;
                                     s.scanner.range_mode = true;
                                     s.scanner.range_freq_hz = freq_lo;
@@ -495,6 +499,8 @@ impl SignalPath {
                                     s.scanner.scan_dwell_secs = dwell_secs;
                                     s.scanner.last_locked_freq_hz = None; // clear previous lock
                                     s.center_freq_hz = freq_lo;
+                                    // Clear stale signal level so first dwell doesn't false-lock.
+                                    s.fft.signal_level_dbfs = -120.0;
                                 }
                                 if let Some(ref atomic) = freq_atomic_clone {
                                     atomic.store(freq_lo, Ordering::Relaxed);
@@ -560,6 +566,11 @@ impl SignalPath {
                                 let mut s = shared_clone.write();
                                 s.scanner.scan_running = false;
                                 s.scanner.range_mode = false;
+                                // Restore demod mode that was active before the range scan.
+                                if let Some(prev_mode) = scan_pre_mode.take() {
+                                    s.demod.demod_mode = prev_mode;
+                                    demod = make_demod(prev_mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
+                                }
                             }
                             ScanCmd::Next => {
                                 if scan_running {
@@ -883,10 +894,19 @@ impl SignalPath {
                                 );
                                 scan_running = false;
                                 scan_range_mode = false;
-                                let mut s = shared_clone.write();
-                                s.scanner.scan_running = false;
-                                s.scanner.range_mode = false;
-                                s.scanner.last_locked_freq_hz = Some(scan_range_freq);
+                                {
+                                    let mut s = shared_clone.write();
+                                    s.scanner.scan_running = false;
+                                    s.scanner.range_mode = false;
+                                    s.scanner.last_locked_freq_hz = Some(scan_range_freq);
+                                    // Restore the demod mode that was active before the scan.
+                                    // This ensures e.g. NFM users aren't left in WBFM after an
+                                    // FM band scan; the locked frequency is held but mode reverts.
+                                    if let Some(prev_mode) = scan_pre_mode.take() {
+                                        s.demod.demod_mode = prev_mode;
+                                        demod = make_demod(prev_mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
+                                    }
+                                }
                             } else {
                                 // Advance to next frequency, wrap around.
                                 let next = scan_range_freq + scan_range_step;
@@ -900,8 +920,14 @@ impl SignalPath {
                                     signal_level_dbfs = signal_level,
                                     "FM range scanner: advancing"
                                 );
-                                shared_clone.write().scanner.range_freq_hz = scan_range_freq;
-                                shared_clone.write().center_freq_hz = scan_range_freq;
+                                {
+                                    let mut s = shared_clone.write();
+                                    s.scanner.range_freq_hz = scan_range_freq;
+                                    s.center_freq_hz = scan_range_freq;
+                                    // Clear stale signal level so the dwell at the new
+                                    // frequency doesn't read a value from the old frequency.
+                                    s.fft.signal_level_dbfs = -120.0;
+                                }
                                 if let Some(ref atomic) = freq_atomic_clone {
                                     atomic.store(scan_range_freq, Ordering::Relaxed);
                                 }
