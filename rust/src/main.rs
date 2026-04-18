@@ -45,6 +45,8 @@ fn main() -> anyhow::Result<()> {
         s.waterfall_speed = config.ui.waterfall_speed;
         s.demod.nfm_bandwidth_hz = config.ui.nfm_bandwidth_hz;
         s.demod.ctcss_squelch_enabled = config.ui.ctcss_enabled;
+        s.demod.squelch_threshold = config.ui.squelch_threshold_dbfs;
+        s.demod.tune_step_hz = config.ui.tune_step_hz;
         // FFT / spectrum display settings
         s.fft.fft_size = config.ui.fft_size;
         s.fft.fft_averaging = config.ui.fft_averaging;

@@ -85,8 +85,8 @@ impl<'a> SpectrumWidget<'a> {
         );
 
         // ── dBFS grid lines & Y-axis labels ──────────────────────────────────
-        // Draw a grid line every 10 dB; major lines (divisible by 20) are brighter.
-        // Only draw lines that fall within the current display range.
+        // Draw a grid line every tick_step dB; major lines every 4 ticks (= 20/10/20 dB).
+        // Major detection uses tick index parity so it's correct regardless of where db_min falls.
         {
             let range_db = db_max - db_min;
             // Pick tick spacing: 5 dB for narrow ranges, 10 dB for normal, 20 dB for wide
@@ -102,7 +102,10 @@ impl<'a> SpectrumWidget<'a> {
             for k in first..=last {
                 let db = k as f32 * tick_step;
                 let y = db_to_y(db, db_min, db_max, plot_rect);
-                let is_major = (db as i32) % 20 == 0;
+                // Major every 4th tick so visual spacing is uniform regardless of db_min.
+                // (The old `(db as i32) % 20 == 0` fired only on 0/-20/-40/... even when
+                //  the first visible tick landed at -85, making the major lines look random.)
+                let is_major = (k - first) % 4 == 0;
                 let grid_color = if is_major {
                     Color32::from_rgba_unmultiplied(60, 80, 90, 200)
                 } else {
@@ -321,7 +324,8 @@ impl<'a> SpectrumWidget<'a> {
         }
 
         // ── Filter passband overlay ───────────────────────────────────────────
-        // Very subtle tint showing the demodulator's receive bandwidth.
+        // Subtle fill + bright 1 px edge lines showing demodulator receive bandwidth.
+        // The edge lines make the passband visible even when it's narrow (NFM ±6 kHz).
         if freq_hi > freq_lo && self.filter_hi_hz > self.filter_lo_hz {
             let freq_span = freq_hi - freq_lo;
             let lo_t = ((self.filter_lo_hz as f64 - freq_lo) / freq_span).clamp(0.0, 1.0) as f32;
@@ -329,13 +333,25 @@ impl<'a> SpectrumWidget<'a> {
             let lo_x = plot_rect.left() + lo_t * plot_rect.width();
             let hi_x = plot_rect.left() + hi_t * plot_rect.width();
             if hi_x - lo_x >= 1.0 {
+                // Interior fill — slightly more visible than before (alpha 18 → 30)
                 painter.rect_filled(
                     Rect::from_min_max(
                         Pos2::new(lo_x, plot_rect.top()),
                         Pos2::new(hi_x, plot_rect.bottom()),
                     ),
                     0.0,
-                    Color32::from_rgba_unmultiplied(0, 140, 220, 18),
+                    Color32::from_rgba_unmultiplied(0, 140, 220, 30),
+                );
+                // Bright edge lines at lo and hi — always visible at any passband width
+                let edge_color = Color32::from_rgba_unmultiplied(100, 180, 255, 200);
+                let edge_stroke = egui::Stroke::new(1.0, edge_color);
+                painter.line_segment(
+                    [Pos2::new(lo_x, plot_rect.top()), Pos2::new(lo_x, plot_rect.bottom())],
+                    edge_stroke,
+                );
+                painter.line_segment(
+                    [Pos2::new(hi_x, plot_rect.top()), Pos2::new(hi_x, plot_rect.bottom())],
+                    edge_stroke,
                 );
             }
         }
@@ -398,9 +414,15 @@ impl<'a> SpectrumWidget<'a> {
         }
 
         // ── Tune-step markers ─────────────────────────────────────────────────
-        // Small diamond ticks on the bottom of plot_rect at each tune_step_hz
-        // interval from the VFO, showing scroll-tune granularity at a glance.
-        if self.tune_step_hz > 0 && freq_hi > freq_lo {
+        // Small ticks on the bottom of plot_rect at each tune_step_hz interval.
+        // Suppressed when the step is too small relative to the display width so
+        // we don't render 1000+ overlapping marks (e.g., 1 kHz step at 1 MHz span).
+        let px_per_step = if self.tune_step_hz > 0 && freq_hi > freq_lo {
+            (self.tune_step_hz as f64 / (freq_hi - freq_lo)) as f32 * plot_rect.width()
+        } else {
+            0.0
+        };
+        if self.tune_step_hz > 0 && freq_hi > freq_lo && px_per_step >= 3.0 {
             let step = self.tune_step_hz as f64;
             let freq_span = freq_hi - freq_lo;
             // First step position at or just below freq_lo

@@ -1107,18 +1107,17 @@ impl SignalPath {
                             shared_clone.write().demod.ctcss_tone_detected = detected;
                         }
                         // Apply squelch (dBFS threshold gate)
-                        let gated = squelch.process(&mono);
+                        let mut gated = squelch.process(&mono);
                         shared_clone.write().demod.nfm_signal_level_dbfs = squelch.level_dbfs();
-                        // CTCSS gate: mute if enabled and no tone detected
-                        let ctcss_gated: Vec<f32> = if ctcss_enabled && !ctcss.is_tone_present() {
-                            vec![0.0; gated.len()]
-                        } else {
-                            gated
-                        };
+                        // CTCSS gate: mute in-place if enabled and no tone detected.
+                        // Zero-fill avoids a per-batch allocation that fired whenever
+                        // CTCSS was active and no tone was present.
+                        if ctcss_enabled && !ctcss.is_tone_present() {
+                            gated.iter_mut().for_each(|s| *s = 0.0);
+                        }
                         // Voice bandpass: 300 Hz – 3 kHz
-                        let mut filtered = ctcss_gated;
-                        audio_bp.process_inplace(&mut filtered);
-                        filtered.into_iter().map(StereoFrame::mono).collect()
+                        audio_bp.process_inplace(&mut gated);
+                        gated.into_iter().map(StereoFrame::mono).collect()
                     }
                     Demod::Am(d) => {
                         let mut mono = d.process(iq_for_narrow);
@@ -1135,21 +1134,20 @@ impl SignalPath {
                     }
                 };
 
-                let mut stereo_processed: Vec<StereoFrame> = vol
-                    .process(&stereo)
-                    .into_iter()
-                    .map(|f| StereoFrame {
+                // Extend directly — eliminates the stereo_processed intermediate Vec
+                // that was allocated and immediately appended every batch.
+                audio_accumulator.extend(
+                    vol.process(&stereo).into_iter().map(|f| StereoFrame {
                         left: soft_limit(f.left),
                         right: soft_limit(f.right),
-                    })
-                    .collect();
-                audio_accumulator.append(&mut stereo_processed);
+                    }),
+                );
 
-                // Emit audio frames
+                // Emit audio frames — drain directly into Arc<[StereoFrame]> to
+                // avoid the intermediate Vec allocation that .to_vec().into() caused.
                 while audio_accumulator.len() >= AUDIO_FRAME_SIZE {
                     let frame: Arc<[StereoFrame]> =
-                        audio_accumulator[..AUDIO_FRAME_SIZE].to_vec().into();
-                    audio_accumulator.drain(..AUDIO_FRAME_SIZE);
+                        audio_accumulator.drain(..AUDIO_FRAME_SIZE).collect();
 
                     if let Some(ref tx) = audio_tx {
                         // try_send: drop frame on backpressure rather than blocking.

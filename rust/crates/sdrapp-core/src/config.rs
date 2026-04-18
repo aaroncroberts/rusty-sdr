@@ -184,6 +184,13 @@ pub struct UiConfig {
     /// Restored on next launch so the user's mode choice persists.
     #[serde(default = "default_demod_mode")]
     pub demod_mode: String,
+    /// NFM squelch threshold in dBFS (−120 to 0).  Persisted so users don't
+    /// have to re-calibrate their squelch after every restart.
+    #[serde(default = "default_squelch_threshold_dbfs")]
+    pub squelch_threshold_dbfs: f32,
+    /// Tune step in Hz — the increment used by scroll-to-tune and arrow keys.
+    #[serde(default = "default_tune_step_hz")]
+    pub tune_step_hz: u64,
     /// Set to true after the first-run onboarding overlay is dismissed.
     /// When false (or absent from config), the overlay is shown on next launch.
     #[serde(default)]
@@ -230,6 +237,12 @@ fn default_spectrum_split() -> f32 {
 fn default_demod_mode() -> String {
     "Wbfm".into()
 }
+fn default_squelch_threshold_dbfs() -> f32 {
+    -50.0
+}
+fn default_tune_step_hz() -> u64 {
+    1_000
+}
 fn default_wf_level() -> f32 {
     -80.0
 }
@@ -262,6 +275,8 @@ impl Default for UiConfig {
             wf_level: -80.0,
             fft_floor: -100.0,
             fft_ceil: -20.0,
+            squelch_threshold_dbfs: -50.0,
+            tune_step_hz: 1_000,
             seen_onboarding: false,
             handbook_section: 0,
             handbook_page: 0,

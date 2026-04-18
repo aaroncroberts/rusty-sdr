@@ -8,11 +8,14 @@ use sdrapp_recorder::RecorderCommand;
 use super::super::SdrApp;
 use crate::{frequency::FrequencyWidget, knob::KnobWidget, theme};
 
-/// Band preset: name, center frequency in Hz, span in Hz.
+/// Band preset: name, center frequency in Hz, span in Hz, and expected demod mode.
 struct BandPreset {
     name: &'static str,
     center_hz: u64,
     span_hz: u64,
+    /// Demod mode most appropriate for this band.  Applied on preset click so
+    /// the user doesn't have to manually switch after tuning.
+    demod_mode: DemodMode,
 }
 
 const BAND_PRESETS: &[BandPreset] = &[
@@ -20,36 +23,43 @@ const BAND_PRESETS: &[BandPreset] = &[
         name: "FM Broadcast",
         center_hz: 97_500_000,
         span_hz: 10_500_000,
+        demod_mode: DemodMode::Wbfm,
     },
     BandPreset {
         name: "Aviation VOR",
         center_hz: 113_000_000,
         span_hz: 5_000_000,
+        demod_mode: DemodMode::Nfm,
     },
     BandPreset {
         name: "Air Traffic",
         center_hz: 127_500_000,
         span_hz: 9_500_000,
+        demod_mode: DemodMode::Nfm,
     },
     BandPreset {
         name: "NOAA Weather",
         center_hz: 162_400_000,
         span_hz: 500_000,
+        demod_mode: DemodMode::Nfm,
     },
     BandPreset {
         name: "AIS Marine",
         center_hz: 161_975_000,
         span_hz: 500_000,
+        demod_mode: DemodMode::Nfm,
     },
     BandPreset {
         name: "Ham 2m",
         center_hz: 146_000_000,
         span_hz: 4_000_000,
+        demod_mode: DemodMode::Nfm,
     },
     BandPreset {
         name: "ISM 433 MHz",
         center_hz: 433_920_000,
         span_hz: 2_000_000,
+        demod_mode: DemodMode::Nfm,
     },
 ];
 
@@ -347,7 +357,7 @@ impl SdrApp {
         ui.add_space(6.0);
 
         // ── Band Presets (collapsible 2-column grid) ──────────────────────────
-        let mut tuned: Option<(u64, u64)> = None;
+        let mut tuned: Option<(u64, u64, DemodMode)> = None;
         ui.collapsing(
             RichText::new("BAND PRESETS").color(theme::TEXT_MUTED).small(),
             |ui| {
@@ -361,7 +371,7 @@ impl SdrApp {
                         .fill(theme::WIDGET_BG)
                         .stroke(Stroke::new(1.0, theme::BORDER));
                         if ui.add_sized(Vec2::new(btn_w, 18.0), btn).clicked() {
-                            tuned = Some((preset.center_hz, preset.span_hz));
+                            tuned = Some((preset.center_hz, preset.span_hz, preset.demod_mode));
                         }
                         col += 1;
                         if col % 2 == 0 {
@@ -372,10 +382,12 @@ impl SdrApp {
             },
         );
 
-        if let Some((hz, span)) = tuned {
+        if let Some((hz, span, mode)) = tuned {
             let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(hz).into());
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
             self.config.ui.frequency_hz = hz;
             self.config.ui.span_hz = span;
+            self.config.ui.demod_mode = format!("{mode:?}");
             self.frequency_widget = FrequencyWidget::new(hz);
             let sr_half = self.shared.read().sample_rate_sps as u64 / 2;
             if sr_half > 0 {

@@ -135,6 +135,8 @@ impl SdrApp {
                 };
                 if ui.selectable_label(selected, text).clicked() {
                     let _ = self.cmd_tx.try_send(ReceiverCmd::SetTuneStep(hz).into());
+                    self.config.ui.tune_step_hz = hz;
+                    self.config_dirty = true;
                 }
             }
         });
@@ -303,6 +305,8 @@ impl SdrApp {
                     let _ = self
                         .cmd_tx
                         .try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
+                    self.config.ui.squelch_threshold_dbfs = sq_threshold;
+                    self.config_dirty = true;
                 }
             });
             if sq_bind {

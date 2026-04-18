@@ -387,10 +387,20 @@ impl SdrApp {
         let freq_hi_hz = (freq + span) as f64;
         let peak_freqs_hz: Vec<u64> = if is_running && fft_data.len() > 2 {
             let n = fft_data.len();
-            // Noise floor: 20th-percentile of bins
-            let mut sorted = fft_data.clone();
-            sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let noise_floor = sorted[n / 5];
+            // Noise floor: 20th-percentile estimated from a 64-element stride sample.
+            // Sampling every (n/64)th bin gives a representative estimate without
+            // cloning or sorting the full 8192-bin FFT buffer every frame (~32 KB).
+            let noise_floor = {
+                let step = (n / 64).max(1);
+                let mut sample: Vec<f32> =
+                    fft_data.iter().step_by(step).copied().collect();
+                let target = sample.len() / 5;
+                *sample
+                    .select_nth_unstable_by(target, |a, b| {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .1
+            };
             // 18 dB above noise, and must be a real signal (> -90 dBFS absolute).
             // High threshold prevents noise peaks from flickering with labels.
             let threshold = (noise_floor + 18.0).max(-90.0);

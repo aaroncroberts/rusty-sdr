@@ -418,6 +418,7 @@ impl SdrApp {
                     .clicked()
                 {
                     self.config.source.agc_setpoint_dbfs = -60;
+                    self.config.source.lna_state = 9;  // persist so restart preserves high atten
                     self.config_dirty = true;
                     let _ = self
                         .cmd_tx
