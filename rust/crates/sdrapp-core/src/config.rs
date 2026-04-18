@@ -22,7 +22,7 @@ pub struct AppConfig {
     pub ui: UiConfig,
     #[serde(default)]
     pub source: SourceConfig,
-    /// Saved frequency bookmarks.
+    /// Saved frequency bookmarks (used when `bookmarks_file` is not set).
     #[serde(default = "default_bookmarks")]
     pub bookmarks: Vec<BookmarkConfig>,
     /// Hamlib rigctl TCP server configuration.
@@ -31,6 +31,15 @@ pub struct AppConfig {
     /// Persisted MIDI Learn bindings: knob_id → CC number.
     #[serde(default)]
     pub midi_learn: std::collections::HashMap<String, u8>,
+    /// Path to an external bookmarks CSV file.  When set, bookmarks are loaded
+    /// from this file at startup and saved back to it on changes, rather than
+    /// being stored inline in this config.  Use `~` for the home directory.
+    #[serde(default)]
+    pub bookmarks_file: Option<String>,
+    /// Path used by the Export and Import buttons when `bookmarks_file` is not
+    /// set.  Defaults to `~/bookmarks.csv`.  Use `~` for the home directory.
+    #[serde(default = "default_bookmarks_export_path")]
+    pub bookmarks_export_path: String,
 }
 
 fn default_bookmarks() -> Vec<BookmarkConfig> {
@@ -225,6 +234,13 @@ pub struct UiConfig {
     /// ADS-B map zoom (pixels per degree of longitude).
     #[serde(default = "default_adsb_zoom")]
     pub adsb_map_zoom: f32,
+    /// Home location used by the ADS-B map ⌖ "Reset view" button.
+    /// Set this to your location so the map always resets to your area.
+    #[serde(default = "default_home_lat")]
+    pub home_lat: f64,
+    /// Home longitude (degrees).  Pairs with `home_lat`.
+    #[serde(default = "default_home_lon")]
+    pub home_lon: f64,
 }
 
 fn default_zoom_level() -> f32 {
@@ -269,6 +285,26 @@ fn default_adsb_center_lon() -> f64 {
 fn default_adsb_zoom() -> f32 {
     12.0 // regional view (~200 mi radius)
 }
+fn default_home_lat() -> f64 {
+    41.5  // Cleveland OH — change in config to your location
+}
+fn default_home_lon() -> f64 {
+    -81.7 // Cleveland OH — change in config to your location
+}
+fn default_bookmarks_export_path() -> String {
+    "~/bookmarks.csv".into()
+}
+
+/// Expand a leading `~` to the user's home directory.
+pub fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir().unwrap_or_default().join(rest)
+    } else if path == "~" {
+        dirs::home_dir().unwrap_or_default()
+    } else {
+        std::path::PathBuf::from(path)
+    }
+}
 fn default_tune_step_hz() -> u64 {
     1_000
 }
@@ -312,9 +348,11 @@ impl Default for UiConfig {
             show_handbook: false,
             demod_mode: "Wbfm".into(),
             show_adsb_map: false,
-            adsb_map_lat: 41.5,   // Cleveland OH
-            adsb_map_lon: -81.7,  // Cleveland OH
+            adsb_map_lat: 41.5,
+            adsb_map_lon: -81.7,
             adsb_map_zoom: 12.0,
+            home_lat: 41.5,   // Cleveland OH — edit in config.json to your location
+            home_lon: -81.7,  // Cleveland OH
         }
     }
 }
@@ -353,6 +391,50 @@ impl BookmarkConfig {
         }
     }
 
+    /// Parse one line of a bookmarks CSV (`name,freq_hz,mode,category`).
+    /// Returns `None` for malformed or zero-frequency lines.
+    pub fn from_csv_line(line: &str) -> Option<Self> {
+        let parts: Vec<&str> = line.splitn(4, ',').collect();
+        if parts.len() < 3 {
+            return None;
+        }
+        let freq: u64 = parts[1].trim().parse().ok().filter(|&f| f > 0)?;
+        let mut bc = Self::new(parts[0].trim(), freq, parts[2].trim());
+        if parts.len() >= 4 {
+            bc.category = parts[3].trim().into();
+        }
+        Some(bc)
+    }
+
+    /// Load a full bookmarks CSV (with header row) from a file path string.
+    /// Expands leading `~` to the home directory.  Returns an empty vec on error.
+    pub fn load_from_csv(path_str: &str) -> Vec<Self> {
+        let path = expand_tilde(path_str);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        content
+            .lines()
+            .skip(1) // skip header
+            .filter_map(Self::from_csv_line)
+            .collect()
+    }
+
+    /// Save a slice of bookmarks to a CSV file (with header row).
+    /// Expands leading `~`.  Returns the resolved path, or an error.
+    pub fn save_to_csv(bookmarks: &[Self], path_str: &str) -> Result<std::path::PathBuf, std::io::Error> {
+        let path = expand_tilde(path_str);
+        let header = "name,freq_hz,mode,category\n";
+        let body: String = bookmarks
+            .iter()
+            .map(|b| format!("{},{},{},{}", b.name.replace(',', " "), b.freq_hz, b.mode, b.category))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, format!("{header}{body}"))?;
+        Ok(path)
+    }
+
     /// Builder method to attach a category.
     pub fn with_category(mut self, cat: impl Into<String>) -> Self {
         self.category = cat.into();
@@ -384,6 +466,8 @@ impl Default for AppConfig {
             bookmarks: default_bookmarks(),
             rigctl: RigctlConfig::default(),
             midi_learn: std::collections::HashMap::new(),
+            bookmarks_file: None,
+            bookmarks_export_path: default_bookmarks_export_path(),
         }
     }
 }

@@ -136,6 +136,8 @@ pub struct AdsbMapWindow {
     trails: HashMap<u32, AircraftTrail>,
     /// Drag start state: (screen position at drag start, center_lat, center_lon).
     drag_start: Option<(Pos2, f64, f64)>,
+    /// Set to true when the user clicks "Set Home" (📍); caller clears it and persists.
+    pub set_home_pending: bool,
 }
 
 impl AdsbMapWindow {
@@ -153,6 +155,7 @@ impl AdsbMapWindow {
             selected_icao: None,
             trails: HashMap::new(),
             drag_start: None,
+            set_home_pending: false,
         }
     }
 
@@ -164,11 +167,18 @@ impl AdsbMapWindow {
     pub fn zoom_ppd(&self) -> f32 { self.zoom_ppd }
 
     /// Show the ADS-B map window.  Returns the ICAO of any aircraft clicked.
+    ///
+    /// `home_lat` / `home_lon` are the saved home coordinates (from config) used
+    /// by the ⌖ reset button.  If the user clicks 📍 Set Home, `set_home_pending`
+    /// is set to `true`; the caller should persist `center_lat()`/`center_lon()`
+    /// back to config and clear the flag.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         open: &mut bool,
         aircraft: &[AircraftState],
+        home_lat: f64,
+        home_lon: f64,
     ) -> Option<u32> {
         let mut clicked = None;
 
@@ -213,10 +223,13 @@ impl AdsbMapWindow {
                     if ui.small_button("⊖").on_hover_text("Zoom out").clicked() {
                         self.zoom_ppd = (self.zoom_ppd / 1.5).max(MIN_ZOOM);
                     }
-                    if ui.small_button("⌖").on_hover_text("Reset view").clicked() {
-                        self.center_lat = 51.5;
-                        self.center_lon = 0.0;
-                        self.zoom_ppd = 8.0;
+                    if ui.small_button("⌖").on_hover_text("Reset to home").clicked() {
+                        self.center_lat = home_lat;
+                        self.center_lon = home_lon;
+                        self.zoom_ppd = 12.0;
+                    }
+                    if ui.small_button("📍").on_hover_text("Set current view as home").clicked() {
+                        self.set_home_pending = true;
                     }
                     ui.separator();
                     // Altitude legend

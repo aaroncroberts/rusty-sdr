@@ -408,91 +408,58 @@ impl SdrApp {
                 self.config_dirty = true;
             }
 
-            // Export CSV
+            // Export CSV — writes to bookmarks_file if set, else bookmarks_export_path
+            let export_path_str = self.config.bookmarks_file
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&self.config.bookmarks_export_path);
+            let export_hover = format!("Export bookmarks as CSV to {export_path_str}");
             if ui
                 .small_button(RichText::new("Export").color(theme::TEXT_MUTED))
-                .on_hover_text("Export bookmarks as CSV to ~/bookmarks.csv")
+                .on_hover_text(export_hover)
                 .clicked()
             {
-                let csv = self
-                    .config
-                    .bookmarks
-                    .iter()
-                    .map(|b| {
-                        format!(
-                            "{},{},{},{}",
-                            b.name.replace(',', " "),
-                            b.freq_hz,
-                            b.mode,
-                            b.category
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let path = dirs::home_dir().unwrap_or_default().join("bookmarks.csv");
-                let header = "name,freq_hz,mode,category\n";
-                let _ = std::fs::write(&path, format!("{header}{csv}"));
-                tracing::info!(path = %path.display(), "bookmarks exported");
+                match BookmarkConfig::save_to_csv(&self.config.bookmarks, export_path_str) {
+                    Ok(path) => tracing::info!(path = %path.display(), "bookmarks exported"),
+                    Err(e) => tracing::error!(err = %e, "bookmark export failed"),
+                }
             }
 
-            // Import CSV
+            // Import CSV — reads from bookmarks_file if set, else bookmarks_export_path
+            let import_path_str = self.config.bookmarks_file
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&self.config.bookmarks_export_path);
+            let import_hover = format!("Import bookmarks from {import_path_str}");
             if ui
                 .small_button(RichText::new("Import").color(theme::TEXT_MUTED))
-                .on_hover_text("Import bookmarks from ~/bookmarks.csv")
+                .on_hover_text(import_hover)
                 .clicked()
             {
-                let path = dirs::home_dir().unwrap_or_default().join("bookmarks.csv");
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let mut imported: Vec<BookmarkConfig> = Vec::new();
-                    for (line_no, line) in content.lines().enumerate().skip(1) {
-                        let parts: Vec<&str> = line.splitn(4, ',').collect();
-                        if parts.len() >= 3 {
-                            let freq: u64 = parts[1].trim().parse().unwrap_or(0);
-                            if freq > 0 {
-                                let mut bc =
-                                    BookmarkConfig::new(parts[0].trim(), freq, parts[2].trim());
-                                if parts.len() >= 4 {
-                                    bc.category = parts[3].trim().into();
-                                }
-                                imported.push(bc);
-                            } else {
-                                tracing::warn!(
-                                    line = line_no + 1,
-                                    raw = line,
-                                    "bookmark import: skipped line — invalid frequency"
-                                );
-                            }
-                        } else {
-                            tracing::warn!(
-                                line = line_no + 1,
-                                raw = line,
-                                "bookmark import: skipped line — too few columns"
-                            );
-                        }
-                    }
-                    if !imported.is_empty() {
-                        // Replace all config bookmarks and rebuild SharedState
-                        self.config.bookmarks = imported.clone();
-                        self.config_dirty = true;
-                        let new_bms: Vec<sdrapp_core::signal_path::Bookmark> = imported
-                            .iter()
-                            .map(|b| {
-                                use sdrapp_core::signal_path::{Bookmark, DemodMode};
-                                let mode = match b.mode.as_str() {
-                                    "Nfm" => DemodMode::Nfm,
-                                    "Am" => DemodMode::Am,
-                                    "Usb" => DemodMode::Usb,
-                                    "Lsb" => DemodMode::Lsb,
-                                    "Dsb" => DemodMode::Dsb,
-                                    "Cw" => DemodMode::Cw,
-                                    _ => DemodMode::Wbfm,
-                                };
-                                Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
-                            })
-                            .collect();
-                        self.shared.write().bookmarks = new_bms;
-                        tracing::info!(count = self.config.bookmarks.len(), "bookmarks imported");
-                    }
+                let imported = BookmarkConfig::load_from_csv(import_path_str);
+                if !imported.is_empty() {
+                    self.config.bookmarks = imported.clone();
+                    self.config_dirty = true;
+                    let new_bms: Vec<sdrapp_core::signal_path::Bookmark> = imported
+                        .iter()
+                        .map(|b| {
+                            use sdrapp_core::signal_path::{Bookmark, DemodMode};
+                            let mode = match b.mode.as_str() {
+                                "Nfm" => DemodMode::Nfm,
+                                "Am" => DemodMode::Am,
+                                "Usb" => DemodMode::Usb,
+                                "Lsb" => DemodMode::Lsb,
+                                "Dsb" => DemodMode::Dsb,
+                                "Cw" => DemodMode::Cw,
+                                _ => DemodMode::Wbfm,
+                            };
+                            Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
+                        })
+                        .collect();
+                    self.shared.write().bookmarks = new_bms;
+                    tracing::info!(count = self.config.bookmarks.len(), "bookmarks imported");
+                } else {
+                    tracing::warn!(path = import_path_str, "bookmark import: no valid entries found");
                 }
             }
         });

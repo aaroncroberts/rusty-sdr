@@ -64,12 +64,24 @@ fn main() -> anyhow::Result<()> {
             .iter()
             .map(|(knob_id, &cc)| (cc, knob_id.clone()))
             .collect();
-        // Load persisted bookmarks
-        s.bookmarks = config
-            .bookmarks
+        // Load persisted bookmarks — from external file if configured, else inline.
+        use sdrapp_core::signal_path::{Bookmark, DemodMode};
+        let bookmark_configs: Vec<sdrapp_core::config::BookmarkConfig> =
+            if let Some(ref path) = config.bookmarks_file {
+                let loaded = sdrapp_core::config::BookmarkConfig::load_from_csv(path);
+                if loaded.is_empty() {
+                    tracing::warn!(path, "bookmarks_file set but no bookmarks loaded — using inline");
+                    config.bookmarks.clone()
+                } else {
+                    tracing::info!(path, count = loaded.len(), "loaded bookmarks from file");
+                    loaded
+                }
+            } else {
+                config.bookmarks.clone()
+            };
+        s.bookmarks = bookmark_configs
             .iter()
             .map(|b| {
-                use sdrapp_core::signal_path::{Bookmark, DemodMode};
                 let mode = match b.mode.as_str() {
                     "Nfm" => DemodMode::Nfm,
                     "Am" => DemodMode::Am,

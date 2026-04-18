@@ -474,7 +474,16 @@ impl eframe::App for SdrApp {
         // ── ADS-B Aircraft Map window ─────────────────────────────────────────
         if self.show_adsb_map {
             let aircraft: Vec<_> = self.adsb_store.lock().aircraft().into_iter().cloned().collect();
-            self.adsb_map.show(ctx, &mut self.show_adsb_map, &aircraft);
+            let home_lat = self.config.ui.home_lat;
+            let home_lon = self.config.ui.home_lon;
+            self.adsb_map.show(ctx, &mut self.show_adsb_map, &aircraft, home_lat, home_lon);
+            // 📍 Set Home: persist new home coordinates when user requests it
+            if self.adsb_map.set_home_pending {
+                self.adsb_map.set_home_pending = false;
+                self.config.ui.home_lat = self.adsb_map.center_lat();
+                self.config.ui.home_lon = self.adsb_map.center_lon();
+                self.config_dirty = true;
+            }
             // Persist viewport and open state each frame when map is visible
             let (lat, lon, zoom) = (
                 self.adsb_map.center_lat(),
