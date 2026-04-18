@@ -75,22 +75,39 @@ pub struct Bookmark {
     pub mode: DemodMode,
     /// Optional group/category name (empty = uncategorised).
     pub category: String,
+    /// NFM channel bandwidth in Hz (None = use current receiver setting).
+    pub nfm_bandwidth_hz: Option<u32>,
+    /// Squelch threshold in dBFS (None = use current receiver setting).
+    pub squelch_threshold_dbfs: Option<f32>,
+    /// CTCSS tone squelch enabled (None = use current receiver setting).
+    pub ctcss_enabled: Option<bool>,
 }
 
 impl Bookmark {
-    /// Create a new bookmark with no category.
+    /// Create a new bookmark with no category or NFM settings.
     pub fn new(name: impl Into<String>, freq_hz: u64, mode: DemodMode) -> Self {
         Self {
             name: name.into(),
             freq_hz,
             mode,
             category: String::new(),
+            nfm_bandwidth_hz: None,
+            squelch_threshold_dbfs: None,
+            ctcss_enabled: None,
         }
     }
 
     /// Builder method to attach a category.
     pub fn with_category(mut self, cat: impl Into<String>) -> Self {
         self.category = cat.into();
+        self
+    }
+
+    /// Builder method to attach NFM-specific channel settings.
+    pub fn with_nfm_settings(mut self, bandwidth_hz: u32, squelch_dbfs: f32, ctcss: bool) -> Self {
+        self.nfm_bandwidth_hz = Some(bandwidth_hz);
+        self.squelch_threshold_dbfs = Some(squelch_dbfs);
+        self.ctcss_enabled = Some(ctcss);
         self
     }
 }

@@ -37,6 +37,10 @@ fn default_bookmarks() -> Vec<BookmarkConfig> {
     vec![
         BookmarkConfig::new("BBC Radio 4 — 93.5 MHz", 93_500_000, "Wbfm"),
         BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm"),
+        // NOAA Weather Radio KEC93 – Cleveland/NE Ohio (162.550 MHz, NFM 25 kHz)
+        BookmarkConfig::new("NOAA Weather — KEC93", 162_550_000, "Nfm")
+            .with_nfm_settings(25_000, -60.0, false)
+            .with_category("Weather"),
     ]
 }
 
@@ -322,6 +326,15 @@ pub struct BookmarkConfig {
     /// Optional category/group name (empty = uncategorised).
     #[serde(default)]
     pub category: String,
+    /// NFM channel bandwidth in Hz (12 500 or 25 000). `None` = use receiver default.
+    #[serde(default)]
+    pub nfm_bandwidth_hz: Option<u32>,
+    /// NFM squelch threshold in dBFS (e.g. -50.0). `None` = use receiver default.
+    #[serde(default)]
+    pub squelch_threshold_dbfs: Option<f32>,
+    /// Whether CTCSS tone squelch was enabled on this channel.
+    #[serde(default)]
+    pub ctcss_enabled: Option<bool>,
 }
 
 impl BookmarkConfig {
@@ -331,7 +344,29 @@ impl BookmarkConfig {
             freq_hz,
             mode: mode.into(),
             category: String::new(),
+            nfm_bandwidth_hz: None,
+            squelch_threshold_dbfs: None,
+            ctcss_enabled: None,
         }
+    }
+
+    /// Builder method to attach a category.
+    pub fn with_category(mut self, cat: impl Into<String>) -> Self {
+        self.category = cat.into();
+        self
+    }
+
+    /// Attach NFM-specific settings (bandwidth, squelch, CTCSS).
+    pub fn with_nfm_settings(
+        mut self,
+        bandwidth_hz: u32,
+        squelch_dbfs: f32,
+        ctcss: bool,
+    ) -> Self {
+        self.nfm_bandwidth_hz = Some(bandwidth_hz);
+        self.squelch_threshold_dbfs = Some(squelch_dbfs);
+        self.ctcss_enabled = Some(ctcss);
+        self
     }
 }
 
@@ -343,7 +378,7 @@ impl Default for AppConfig {
             active_sink: ActiveSink::default(),
             ui: UiConfig::default(),
             source: SourceConfig::default(),
-            bookmarks: vec![BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm")],
+            bookmarks: default_bookmarks(),
             rigctl: RigctlConfig::default(),
             midi_learn: std::collections::HashMap::new(),
         }

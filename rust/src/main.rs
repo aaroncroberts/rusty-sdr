@@ -79,7 +79,16 @@ fn main() -> anyhow::Result<()> {
                     "Cw" => DemodMode::Cw,
                     _ => DemodMode::Wbfm,
                 };
-                Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
+                let bm = Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category);
+                if let (Some(bw), Some(sq), Some(ct)) = (
+                    b.nfm_bandwidth_hz,
+                    b.squelch_threshold_dbfs,
+                    b.ctcss_enabled,
+                ) {
+                    bm.with_nfm_settings(bw, sq, ct)
+                } else {
+                    bm
+                }
             })
             .collect();
     }

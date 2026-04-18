@@ -78,8 +78,8 @@ pub struct SdrApp {
     // ── Bookmark manager state ─────────────────────────────────────────────────
     /// Index of bookmark being edited inline (None = no edit in progress).
     bookmark_edit_idx: Option<usize>,
-    /// Temporary edit buffer: (name, freq_str, mode, category)
-    bookmark_edit_buf: (String, String, sdrapp_core::signal_path::DemodMode, String),
+    /// Temporary edit buffer: (name, freq_str, mode, category, nfm_bw_hz, squelch_dbfs, ctcss)
+    bookmark_edit_buf: (String, String, sdrapp_core::signal_path::DemodMode, String, u32, f32, bool),
     /// Category filter for bookmark list (empty = show all).
     bookmark_cat_filter: String,
     /// Sort bookmarks by frequency (false = insertion order).
@@ -229,6 +229,9 @@ impl SdrApp {
                 String::new(),
                 sdrapp_core::signal_path::DemodMode::Wbfm,
                 String::new(),
+                12_500_u32,
+                -50.0_f32,
+                false,
             ),
             bookmark_cat_filter: String::new(),
             bookmark_sort_by_freq: false,

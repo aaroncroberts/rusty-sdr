@@ -163,6 +163,37 @@ impl SdrApp {
                             }
                         }
                     });
+                    // NFM-specific settings (only shown when NFM is selected)
+                    if self.bookmark_edit_buf.2 == DemodMode::Nfm {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("BW").color(theme::TEXT_MUTED).small());
+                            for (hz, label) in [(12_500_u32, "12.5k"), (25_000_u32, "25k")] {
+                                let sel = self.bookmark_edit_buf.4 == hz;
+                                let txt = RichText::new(label).small();
+                                let txt = if sel { txt.color(theme::ACCENT).strong() } else { txt.color(theme::TEXT_MUTED) };
+                                if ui.selectable_label(sel, txt).clicked() {
+                                    self.bookmark_edit_buf.4 = hz;
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("SQ").color(theme::TEXT_MUTED).small());
+                            ui.add(
+                                egui::Slider::new(&mut self.bookmark_edit_buf.5, -120.0_f32..=0.0_f32)
+                                    .suffix(" dBFS")
+                                    .text("")
+                                    .step_by(1.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("CTCSS").color(theme::TEXT_MUTED).small());
+                            let ctcss_color = if self.bookmark_edit_buf.6 { theme::ACCENT } else { theme::TEXT_MUTED };
+                            let ctcss_label = RichText::new(if self.bookmark_edit_buf.6 { "ON" } else { "OFF" }).small().color(ctcss_color);
+                            if ui.selectable_label(self.bookmark_edit_buf.6, ctcss_label).clicked() {
+                                self.bookmark_edit_buf.6 = !self.bookmark_edit_buf.6;
+                            }
+                        });
+                    }
                     ui.horizontal(|ui| {
                         let freq_valid = self
                             .bookmark_edit_buf
@@ -248,18 +279,25 @@ impl SdrApp {
 
         // Apply bookmark actions
         if let Some(i) = recall_idx {
-            let (bm_freq, bm_mode) = {
+            let (bm_freq, bm_mode, bm_nfm_bw, bm_squelch, bm_ctcss) = {
                 let mut s = self.shared.write();
                 s.bookmark_cursor = i;
                 let bm = &s.bookmarks[i];
-                (bm.freq_hz, bm.mode)
+                (bm.freq_hz, bm.mode, bm.nfm_bandwidth_hz, bm.squelch_threshold_dbfs, bm.ctcss_enabled)
             };
-            let _ = self
-                .cmd_tx
-                .try_send(ReceiverCmd::SetFrequency(bm_freq).into());
-            let _ = self
-                .cmd_tx
-                .try_send(ReceiverCmd::SetDemodMode(bm_mode).into());
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(bm_freq).into());
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(bm_mode).into());
+            if bm_mode == DemodMode::Nfm {
+                if let Some(bw) = bm_nfm_bw {
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetNfmBandwidth(bw).into());
+                }
+                if let Some(sq) = bm_squelch {
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetSquelchThreshold(sq).into());
+                }
+                if let Some(ct) = bm_ctcss {
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetCtcssEnabled(ct).into());
+                }
+            }
             self.config.ui.frequency_hz = bm_freq;
             self.frequency_widget = FrequencyWidget::new(bm_freq);
             self.config_dirty = true;
@@ -281,6 +319,9 @@ impl SdrApp {
                     bm.freq_hz.to_string(),
                     bm.mode,
                     bm.category.clone(),
+                    bm.nfm_bandwidth_hz.unwrap_or(12_500),
+                    bm.squelch_threshold_dbfs.unwrap_or(-50.0),
+                    bm.ctcss_enabled.unwrap_or(false),
                 );
                 self.bookmark_edit_idx = Some(i);
             }
@@ -291,9 +332,17 @@ impl SdrApp {
                 let name = self.bookmark_edit_buf.0.clone();
                 let mode = self.bookmark_edit_buf.2;
                 let cat = self.bookmark_edit_buf.3.clone();
-                let _ = self
-                    .cmd_tx
-                    .try_send(BookmarkCmd::Edit(i, name.clone(), freq, mode, cat.clone()).into());
+                let nfm_bw = self.bookmark_edit_buf.4;
+                let squelch = self.bookmark_edit_buf.5;
+                let ctcss = self.bookmark_edit_buf.6;
+                let (nfm_bw_opt, squelch_opt, ctcss_opt) = if mode == DemodMode::Nfm {
+                    (Some(nfm_bw), Some(squelch), Some(ctcss))
+                } else {
+                    (None, None, None)
+                };
+                let _ = self.cmd_tx.try_send(
+                    BookmarkCmd::Edit(i, name.clone(), freq, mode, cat.clone(), nfm_bw_opt, squelch_opt, ctcss_opt).into(),
+                );
                 if i < self.config.bookmarks.len() {
                     let mode_str = match mode {
                         DemodMode::Nfm => "Nfm",
@@ -309,6 +358,9 @@ impl SdrApp {
                         freq_hz: freq,
                         mode: mode_str.into(),
                         category: cat,
+                        nfm_bandwidth_hz: nfm_bw_opt,
+                        squelch_threshold_dbfs: squelch_opt,
+                        ctcss_enabled: ctcss_opt,
                     };
                     self.config_dirty = true;
                 }
@@ -326,9 +378,16 @@ impl SdrApp {
                 .small_button(RichText::new("+ Save").color(theme::ACCENT_DIM))
                 .clicked()
             {
-                let (freq, mode) = {
+                let (freq, mode, nfm_bw, squelch, ctcss) = {
                     let s = self.shared.read();
-                    (s.center_freq_hz, s.demod.demod_mode)
+                    let is_nfm = s.demod.demod_mode == DemodMode::Nfm;
+                    (
+                        s.center_freq_hz,
+                        s.demod.demod_mode,
+                        is_nfm.then_some(s.demod.nfm_bandwidth_hz),
+                        is_nfm.then_some(s.demod.squelch_threshold),
+                        is_nfm.then_some(s.demod.ctcss_squelch_enabled),
+                    )
                 };
                 let name = format!("{:.3} MHz", freq as f64 / 1_000_000.0);
                 let _ = self.cmd_tx.try_send(BookmarkCmd::Add(name.clone()).into());
@@ -341,9 +400,11 @@ impl SdrApp {
                     DemodMode::Cw => "Cw",
                     _ => "Wbfm",
                 };
-                self.config
-                    .bookmarks
-                    .push(BookmarkConfig::new(name, freq, mode_str));
+                let mut bc = BookmarkConfig::new(name, freq, mode_str);
+                bc.nfm_bandwidth_hz = nfm_bw;
+                bc.squelch_threshold_dbfs = squelch;
+                bc.ctcss_enabled = ctcss;
+                self.config.bookmarks.push(bc);
                 self.config_dirty = true;
             }
 

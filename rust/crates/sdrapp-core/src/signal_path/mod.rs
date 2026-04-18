@@ -421,14 +421,19 @@ impl SignalPath {
                         },
                         SignalPathCommand::Bookmark(c) => match c {
                             BookmarkCmd::Add(name) => {
-                                let (freq, mode) = {
+                                let (freq, mode, nfm_bw, squelch, ctcss) = {
                                     let s = shared_clone.read();
-                                    (s.center_freq_hz, s.demod.demod_mode)
+                                    let is_nfm = s.demod.demod_mode == DemodMode::Nfm;
+                                    let nfm_bw = is_nfm.then_some(s.demod.nfm_bandwidth_hz);
+                                    let squelch = is_nfm.then_some(s.demod.squelch_threshold);
+                                    let ctcss = is_nfm.then_some(s.demod.ctcss_squelch_enabled);
+                                    (s.center_freq_hz, s.demod.demod_mode, nfm_bw, squelch, ctcss)
                                 };
-                                shared_clone
-                                    .write()
-                                    .bookmarks
-                                    .push(Bookmark::new(name, freq, mode));
+                                let mut bm = Bookmark::new(name, freq, mode);
+                                if let (Some(bw), Some(sq), Some(ct)) = (nfm_bw, squelch, ctcss) {
+                                    bm = bm.with_nfm_settings(bw, sq, ct);
+                                }
+                                shared_clone.write().bookmarks.push(bm);
                             }
                             BookmarkCmd::Remove(idx) => {
                                 let mut s = shared_clone.write();
@@ -441,7 +446,7 @@ impl SignalPath {
                                     }
                                 }
                             }
-                            BookmarkCmd::Edit(idx, name, freq, mode, cat) => {
+                            BookmarkCmd::Edit(idx, name, freq, mode, cat, nfm_bw, squelch, ctcss) => {
                                 let mut s = shared_clone.write();
                                 if idx < s.bookmarks.len() {
                                     s.bookmarks[idx] = Bookmark {
@@ -449,6 +454,9 @@ impl SignalPath {
                                         freq_hz: freq,
                                         mode,
                                         category: cat,
+                                        nfm_bandwidth_hz: nfm_bw,
+                                        squelch_threshold_dbfs: squelch,
+                                        ctcss_enabled: ctcss,
                                     };
                                 }
                             }
