@@ -693,9 +693,11 @@ impl SdrApp {
                             d.stop();
                         }
                     } else if let Some(iq_rx) = self.adsb_iq_rx.take() {
+                        let sr = self.shared.read().sample_rate_sps;
                         self.adsb_decoder = Some(crate::adsb_decoder::AdsbDecoder::start(
                             iq_rx,
                             std::sync::Arc::clone(&self.adsb_store),
+                            sr,
                         ));
                     }
                 }
@@ -721,6 +723,19 @@ impl SdrApp {
                     format!("  ● LIVE  listening…  {frames} frames")
                 };
                 ui.label(RichText::new(status).color(theme::STATUS_OK).small());
+
+                // Warn if the running decoder was started at a rate that won't work
+                let decoder_sr = self.adsb_decoder.as_ref().map(|d| d.sample_rate).unwrap_or(0);
+                if decoder_sr != 2_000_000 {
+                    ui.label(
+                        RichText::new(format!(
+                            "  ⚠ Sample rate {:.1} MHz — decoder needs 2 MHz",
+                            decoder_sr as f32 / 1_000_000.0
+                        ))
+                        .color(theme::AMBER)
+                        .small(),
+                    );
+                }
             } else if count > 0 {
                 ui.label(
                     RichText::new(format!("  ○ {count} aircraft (decoder stopped)"))

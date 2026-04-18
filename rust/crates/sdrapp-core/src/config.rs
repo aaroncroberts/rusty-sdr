@@ -423,4 +423,49 @@ mod tests {
         let result = serde_json::from_str::<AppConfig>(json);
         assert!(result.is_ok());
     }
+
+    // ── ADS-B UiConfig fields ─────────────────────────────────────────────────
+
+    #[test]
+    fn adsb_fields_round_trip() {
+        let mut cfg = UiConfig::default();
+        cfg.show_adsb_map = true;
+        cfg.adsb_map_lat = 41.499_32; // Cleveland, OH
+        cfg.adsb_map_lon = -81.694_36;
+        cfg.adsb_map_zoom = 12.5;
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let restored: UiConfig = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.show_adsb_map);
+        assert!((restored.adsb_map_lat - 41.499_32).abs() < 1e-6);
+        assert!((restored.adsb_map_lon - -81.694_36).abs() < 1e-6);
+        assert!((restored.adsb_map_zoom - 12.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn adsb_fields_default_when_absent_from_old_config() {
+        // Simulate an old config.json that pre-dates the ADS-B fields.
+        // serde must fill in defaults rather than failing to parse.
+        let old_json = r#"{
+            "frequency_hz": 105700000,
+            "span_hz": 1000000,
+            "volume": 0.8,
+            "window_width": 1280.0,
+            "window_height": 800.0
+        }"#;
+
+        let cfg: UiConfig = serde_json::from_str(old_json).unwrap();
+
+        assert!(!cfg.show_adsb_map);
+        assert!((cfg.adsb_map_lat - 51.5).abs() < 1e-6);  // default_adsb_center_lat
+        assert!((cfg.adsb_map_lon - 0.0).abs() < 1e-6);   // serde(default) → 0.0
+        assert!((cfg.adsb_map_zoom - 8.0).abs() < 1e-4);  // default_adsb_zoom
+    }
+
+    #[test]
+    fn adsb_show_map_defaults_to_false() {
+        // Confirm the window is not shown on fresh config
+        assert!(!UiConfig::default().show_adsb_map);
+    }
 }
