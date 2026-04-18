@@ -141,6 +141,11 @@ impl SignalPath {
             // Capacity is sized for the largest expected batch (sr / callback_rate).
             let max_batch = (sr as usize / 50).max(8192); // ~20 ms @ any supported rate
             let mut iq_complex_buf: Vec<Complex<f32>> = Vec::with_capacity(max_batch);
+            // Demodulator audio output buffer (NFM / AM / SSB / CW mono path).
+            // clear() + process_into() reuses this allocation; first call may grow, rest are free.
+            let mut demod_audio_buf: Vec<f32> = Vec::with_capacity(max_batch);
+            // FM composite buffer (WBFM path only — fed to the RDS decoder).
+            let mut composite_buf: Vec<f32> = Vec::with_capacity(max_batch);
             // Decimated IQ buffer for WBFM (wbfm_decim×) and a separate one
             // for narrow modes (narrow_decim×).  Keeping them separate avoids
             // borrow-checker conflicts when both slices would otherwise point
@@ -877,7 +882,13 @@ impl SignalPath {
 
                 match &mut demod {
                     Demod::Wbfm(d) => {
-                        let (frames, is_stereo, composite) = d.process_with_composite(iq_for_demod);
+                        // Zero-alloc: write stereo frames and FM composite directly into
+                        // pre-allocated buffers — no per-batch Vec construction.
+                        let is_stereo = d.process_with_composite_into(
+                            iq_for_demod,
+                            &mut stereo,
+                            &mut composite_buf,
+                        );
                         // Only acquire write lock when stereo status actually changes.
                         if is_stereo != last_is_stereo {
                             shared_clone.write().rds.is_stereo = is_stereo;
@@ -890,7 +901,7 @@ impl SignalPath {
                         }
                         // Accumulate audio RMS; log every 5 seconds so we can confirm
                         // real audio vs static from the terminal output.
-                        for f in &frames {
+                        for f in &stereo {
                             rms_accum_sq += (f.left * f.left + f.right * f.right) as f64;
                             rms_accum_n += 2;
                         }
@@ -905,7 +916,7 @@ impl SignalPath {
                             rms_accum_n = 0;
                             last_rms_log = std::time::Instant::now();
                         }
-                        if rds.process(&composite) {
+                        if rds.process(&composite_buf) {
                             let mut s = shared_clone.write();
                             s.rds.ps_name = rds.data.ps_name.clone();
                             s.rds.pty = rds.data.pty;
@@ -913,16 +924,13 @@ impl SignalPath {
                             s.rds.ta = rds.data.ta;
                             s.rds.rt = rds.data.rt.clone();
                         }
-                        // WBFM: frames is allocated by StereoFmDecoder internally;
-                        // transfer ownership into the reuse buffer to keep the same
-                        // Vec alive across WBFM iterations.
-                        stereo = frames;
                     }
                     Demod::Nfm(d) => {
-                        let mono = d.process(iq_for_narrow);
+                        // Zero-alloc: process_into reuses demod_audio_buf.
+                        d.process_into(iq_for_narrow, &mut demod_audio_buf);
                         // Run CTCSS detector on raw demodulated audio (before squelch/filter)
                         if ctcss_enabled {
-                            ctcss.process_batch(&mono);
+                            ctcss.process_batch(&demod_audio_buf);
                             let detected = ctcss.is_tone_present();
                             if detected != ctcss_was_detected {
                                 if detected {
@@ -934,36 +942,34 @@ impl SignalPath {
                             }
                             shared_clone.write().demod.ctcss_tone_detected = detected;
                         }
-                        // Apply squelch (dBFS threshold gate)
-                        let mut gated = squelch.process(&mono);
+                        // Squelch in-place — no allocation, updates EMA and gates demod_audio_buf.
+                        squelch.process_inplace(&mut demod_audio_buf);
                         shared_clone.write().demod.nfm_signal_level_dbfs = squelch.level_dbfs();
                         // CTCSS gate: mute in-place if enabled and no tone detected.
-                        // Zero-fill avoids a per-batch allocation that fired whenever
-                        // CTCSS was active and no tone was present.
                         if ctcss_enabled && !ctcss.is_tone_present() {
-                            gated.iter_mut().for_each(|s| *s = 0.0);
+                            demod_audio_buf.iter_mut().for_each(|s| *s = 0.0);
                         }
                         // Voice bandpass: 300 Hz – 3 kHz
-                        audio_bp.process_inplace(&mut gated);
+                        audio_bp.process_inplace(&mut demod_audio_buf);
                         // Reuse stereo buffer — clear+extend avoids a per-batch allocation.
                         stereo.clear();
-                        stereo.extend(gated.iter().copied().map(StereoFrame::mono));
+                        stereo.extend(demod_audio_buf.iter().copied().map(StereoFrame::mono));
                     }
                     Demod::Am(d) => {
-                        let mut mono = d.process(iq_for_narrow);
-                        am_audio_bp.process_inplace(&mut mono);
+                        d.process_into(iq_for_narrow, &mut demod_audio_buf);
+                        am_audio_bp.process_inplace(&mut demod_audio_buf);
                         stereo.clear();
-                        stereo.extend(mono.iter().copied().map(StereoFrame::mono));
+                        stereo.extend(demod_audio_buf.iter().copied().map(StereoFrame::mono));
                     }
                     Demod::Ssb(d) => {
-                        let mono = d.process(iq_for_narrow);
+                        d.process_into(iq_for_narrow, &mut demod_audio_buf);
                         stereo.clear();
-                        stereo.extend(mono.iter().copied().map(StereoFrame::mono));
+                        stereo.extend(demod_audio_buf.iter().copied().map(StereoFrame::mono));
                     }
                     Demod::Cw(d) => {
-                        let mono = d.process(iq_for_narrow);
+                        d.process_into(iq_for_narrow, &mut demod_audio_buf);
                         stereo.clear();
-                        stereo.extend(mono.iter().copied().map(StereoFrame::mono));
+                        stereo.extend(demod_audio_buf.iter().copied().map(StereoFrame::mono));
                     }
                 }
 

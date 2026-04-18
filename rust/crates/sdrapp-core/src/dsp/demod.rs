@@ -72,7 +72,16 @@ impl FmDemodulator {
     /// Output length ≈ `input_len * audio_rate / sample_rate`.
     pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
         let mut out = Vec::with_capacity(self.resampler.output_len_hint(samples.len()));
+        self.process_into(samples, &mut out);
+        out
+    }
 
+    /// Zero-allocation variant: clears `out` then writes resampled audio into it.
+    ///
+    /// Identical output to [`process`](Self::process) but reuses the caller's
+    /// allocation across batches, eliminating one `Vec` heap alloc per batch.
+    pub fn process_into(&mut self, samples: &[Complex<f32>], out: &mut Vec<f32>) {
+        out.clear();
         for &s in samples {
             // Phase derivative (FM discriminator)
             let mult = self.prev.conj() * s;
@@ -94,8 +103,6 @@ impl FmDemodulator {
                 out.push((*deemph_y).clamp(-1.0, 1.0));
             });
         }
-
-        out
     }
 
     /// Reset demodulator state (e.g. after a frequency change).
@@ -148,7 +155,13 @@ impl AmDemodulator {
     /// Process a batch of IQ samples and return resampled audio.
     pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
         let mut out = Vec::with_capacity(self.resampler.output_len_hint(samples.len()));
+        self.process_into(samples, &mut out);
+        out
+    }
 
+    /// Zero-allocation variant: clears `out` then writes resampled audio into it.
+    pub fn process_into(&mut self, samples: &[Complex<f32>], out: &mut Vec<f32>) {
+        out.clear();
         for &s in samples {
             let env = s.norm(); // envelope = |IQ|
 
@@ -160,8 +173,6 @@ impl AmDemodulator {
             self.resampler
                 .process(dc_filtered, |v| out.push(v.clamp(-1.0, 1.0)));
         }
-
-        out
     }
 
     pub fn reset(&mut self) {
@@ -330,7 +341,13 @@ impl SsbDemodulator {
     /// Process a batch of IQ samples and return resampled audio.
     pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
         let mut out = Vec::with_capacity(self.resampler.output_len_hint(samples.len()));
+        self.process_into(samples, &mut out);
+        out
+    }
 
+    /// Zero-allocation variant: clears `out` then writes resampled audio into it.
+    pub fn process_into(&mut self, samples: &[Complex<f32>], out: &mut Vec<f32>) {
+        out.clear();
         for &s in samples {
             // Snapshot oscillator phase before advancing (used for both
             // mix-down and mix-up to keep the two stages coherent).
@@ -368,12 +385,10 @@ impl SsbDemodulator {
         }
 
         // Voice bandpass at audio rate then clamp
-        self.audio_bp.process_inplace(&mut out);
-        for s in &mut out {
+        self.audio_bp.process_inplace(out);
+        for s in &mut *out {
             *s = s.clamp(-1.0, 1.0);
         }
-
-        out
     }
 
     /// Reset demodulator state (e.g. after a frequency change).
@@ -428,7 +443,13 @@ impl CwDemodulator {
     /// Process a batch of IQ samples and return resampled audio.
     pub fn process(&mut self, samples: &[Complex<f32>]) -> Vec<f32> {
         let mut out = Vec::with_capacity(self.resampler.output_len_hint(samples.len()));
+        self.process_into(samples, &mut out);
+        out
+    }
 
+    /// Zero-allocation variant: clears `out` then writes resampled audio into it.
+    pub fn process_into(&mut self, samples: &[Complex<f32>], out: &mut Vec<f32>) {
+        out.clear();
         for &s in samples {
             // Split borrows so the closure can mutate hp/lp while resampler is borrowed.
             let resampler = &mut self.resampler;
@@ -440,8 +461,6 @@ impl CwDemodulator {
                 out.push(filtered.clamp(-1.0, 1.0));
             });
         }
-
-        out
     }
 
     /// Reset demodulator state.
@@ -679,5 +698,109 @@ mod tests {
             rms < 0.15,
             "CW bandpass should reject 2 kHz voice (rms={rms:.4})"
         );
+    }
+
+    // ── process_into buffer-reuse tests ──────────────────────────────────────
+
+    /// `FmDemodulator::process_into` must produce the same output as `process`.
+    #[test]
+    fn fm_process_into_matches_process() {
+        let sr = 200_000u32;
+        let samples: Vec<Complex<f32>> = (0..1024)
+            .map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * 10_000.0 / sr as f32 * i as f32;
+                Complex::new(phase.cos(), phase.sin())
+            })
+            .collect();
+
+        let expected = FmDemodulator::new(sr, 48_000, 75_000.0, 75.0).process(&samples);
+
+        let mut demod = FmDemodulator::new(sr, 48_000, 75_000.0, 75.0);
+        let mut buf: Vec<f32> = Vec::new();
+        demod.process_into(&samples, &mut buf);
+
+        assert_eq!(buf, expected);
+    }
+
+    /// Repeated `process_into` calls must not grow the Vec beyond its initial capacity.
+    #[test]
+    fn fm_process_into_reuses_buffer() {
+        let sr = 200_000u32;
+        let samples: Vec<Complex<f32>> = (0..1024)
+            .map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * 10_000.0 / sr as f32 * i as f32;
+                Complex::new(phase.cos(), phase.sin())
+            })
+            .collect();
+
+        let mut demod = FmDemodulator::new(sr, 48_000, 75_000.0, 75.0);
+        let mut buf: Vec<f32> = Vec::with_capacity(512);
+        // First call may grow to fit output
+        demod.process_into(&samples, &mut buf);
+        let cap_after_first = buf.capacity();
+        // Subsequent calls must NOT exceed the first call's capacity.
+        for _ in 0..5 {
+            demod.process_into(&samples, &mut buf);
+            assert_eq!(
+                buf.capacity(),
+                cap_after_first,
+                "capacity grew — process_into is re-allocating"
+            );
+        }
+    }
+
+    /// `AmDemodulator::process_into` must produce the same output as `process`.
+    #[test]
+    fn am_process_into_matches_process() {
+        let sr = 200_000u32;
+        let samples: Vec<Complex<f32>> = (0..1024)
+            .map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * 5_000.0 / sr as f32 * i as f32;
+                Complex::new(phase.cos() * 0.5, phase.sin() * 0.5)
+            })
+            .collect();
+
+        let expected = AmDemodulator::new(sr, 48_000).process(&samples);
+
+        let mut demod = AmDemodulator::new(sr, 48_000);
+        let mut buf: Vec<f32> = Vec::new();
+        demod.process_into(&samples, &mut buf);
+
+        assert_eq!(buf, expected);
+    }
+
+    /// `SsbDemodulator::process_into` must produce the same output as `process`.
+    #[test]
+    fn ssb_process_into_matches_process() {
+        let sr = 48_000u32;
+        let samples: Vec<Complex<f32>> = iq_tone(1_000.0, sr as f32, 512);
+
+        let expected = SsbDemodulator::standard(SsbMode::Usb, sr).process(&samples);
+
+        let mut demod = SsbDemodulator::standard(SsbMode::Usb, sr);
+        let mut buf: Vec<f32> = Vec::new();
+        demod.process_into(&samples, &mut buf);
+
+        assert_eq!(buf, expected);
+    }
+
+    /// `CwDemodulator::process_into` must produce the same output as `process`.
+    #[test]
+    fn cw_process_into_matches_process() {
+        let sr = 48_000u32;
+        let samples: Vec<Complex<f32>> = (0..512)
+            .map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * 700.0 / sr as f32 * i as f32;
+                Complex::new(phase.cos(), 0.0)
+            })
+            .collect();
+
+        let expected = CwDemodulator::new(sr, 48_000).process(&samples);
+
+        let mut demod = CwDemodulator::new(sr, 48_000);
+        let mut buf: Vec<f32> = Vec::new();
+        demod.process_into(&samples, &mut buf);
+
+        assert_eq!(buf, expected);
     }
 }

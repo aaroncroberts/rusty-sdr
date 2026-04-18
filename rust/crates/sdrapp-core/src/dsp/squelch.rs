@@ -107,10 +107,19 @@ impl Squelch {
     /// so the open/close decision can change mid-batch.  The hang counter keeps
     /// the gate open for at least `hang_samples` after each threshold crossing.
     pub fn process(&mut self, samples: &[f32]) -> Vec<f32> {
-        let mut out = Vec::with_capacity(samples.len());
+        let mut out = samples.to_vec();
+        self.process_inplace(&mut out);
+        out
+    }
 
-        for &s in samples {
-            let power = s * s;
+    /// Zero-allocation variant: gates `samples` in-place (same length, no alloc).
+    ///
+    /// Updates the internal EMA and hang counter, then zeroes any samples that
+    /// fall within a closed-gate window.  Equivalent to `process` but avoids the
+    /// per-batch `Vec` allocation.
+    pub fn process_inplace(&mut self, samples: &mut [f32]) {
+        for s in samples.iter_mut() {
+            let power = *s * *s;
 
             // Asymmetric EMA: use fast coefficient when power is rising,
             // slow coefficient when it is falling.
@@ -128,15 +137,11 @@ impl Squelch {
                 self.hang_counter -= 1;
             }
 
-            // Gate: pass audio when open (EMA or hang), silence otherwise.
-            out.push(if self.hang_counter > 0 || self.avg_power >= self.threshold_power {
-                s
-            } else {
-                0.0
-            });
+            // Gate: silence when closed.
+            if self.hang_counter == 0 && self.avg_power < self.threshold_power {
+                *s = 0.0;
+            }
         }
-
-        out
     }
 
     /// Reset internal state (e.g. after a demod mode change).
@@ -283,6 +288,34 @@ mod tests {
         let silence: Vec<f32> = vec![0.0; 48_000];
         sq.process(&silence);
         assert!(!sq.is_open(), "gate should close without hang time");
+    }
+
+    /// `process_inplace` must produce the same output as `process`.
+    #[test]
+    fn process_inplace_matches_process() {
+        let signal: Vec<f32> = (0..1024)
+            .map(|i| {
+                let t = i as f32 / 48_000.0;
+                0.3 * (2.0 * std::f32::consts::PI * 1_000.0 * t).sin()
+            })
+            .collect();
+
+        let expected = Squelch::new(48_000, -50.0).process(&signal);
+
+        let mut samples = signal.clone();
+        Squelch::new(48_000, -50.0).process_inplace(&mut samples);
+
+        assert_eq!(samples, expected);
+    }
+
+    /// `process_inplace` on silence should zero all samples (squelch closed).
+    #[test]
+    fn process_inplace_silences_when_closed() {
+        let mut samples: Vec<f32> = vec![0.001; 1024]; // tiny signal, well below -50 dBFS
+        Squelch::new(48_000, -10.0).process_inplace(&mut samples);
+        // After EMA settles, should be gated (zero)
+        let tail = &samples[500..];
+        assert!(tail.iter().all(|&s| s == 0.0), "weak signal should be gated");
     }
 
     #[test]

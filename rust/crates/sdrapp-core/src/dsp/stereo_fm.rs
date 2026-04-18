@@ -399,6 +399,25 @@ impl StereoFmDecoder {
         let mut composite_out = Vec::with_capacity(samples.len());
         let mut stereo_out =
             Vec::with_capacity((samples.len() as f64 * self.phase_step).ceil() as usize + 2);
+        let is_stereo = self.process_with_composite_into(samples, &mut stereo_out, &mut composite_out);
+        (stereo_out, is_stereo, composite_out)
+    }
+
+    /// Zero-allocation variant: clears both output buffers and writes into them.
+    ///
+    /// Identical to [`process_with_composite`](Self::process_with_composite) but
+    /// reuses caller-provided allocations, eliminating two `Vec` heap allocs per
+    /// batch (one for stereo frames, one for the FM composite signal).
+    ///
+    /// Returns `is_stereo` (same as the tuple field in the allocating variant).
+    pub fn process_with_composite_into(
+        &mut self,
+        samples: &[Complex<f32>],
+        stereo_out: &mut Vec<StereoFrame>,
+        composite_out: &mut Vec<f32>,
+    ) -> bool {
+        stereo_out.clear();
+        composite_out.clear();
 
         for &s in samples {
             // ── FM discriminator ──────────────────────────────────────────────
@@ -464,8 +483,7 @@ impl StereoFmDecoder {
         }
 
         self.update_stereo_latch();
-        let is_stereo = self.is_stereo();
-        (stereo_out, is_stereo, composite_out)
+        self.is_stereo()
     }
 
     /// Reset all stateful DSP elements (e.g. after a frequency change).
@@ -822,6 +840,65 @@ mod tests {
                 (-1.0..=1.0).contains(&f.right),
                 "right={} out of [-1,1]",
                 f.right
+            );
+        }
+    }
+
+    // ── process_with_composite_into buffer-reuse tests ────────────────────────
+
+    /// `process_with_composite_into` must produce the same output as
+    /// `process_with_composite` (including both stereo frames and composite).
+    #[test]
+    fn process_with_composite_into_matches_allocating_variant() {
+        let iq: Vec<Complex<f32>> = (0..SR as usize)
+            .map(|i| {
+                let t = i as f32 / SR as f32;
+                let phase = 2.0 * std::f32::consts::PI * 10_000.0 * t;
+                Complex::new(phase.cos(), phase.sin())
+            })
+            .collect();
+
+        let (expected_frames, expected_stereo, expected_composite) =
+            StereoFmDecoder::new(SR).process_with_composite(&iq);
+
+        let mut dec = StereoFmDecoder::new(SR);
+        let mut stereo_buf: Vec<StereoFrame> = Vec::new();
+        let mut composite_buf: Vec<f32> = Vec::new();
+        let is_stereo = dec.process_with_composite_into(&iq, &mut stereo_buf, &mut composite_buf);
+
+        assert_eq!(stereo_buf, expected_frames);
+        assert_eq!(is_stereo, expected_stereo);
+        assert_eq!(composite_buf, expected_composite);
+    }
+
+    /// Repeated calls to `process_with_composite_into` must not grow Vec capacity.
+    #[test]
+    fn process_with_composite_into_reuses_buffers() {
+        let iq: Vec<Complex<f32>> = (0..1024)
+            .map(|i| {
+                let t = i as f32 / SR as f32;
+                let phase = 2.0 * std::f32::consts::PI * 5_000.0 * t;
+                Complex::new(phase.cos(), phase.sin())
+            })
+            .collect();
+
+        let mut dec = StereoFmDecoder::new(SR);
+        let mut stereo_buf: Vec<StereoFrame> = Vec::with_capacity(64);
+        let mut composite_buf: Vec<f32> = Vec::with_capacity(1024);
+
+        // First call establishes capacities.
+        dec.process_with_composite_into(&iq, &mut stereo_buf, &mut composite_buf);
+        let stereo_cap = stereo_buf.capacity();
+        let composite_cap = composite_buf.capacity();
+
+        // Subsequent calls must reuse the allocations.
+        for _ in 0..5 {
+            dec.process_with_composite_into(&iq, &mut stereo_buf, &mut composite_buf);
+            assert_eq!(stereo_buf.capacity(), stereo_cap, "stereo buffer re-allocated");
+            assert_eq!(
+                composite_buf.capacity(),
+                composite_cap,
+                "composite buffer re-allocated"
             );
         }
     }
