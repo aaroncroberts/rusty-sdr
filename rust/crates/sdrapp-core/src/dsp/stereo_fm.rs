@@ -31,9 +31,10 @@ use rustfft::num_complex::Complex;
 
 use crate::sample::StereoFrame;
 
-/// Minimum normalised pilot amplitude to declare stereo.
-/// (Pilot is typically ~10 % of full FM deviation.)
-const PILOT_THRESHOLD: f32 = 0.02;
+/// Pilot amplitude must rise above this to acquire stereo lock.
+const PILOT_ACQUIRE: f32 = 0.030;
+/// Pilot amplitude must fall below this to release stereo lock.
+const PILOT_RELEASE: f32 = 0.015;
 
 // ── Direct-form II transposed biquad section ─────────────────────────────────
 
@@ -173,6 +174,9 @@ pub struct StereoFmDecoder {
     pilot_env: f32,
     /// EMA coefficient for the pilot envelope tracker (~2 ms).
     pilot_env_alpha: f32,
+    /// Hysteresis latch: true once pilot exceeds PILOT_ACQUIRE, false once
+    /// it falls below PILOT_RELEASE.  Prevents chattering near the boundary.
+    stereo_locked: bool,
 
     // ── Narrow biquad bandpass at 19 kHz — isolates pilot before PLL ─────────
     /// Q = 38 → bandwidth ≈ 500 Hz, matching the C++ FIR reference passband.
@@ -236,6 +240,7 @@ impl StereoFmDecoder {
             pilot_slow_alpha,
             pilot_env: 1e-4, // small non-zero seed avoids div-by-zero before first signal
             pilot_env_alpha,
+            stereo_locked: false,
 
             pilot_bp: Biquad::bandpass(19_000.0, sr, 38.0),
 
@@ -251,13 +256,26 @@ impl StereoFmDecoder {
         }
     }
 
+    /// Update the stereo hysteresis latch from the current `pilot_level`.
+    ///
+    /// Must be called once per processed batch (after `pilot_level` has been
+    /// updated).  Acquire fires above `PILOT_ACQUIRE`; release fires below
+    /// `PILOT_RELEASE`.
+    #[inline]
+    fn update_stereo_latch(&mut self) {
+        if !self.stereo_locked && self.pilot_level >= PILOT_ACQUIRE {
+            self.stereo_locked = true;
+        } else if self.stereo_locked && self.pilot_level < PILOT_RELEASE {
+            self.stereo_locked = false;
+        }
+    }
+
     /// Returns `true` if a stereo pilot is currently detected.
     pub fn is_stereo(&self) -> bool {
-        self.pilot_level >= PILOT_THRESHOLD
+        self.stereo_locked
     }
 
     /// Returns the raw normalised pilot amplitude (0.0–~0.15).
-    /// Threshold for `is_stereo()` is `PILOT_THRESHOLD` = 0.02.
     pub fn pilot_level(&self) -> f32 {
         self.pilot_level
     }
@@ -364,6 +382,7 @@ impl StereoFmDecoder {
             }
         }
 
+        self.update_stereo_latch();
         let is_stereo = self.is_stereo();
         (out, is_stereo)
     }
@@ -444,6 +463,7 @@ impl StereoFmDecoder {
             }
         }
 
+        self.update_stereo_latch();
         let is_stereo = self.is_stereo();
         (stereo_out, is_stereo, composite_out)
     }
@@ -454,6 +474,7 @@ impl StereoFmDecoder {
         self.pilot_phase = 0.0;
         self.pilot_i = 0.0;
         self.pilot_level = 0.0;
+        self.stereo_locked = false;
         self.pilot_bp.reset();
         biquad2_reset(&mut self.lpr);
         biquad2_reset(&mut self.lmr);
