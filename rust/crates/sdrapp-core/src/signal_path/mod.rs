@@ -159,6 +159,9 @@ impl SignalPath {
             let mut ctcss_was_detected: bool = false;
             let mut iq_accumulator: Vec<IqSample> = Vec::with_capacity(FFT_SIZE * 2);
             let mut audio_accumulator: Vec<StereoFrame> = Vec::with_capacity(AUDIO_FRAME_SIZE * 2);
+            // Reuse buffer for mono→stereo conversion in non-WBFM arms (NFM/AM/SSB/CW).
+            // clear() + extend() reuses the allocation; first call allocates, rest are free.
+            let mut stereo: Vec<StereoFrame> = Vec::with_capacity(512);
             // Track previous values to skip write-lock acquisitions when nothing changed.
             let mut last_is_stereo: bool = false;
             // Rate-limit audio RMS log to once per 5 seconds in WBFM mode.
@@ -1051,7 +1054,7 @@ impl SignalPath {
                         &iq_complex_buf
                     };
 
-                let mut stereo: Vec<StereoFrame> = match &mut demod {
+                match &mut demod {
                     Demod::Wbfm(d) => {
                         let (frames, is_stereo, composite) = d.process_with_composite(iq_for_demod);
                         // Only acquire write lock when stereo status actually changes.
@@ -1089,7 +1092,10 @@ impl SignalPath {
                             s.rds.ta = rds.data.ta;
                             s.rds.rt = rds.data.rt.clone();
                         }
-                        frames
+                        // WBFM: frames is allocated by StereoFmDecoder internally;
+                        // transfer ownership into the reuse buffer to keep the same
+                        // Vec alive across WBFM iterations.
+                        stereo = frames;
                     }
                     Demod::Nfm(d) => {
                         let mono = d.process(iq_for_narrow);
@@ -1118,22 +1124,27 @@ impl SignalPath {
                         }
                         // Voice bandpass: 300 Hz – 3 kHz
                         audio_bp.process_inplace(&mut gated);
-                        gated.into_iter().map(StereoFrame::mono).collect()
+                        // Reuse stereo buffer — clear+extend avoids a per-batch allocation.
+                        stereo.clear();
+                        stereo.extend(gated.iter().copied().map(StereoFrame::mono));
                     }
                     Demod::Am(d) => {
                         let mut mono = d.process(iq_for_narrow);
                         am_audio_bp.process_inplace(&mut mono);
-                        mono.into_iter().map(StereoFrame::mono).collect()
+                        stereo.clear();
+                        stereo.extend(mono.iter().copied().map(StereoFrame::mono));
                     }
                     Demod::Ssb(d) => {
                         let mono = d.process(iq_for_narrow);
-                        mono.into_iter().map(StereoFrame::mono).collect()
+                        stereo.clear();
+                        stereo.extend(mono.iter().copied().map(StereoFrame::mono));
                     }
                     Demod::Cw(d) => {
                         let mono = d.process(iq_for_narrow);
-                        mono.into_iter().map(StereoFrame::mono).collect()
+                        stereo.clear();
+                        stereo.extend(mono.iter().copied().map(StereoFrame::mono));
                     }
-                };
+                }
 
                 // Apply volume and soft-limit in-place, then extend accumulator.
                 // vol.apply() avoids the intermediate Vec that vol.process() created;
