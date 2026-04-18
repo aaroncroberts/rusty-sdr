@@ -145,11 +145,17 @@ pub struct SdrApp {
     adsb_map: panels::adsb_map::AdsbMapWindow,
     /// Whether the ADS-B map window is open.
     show_adsb_map: bool,
-    /// Shared ADS-B aircraft store (populated when port B decoder is running).
+    /// Shared ADS-B aircraft store (populated when decoder is running).
     adsb_store: std::sync::Arc<parking_lot::Mutex<sdrapp_adsb::AircraftStore>>,
+    /// IQ broadcast receiver for the ADS-B decoder — held here so the UI can
+    /// hand it off to the decoder thread on demand.
+    adsb_iq_rx: Option<tokio::sync::broadcast::Receiver<std::sync::Arc<[sdrapp_core::sample::IqSample]>>>,
+    /// Running ADS-B decoder thread (Some = running, None = stopped).
+    adsb_decoder: Option<crate::adsb_decoder::AdsbDecoder>,
 }
 
 impl SdrApp {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         config: AppConfig,
@@ -158,6 +164,7 @@ impl SdrApp {
         recorder_cmd_tx: tokio::sync::mpsc::Sender<RecorderCommand>,
         midi_bindings: Vec<(usize, String, String)>,
         auto_start: bool,
+        adsb_iq_rx: Option<tokio::sync::broadcast::Receiver<std::sync::Arc<[sdrapp_core::sample::IqSample]>>>,
     ) -> Self {
         // Apply our beautiful dark theme
         theme::apply(&cc.egui_ctx);
@@ -182,6 +189,12 @@ impl SdrApp {
         let handbook_section = config.ui.handbook_section;
         let handbook_page = config.ui.handbook_page;
         let show_handbook = config.ui.show_handbook;
+        let show_adsb_map = config.ui.show_adsb_map;
+        let adsb_map = panels::adsb_map::AdsbMapWindow::with_viewport(
+            config.ui.adsb_map_lat,
+            config.ui.adsb_map_lon,
+            config.ui.adsb_map_zoom,
+        );
         // Initial range uses the persisted fft_floor/fft_ceil from config.
         // Both spectrum Y-axis and waterfall colormap use this same range so that
         // a single pair of MIN/MAX controls drives the entire display.
@@ -242,11 +255,13 @@ impl SdrApp {
             show_midi_mapper: false,
             handbook: HandbookWindow::with_state(handbook_section, handbook_page),
             show_handbook,
-            adsb_map: panels::adsb_map::AdsbMapWindow::new(),
-            show_adsb_map: false,
+            adsb_map,
+            show_adsb_map,
             adsb_store: std::sync::Arc::new(parking_lot::Mutex::new(
                 sdrapp_adsb::AircraftStore::new(),
             )),
+            adsb_iq_rx,
+            adsb_decoder: None,
         }
     }
 }
@@ -456,6 +471,27 @@ impl eframe::App for SdrApp {
         if self.show_adsb_map {
             let aircraft: Vec<_> = self.adsb_store.lock().aircraft().into_iter().cloned().collect();
             self.adsb_map.show(ctx, &mut self.show_adsb_map, &aircraft);
+            // Persist viewport and open state each frame when map is visible
+            let (lat, lon, zoom) = (
+                self.adsb_map.center_lat(),
+                self.adsb_map.center_lon(),
+                self.adsb_map.zoom_ppd(),
+            );
+            if (self.config.ui.adsb_map_lat - lat).abs() > 0.001
+                || (self.config.ui.adsb_map_lon - lon).abs() > 0.001
+                || (self.config.ui.adsb_map_zoom - zoom).abs() > 0.1
+                || !self.config.ui.show_adsb_map
+            {
+                self.config.ui.adsb_map_lat = lat;
+                self.config.ui.adsb_map_lon = lon;
+                self.config.ui.adsb_map_zoom = zoom;
+                self.config.ui.show_adsb_map = true;
+                self.config_dirty = true;
+            }
+        } else if self.config.ui.show_adsb_map {
+            // Map was closed — persist closed state
+            self.config.ui.show_adsb_map = false;
+            self.config_dirty = true;
         }
 
         // ── Operators Handbook window ─────────────────────────────────────────

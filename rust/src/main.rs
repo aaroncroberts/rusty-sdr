@@ -151,7 +151,7 @@ fn main() -> anyhow::Result<()> {
         false
     };
 
-    let (iq_rx, iq_recorder_rx, freq_atomic, hardware_cmd_tx) =
+    let (iq_rx, iq_recorder_rx, iq_adsb_rx, freq_atomic, hardware_cmd_tx) =
         if sdrplay_available {
             tracing::info!("SDRplay device found — starting in hardware mode");
             shared.write().source_name = Some("SDRplay RSPdx-R2".to_string());
@@ -196,6 +196,7 @@ fn main() -> anyhow::Result<()> {
             .with_shared(Arc::clone(&shared));
             let rx = src.subscribe();
             let iq_rec_rx = src.subscribe();
+            let iq_adsb = src.subscribe();
             let fa = Source::frequency_atomic(&src);
             let hw_tx = src.hardware_cmd_tx();
             // Watch device status and update source_name in SharedState.
@@ -222,7 +223,7 @@ fn main() -> anyhow::Result<()> {
             });
             drop(src.start());
             _sdrplay_source = Some(src);
-            (rx, iq_rec_rx, fa, Some(hw_tx))
+            (rx, iq_rec_rx, iq_adsb, fa, Some(hw_tx))
         } else if rtlsdr_available {
             tracing::info!("RTL-SDR device found — starting in RTL-SDR mode");
             let rtl_cfg = sdrapp_rtlsdr::RtlSdrConfig {
@@ -236,10 +237,11 @@ fn main() -> anyhow::Result<()> {
             shared.write().source_name = Some(caps_name);
             let rx = src.subscribe();
             let iq_rec_rx = src.subscribe();
+            let iq_adsb = src.subscribe();
             let fa = Source::frequency_atomic(&src);
             drop(src.start());
             _rtlsdr_source = Some(src);
-            (rx, iq_rec_rx, fa, None)
+            (rx, iq_rec_rx, iq_adsb, fa, None)
         } else {
             tracing::warn!(
                 "no hardware device found — starting in demo mode (synthetic test signal)"
@@ -252,10 +254,11 @@ fn main() -> anyhow::Result<()> {
             );
             let rx = src.subscribe();
             let iq_rec_rx = src.subscribe();
+            let iq_adsb = src.subscribe();
             let fa = Source::frequency_atomic(&src);
             drop(src.start());
             _demo_source = Some(src);
-            (rx, iq_rec_rx, fa, None)
+            (rx, iq_rec_rx, iq_adsb, fa, None)
         };
 
     // ── Recorder ─────────────────────────────────────────────────────────────
@@ -435,6 +438,7 @@ fn main() -> anyhow::Result<()> {
                 recorder_cmd_tx,
                 midi_bindings,
                 auto_start,
+                Some(iq_adsb_rx),
             )))
         }),
     )

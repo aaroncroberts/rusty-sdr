@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod adsb_decoder;
 pub mod app;
 pub mod band_plan;
 pub mod bands;

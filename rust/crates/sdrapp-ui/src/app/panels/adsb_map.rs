@@ -140,15 +140,27 @@ pub struct AdsbMapWindow {
 impl AdsbMapWindow {
     /// Create a new map centered over Europe (suitable for most SDR setups).
     pub fn new() -> Self {
+        Self::with_viewport(51.5, 0.0, 8.0)
+    }
+
+    /// Create a map with a specific initial viewport (restored from config).
+    pub fn with_viewport(center_lat: f64, center_lon: f64, zoom_ppd: f32) -> Self {
         Self {
-            center_lat: 51.5,
-            center_lon: 0.0,
-            zoom_ppd: 8.0,
+            center_lat,
+            center_lon,
+            zoom_ppd,
             selected_icao: None,
             trails: HashMap::new(),
             drag_start: None,
         }
     }
+
+    /// Current map center latitude (for config persistence).
+    pub fn center_lat(&self) -> f64 { self.center_lat }
+    /// Current map center longitude (for config persistence).
+    pub fn center_lon(&self) -> f64 { self.center_lon }
+    /// Current zoom in pixels-per-degree (for config persistence).
+    pub fn zoom_ppd(&self) -> f32 { self.zoom_ppd }
 
     /// Show the ADS-B map window.  Returns the ICAO of any aircraft clicked.
     pub fn show(

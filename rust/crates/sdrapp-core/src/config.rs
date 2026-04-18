@@ -205,6 +205,19 @@ pub struct UiConfig {
     /// Whether the Operators Handbook window is open.
     #[serde(default)]
     pub show_handbook: bool,
+    // ── ADS-B map ──────────────────────────────────────────────────────────────
+    /// Whether the ADS-B map window is open.
+    #[serde(default)]
+    pub show_adsb_map: bool,
+    /// ADS-B map center latitude (degrees).
+    #[serde(default = "default_adsb_center_lat")]
+    pub adsb_map_lat: f64,
+    /// ADS-B map center longitude (degrees).
+    #[serde(default)]
+    pub adsb_map_lon: f64,
+    /// ADS-B map zoom (pixels per degree of longitude).
+    #[serde(default = "default_adsb_zoom")]
+    pub adsb_map_zoom: f32,
 }
 
 fn default_zoom_level() -> f32 {
@@ -239,6 +252,12 @@ fn default_demod_mode() -> String {
 }
 fn default_squelch_threshold_dbfs() -> f32 {
     -50.0
+}
+fn default_adsb_center_lat() -> f64 {
+    51.5
+}
+fn default_adsb_zoom() -> f32 {
+    8.0
 }
 fn default_tune_step_hz() -> u64 {
     1_000
@@ -282,6 +301,10 @@ impl Default for UiConfig {
             handbook_page: 0,
             show_handbook: false,
             demod_mode: "Wbfm".into(),
+            show_adsb_map: false,
+            adsb_map_lat: 51.5,
+            adsb_map_lon: 0.0,
+            adsb_map_zoom: 8.0,
         }
     }
 }
