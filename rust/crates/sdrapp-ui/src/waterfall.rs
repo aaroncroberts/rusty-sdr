@@ -71,9 +71,14 @@ impl WaterfallWidget {
     }
 
     /// Push a new FFT row at the top, shifting all existing rows down.
-    pub fn push_row(&mut self, fft_magnitudes: &[f32]) {
+    ///
+    /// `zoom_level` (0.0 < z ≤ 1.0) selects which portion of the FFT to render.
+    /// At 1.0 all bins are shown; at 0.1 only the centre 10 % are shown —
+    /// matching exactly what the spectrum widget displays at the same zoom.
+    pub fn push_row(&mut self, fft_magnitudes: &[f32], zoom_level: f32) {
         let w = self.width;
         let row_bytes = w * 4;
+        let n = fft_magnitudes.len();
 
         // Shift rows down: row[i] ← row[i-1], starting from the bottom
         for row in (1..self.height).rev() {
@@ -82,20 +87,53 @@ impl WaterfallWidget {
             self.pixels.copy_within(src..src + row_bytes, dst);
         }
 
+        // Compute the bin window that corresponds to the visible frequency range.
+        // The FFT is centred: bin 0 = lowest freq, bin N/2 = centre, bin N-1 = highest.
+        let z = zoom_level.clamp(0.001, 1.0) as f64;
+        let centre = n as f64 / 2.0;
+        let half = centre * z;
+        let bin_lo = (centre - half).max(0.0);
+        let bin_hi = (centre + half).min(n as f64 - 1.0);
+        let bin_span = (bin_hi - bin_lo).max(1.0);
+        tracing::trace!(
+            zoom_level,
+            fft_bins = n,
+            bin_lo = bin_lo as usize,
+            bin_hi = bin_hi as usize,
+            waterfall_pixels = w,
+            "waterfall push_row bin window"
+        );
+
         // Paint new row at row 0 using the colormap LUT
-        let n = fft_magnitudes.len();
         let (db_min, db_max) = self.db_range;
         for x in 0..w {
-            let bin = (x * n / w).min(n - 1);
+            let t_pixel = x as f64 / (w.saturating_sub(1).max(1)) as f64;
+            let bin = ((bin_lo + t_pixel * bin_span) as usize).min(n - 1);
             let db = fft_magnitudes[bin];
-            let t = ((db - db_min) / (db_max - db_min)).clamp(0.0, 1.0);
-            let idx = (t * 255.0) as usize;
+            let t_color = ((db - db_min) / (db_max - db_min)).clamp(0.0, 1.0);
+            let idx = (t_color * 255.0) as usize;
             let c = self.colormap[idx];
             let offset = x * 4;
             self.pixels[offset] = c.r();
             self.pixels[offset + 1] = c.g();
             self.pixels[offset + 2] = c.b();
             self.pixels[offset + 3] = 255;
+        }
+    }
+
+    /// Update the pixel buffer width.  Call when the display panel is resized.
+    /// Clears all history since existing rows used a different bin-to-pixel mapping.
+    pub fn set_width(&mut self, new_width: usize) {
+        let new_width = new_width.max(8);
+        if new_width != self.width {
+            tracing::debug!(
+                old_width = self.width,
+                new_width,
+                "waterfall resized — clearing history"
+            );
+            self.width = new_width;
+            self.pixels = vec![0u8; new_width * self.height * 4];
+            self.texture = None;
         }
     }
 
@@ -224,10 +262,10 @@ mod tests {
         let mut wf = WaterfallWidget::new(8, (-120.0, 0.0));
 
         let row1: Vec<f32> = vec![-60.0; 8];
-        wf.push_row(&row1);
+        wf.push_row(&row1, 1.0);
 
         let row2: Vec<f32> = vec![-20.0; 8];
-        wf.push_row(&row2);
+        wf.push_row(&row2, 1.0);
 
         // Row 0 (top) should reflect row2; row 1 should reflect row1
         // We can't compare exact colors without knowing the LUT, so verify they differ
@@ -244,17 +282,43 @@ mod tests {
         let mut wf = WaterfallWidget::new(8, (-120.0, 0.0));
 
         // Strong signal at 0 dBFS → should produce a bright (high value) color
-        wf.push_row(&vec![0.0; 8]);
+        wf.push_row(&vec![0.0; 8], 1.0);
         let bright: u32 = wf.pixels[0..3].iter().map(|&v| v as u32).sum();
 
         let mut wf2 = WaterfallWidget::new(8, (-120.0, 0.0));
         // Noise floor at -120 dBFS → should be dark
-        wf2.push_row(&vec![-120.0; 8]);
+        wf2.push_row(&vec![-120.0; 8], 1.0);
         let dark: u32 = wf2.pixels[0..3].iter().map(|&v| v as u32).sum();
 
         assert!(
             bright > dark,
             "0 dBFS should be brighter than -120 dBFS: {bright} vs {dark}"
+        );
+    }
+
+    #[test]
+    fn zoom_selects_correct_bins() {
+        // Build a synthetic FFT: left half is hot (-20 dBFS), right half is cold (-100 dBFS).
+        // At zoom=1.0 the left side of the waterfall should be bright.
+        // At zoom=0.5 (centre 50 %) all displayed bins come from the centre — neither hot nor cold.
+        const N: usize = 64;
+        let mut fft = vec![-100.0_f32; N];
+        // Left quarter: hot signal
+        for v in &mut fft[..N / 4] { *v = -20.0; }
+
+        // Zoom = 1.0: first pixel maps to bin 0 (hot zone) → must be bright
+        let mut wf = WaterfallWidget::new(8, (-120.0, 0.0));
+        wf.push_row(&fft, 1.0);
+        let left_full: u32 = wf.pixels[0..3].iter().map(|&v| v as u32).sum();
+
+        // Zoom = 0.5: centre 50 % of bins = bins 16..48, none of which are hot → must be dark
+        let mut wf2 = WaterfallWidget::new(8, (-120.0, 0.0));
+        wf2.push_row(&fft, 0.5);
+        let left_zoom: u32 = wf2.pixels[0..3].iter().map(|&v| v as u32).sum();
+
+        assert!(
+            left_full > left_zoom,
+            "zoom=1.0 should expose hot bins not visible at zoom=0.5: {left_full} vs {left_zoom}"
         );
     }
 

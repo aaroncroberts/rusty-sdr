@@ -141,7 +141,9 @@ impl SdrApp {
             // Speed 1.0 = 1 row/frame, 2.0 = 2 rows/frame, 0.5 = every other frame.
             self.waterfall_row_frac += waterfall_speed.clamp(0.1, 10.0);
             while self.waterfall_row_frac >= 1.0 {
-                self.waterfall.push_row(&fft_data);
+                // zoom_level is passed so push_row renders the same bin window
+                // as the spectrum widget (centre ± sr/2 * zoom_level).
+                self.waterfall.push_row(&fft_data, zoom_level);
                 self.waterfall_row_frac -= 1.0;
             }
         }
@@ -424,6 +426,14 @@ impl SdrApp {
             if locked.is_some() && locked != self.scan_last_locked_freq {
                 self.scan_last_locked_freq = locked;
                 self.scan_lock_time = Some(now);
+                // Sync UI to the locked frequency — the per-frame sync (lines 40-43)
+                // only runs while scanner_running == true, which is already false on
+                // this frame, so we must update here.
+                if let Some(locked_hz) = locked {
+                    self.config.ui.frequency_hz = locked_hz;
+                    self.frequency_widget = FrequencyWidget::new(locked_hz);
+                    self.config_dirty = true;
+                }
                 // Re-arm repaint so the fade runs at display rate.
                 ui.ctx().request_repaint();
             }
@@ -1276,6 +1286,10 @@ impl SdrApp {
         }
 
         // ── Waterfall ─────────────────────────────────────────────────────────
+        // Keep the texture resolution in sync with the panel width so we don't
+        // render fewer pixels than the screen has — avoids blurring on wide displays
+        // and ensures the bin-to-pixel mapping in push_row stays accurate.
+        self.waterfall.set_width(spectrum_rect.width() as usize);
         let wf_overlay = Some(WaterfallOverlay {
             vfo_hz: freq,
             freq_range: (freq.saturating_sub(span), freq + span),

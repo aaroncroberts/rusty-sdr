@@ -402,10 +402,8 @@ impl HandbookWindow {
             self.page > 0,
             egui::Button::new(RichText::new("◀").color(Color32::from_rgb(220, 190, 140))),
         );
-        if prev_btn.clicked() {
-            if self.page > 0 {
-                self.page -= 1;
-            }
+        if prev_btn.clicked() && self.page > 0 {
+            self.page -= 1;
         }
 
         child.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -413,10 +411,8 @@ impl HandbookWindow {
                 self.page + 1 < total_pages,
                 egui::Button::new(RichText::new("▶").color(Color32::from_rgb(220, 190, 140))),
             );
-            if next_btn.clicked() {
-                if self.page + 1 < total_pages {
-                    self.page += 1;
-                }
+            if next_btn.clicked() && self.page + 1 < total_pages {
+                self.page += 1;
             }
 
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {

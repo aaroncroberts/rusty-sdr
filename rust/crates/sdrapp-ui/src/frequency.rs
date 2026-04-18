@@ -23,7 +23,6 @@ const FREQ_ACTIVE_BG: Color32 = Color32::from_rgba_premultiplied(255, 210, 60, 5
 const FREQ_HOVER_BG: Color32 = Color32::from_rgba_premultiplied(100, 180, 255, 35);
 const FREQ_BG: Color32 = Color32::from_rgb(20, 28, 38);
 const FREQ_BG_CLAMPED: Color32 = Color32::from_rgb(60, 20, 20);
-const EDIT_BG: Color32 = Color32::from_rgb(15, 30, 50);
 
 /// Step size in Hz for each of the 9 tunable digit positions (left → right).
 /// Position 0 = 100 MHz column; position 8 = 1 Hz column.

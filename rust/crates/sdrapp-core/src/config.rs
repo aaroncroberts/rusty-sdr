@@ -228,7 +228,7 @@ fn default_spectrum_split() -> f32 {
     0.45
 }
 fn default_demod_mode() -> String {
-    "Nfm".into()
+    "Wbfm".into()
 }
 fn default_wf_level() -> f32 {
     -80.0
@@ -266,7 +266,7 @@ impl Default for UiConfig {
             handbook_section: 0,
             handbook_page: 0,
             show_handbook: false,
-            demod_mode: "Nfm".into(),
+            demod_mode: "Wbfm".into(),
         }
     }
 }

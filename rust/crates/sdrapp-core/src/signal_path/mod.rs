@@ -309,6 +309,11 @@ impl SignalPath {
                                 am_audio_bp.reset();
                                 ctcss.reset();
                                 rds.reset();
+                                // If a range scan is in progress, update the restore target so
+                                // the user's explicit choice is honoured when the scan stops/locks.
+                                if scan_pre_mode.is_some() {
+                                    scan_pre_mode = Some(mode);
+                                }
                                 let mut s = shared_clone.write();
                                 s.demod.demod_mode = mode;
                                 s.rds.is_stereo = false;
@@ -601,11 +606,8 @@ impl SignalPath {
                                 // repeated demod.reset() and preventing the FM PLL from
                                 // ever locking → silent audio.
                                 let mut drained = 0u64;
-                                loop {
-                                    match iq_rx.try_recv() {
-                                        Ok(_) => drained += 1,
-                                        Err(_) => break,
-                                    }
+                                while iq_rx.try_recv().is_ok() {
+                                    drained += 1;
                                 }
                                 if drained > 0 {
                                     tracing::info!(drained, "drained stale IQ batches on start");
