@@ -481,7 +481,9 @@ impl SignalPath {
                             } => {
                                 scan_range_lo = freq_lo;
                                 scan_range_hi = freq_hi;
-                                scan_range_step = step_hz;
+                                // Guard against zero step which would stall the
+                                // scanner thread in an infinite loop.
+                                scan_range_step = step_hz.max(1);
                                 scan_range_squelch = squelch_dbfs;
                                 scan_range_stereo_only = stereo_only;
                                 scan_dwell_secs = dwell_secs.clamp(0.1, 10.0);
@@ -812,52 +814,51 @@ impl SignalPath {
                         for (avg, &new) in fft_avg_buf.iter_mut().zip(mags.iter()) {
                             *avg = alpha * new + (1.0 - alpha) * *avg;
                         }
-                        // Passband metrics: SNR and signal level for S-meter.
-                        // half_bw_bins is the half-bandwidth of the active demod
-                        // channel expressed in FFT bins. For WBFM it's widened by
-                        // 1.5× to capture stereo-subcarrier sidebands.
-                        let (snr, signal_level_dbfs) = {
-                            let n = fft_avg_buf.len();
-                            let center = n / 2;
-                            // Single lock acquisition for all needed shared state.
-                            let (bw_hz, is_wbfm, sr_hz) = {
-                                let s = shared_clone.read();
-                                let bw = match s.demod.demod_mode {
-                                    DemodMode::Wbfm => 200_000_u32,
-                                    DemodMode::Nfm => s.demod.nfm_bandwidth_hz,
-                                    DemodMode::Am
-                                    | DemodMode::Usb
-                                    | DemodMode::Lsb
-                                    | DemodMode::Dsb => 10_000,
-                                    DemodMode::Cw => 1_000,
-                                };
-                                let wbfm = s.demod.demod_mode == DemodMode::Wbfm;
-                                let rate = s.sample_rate_sps.max(1) as f32;
-                                (bw, wbfm, rate)
-                            };
-                            let mut half_bw_bins =
-                                ((bw_hz as f32 / sr_hz * n as f32) as usize)
-                                    .max(2)
-                                    .min(n / 4);
-                            if is_wbfm {
-                                half_bw_bins = (half_bw_bins * 3 / 2).min(n / 4);
-                            }
-                            let snr = compute_snr_db(&fft_avg_buf, center, half_bw_bins);
-                            // Peak value within the passband → drives the S-meter.
-                            let lo = center.saturating_sub(half_bw_bins);
-                            let hi = (center + half_bw_bins + 1).min(n);
-                            let sig = fft_avg_buf[lo..hi]
-                                .iter()
-                                .cloned()
-                                .fold(f32::NEG_INFINITY, f32::max);
-                            (snr, sig)
-                        };
-                        let clipping = any_bin_clipping(&fft_avg_buf);
                         // Rate-limit shared-state writes to ~30 Hz so the write
                         // lock doesn't fire 977×/sec and stall UI read locks.
+                        // Passband metrics are computed only when needed (inside
+                        // the gate) to avoid per-frame Vec allocations + sorting.
                         let now = std::time::Instant::now();
                         if now.duration_since(last_fft_write) >= FFT_WRITE_INTERVAL {
                             last_fft_write = now;
+                            // half_bw_bins = half-bandwidth of the active demod
+                            // channel in FFT bins; widened 1.5× for WBFM to
+                            // capture stereo-subcarrier sidebands.
+                            let (snr, signal_level_dbfs) = {
+                                let n = fft_avg_buf.len();
+                                let center = n / 2;
+                                let (bw_hz, is_wbfm, sr_hz) = {
+                                    let s = shared_clone.read();
+                                    let bw = match s.demod.demod_mode {
+                                        DemodMode::Wbfm => 200_000_u32,
+                                        DemodMode::Nfm => s.demod.nfm_bandwidth_hz,
+                                        DemodMode::Am
+                                        | DemodMode::Usb
+                                        | DemodMode::Lsb
+                                        | DemodMode::Dsb => 10_000,
+                                        DemodMode::Cw => 1_000,
+                                    };
+                                    let wbfm = s.demod.demod_mode == DemodMode::Wbfm;
+                                    let rate = s.sample_rate_sps.max(1) as f32;
+                                    (bw, wbfm, rate)
+                                };
+                                let mut half_bw_bins =
+                                    ((bw_hz as f32 / sr_hz * n as f32) as usize)
+                                        .max(2)
+                                        .min(n / 4);
+                                if is_wbfm {
+                                    half_bw_bins = (half_bw_bins * 3 / 2).min(n / 4);
+                                }
+                                let snr = compute_snr_db(&fft_avg_buf, center, half_bw_bins);
+                                let lo = center.saturating_sub(half_bw_bins);
+                                let hi = (center + half_bw_bins + 1).min(n);
+                                let sig = fft_avg_buf[lo..hi]
+                                    .iter()
+                                    .cloned()
+                                    .fold(f32::NEG_INFINITY, f32::max);
+                                (snr, sig)
+                            };
+                            let clipping = any_bin_clipping(&fft_avg_buf);
                             {
                                 let mut s = shared_clone.write();
                                 s.fft.fft_magnitudes = fft_avg_buf.clone();
