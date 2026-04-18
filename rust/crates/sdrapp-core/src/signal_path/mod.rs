@@ -1257,7 +1257,7 @@ pub(crate) fn compute_snr_db(bins: &[f32], center: usize, half_bw_bins: usize) -
     let noise_floor = if noise.is_empty() {
         -120.0_f32
     } else {
-        noise.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        noise.sort_by(|a, b| a.total_cmp(b));
         noise[noise.len() / 2]
     };
     peak - noise_floor
