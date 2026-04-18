@@ -224,14 +224,17 @@ fn page_bookmark_scanner() -> HandbookPage {
         ContentBlock::Subheading("Bookmarks"),
         ContentBlock::Body(
             "Bookmarks save a frequency, demodulation mode, and optional name so you can \
-             return to favourite stations instantly.",
+             return to favourite stations instantly. NFM bookmarks also store bandwidth, \
+             squelch threshold, and CTCSS setting — recalling one fully restores the \
+             receiver without any manual adjustment.",
         ),
         ContentBlock::BulletList(&[
-            "Click Add Bookmark to save the current frequency and mode",
-            "Click a bookmark entry to tune directly to it",
+            "Click Add Bookmark to save the current frequency, mode, and (for NFM) receiver settings",
+            "Click a bookmark entry to tune directly to it — NFM settings are applied automatically",
             "Right-click a bookmark to rename, edit, or delete it",
             "Filter the list by category using the filter box at the top",
             "Export/Import bookmarks as CSV for sharing or backup",
+            "Set 'Bookmarks file' in config to load bookmarks from an external CSV at startup",
         ]),
         ContentBlock::Subheading("Scanner"),
         ContentBlock::Body(

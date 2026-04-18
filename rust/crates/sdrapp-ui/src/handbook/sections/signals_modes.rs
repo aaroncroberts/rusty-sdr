@@ -152,7 +152,9 @@ fn page_common_patterns() -> HandbookPage {
         ContentBlock::Body(
             "Modern airliners broadcast their GPS position, altitude, speed, and callsign \
              on 1090.0 MHz. On the waterfall this looks like a forest of short pulsed bursts \
-             appearing whenever an aircraft is within range.",
+             appearing whenever an aircraft is within range. This app has a built-in ADS-B \
+             decoder — click ✈ Map in the right panel to tune, decode, and show live \
+             aircraft on a map in one click.",
         ),
         ContentBlock::Subheading("Weather satellites (137 MHz)"),
         ContentBlock::Body(

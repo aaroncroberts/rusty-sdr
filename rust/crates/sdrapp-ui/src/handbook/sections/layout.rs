@@ -123,7 +123,19 @@ fn page_right_panel() -> HandbookPage {
         ContentBlock::Heading("Right Panel"),
         ContentBlock::Image {
             key: "right_panel",
-            caption: Some("Right panel — volume at top, bands, recorder, MIDI status, RDS at bottom"),
+            caption: Some("Right panel — ADS-B at top, then volume, bands, recorder, MIDI status, RDS"),
+        },
+        ContentBlock::Subheading("ADS-B Flight Tracking"),
+        ContentBlock::Body(
+            "The ✈ Map button is a single-click entry point for live aircraft tracking. \
+             Clicking it automatically tunes to 1090 MHz, starts the built-in ADS-B \
+             decoder, and opens the aircraft map window. A badge shows the live aircraft \
+             count when the decoder is running. Click ■ Stop to stop the decoder.",
+        ),
+        ContentBlock::Callout {
+            icon: "💡",
+            text: "On the map: ⊕/⊖ zoom in/out; drag to pan; ⌖ resets to your saved home \
+                   position; 📍 saves the current view centre as your new home.",
         },
         ContentBlock::Subheading("Volume & VU meter"),
         ContentBlock::Body(

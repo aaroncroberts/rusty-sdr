@@ -36,6 +36,7 @@ All crates live under `rust/crates/`. `sdrapp-core` is the only shared dependenc
 | `sdrapp-audio` | cpal CoreAudio sink for demodulated audio output |
 | `sdrapp-recorder` | hound WAV recorder + raw IQ capture; errors surfaced via `SharedState.recorder_error` |
 | `sdrapp-midi` | midir nanoKontrol2 MIDI controller, 3-page CYCLE mapping, MIDI Learn |
+| `sdrapp-adsb` | ADS-B Mode S decoder + aircraft state store (no UI, no hardware dependency) |
 | `sdrapp-ui` | egui/eframe spectrum, waterfall, controls; reads `SharedState` each frame |
 
 For deeper design context see [`rust/ARCHITECTURE.md`](rust/ARCHITECTURE.md).
@@ -54,6 +55,10 @@ swaps the IQ broadcast receiver AND hardware command channel, then re-applies al
 
 **MIDI Learn**: `SharedState.midi_learn_target = Some(knob_id)` → MIDI controller intercepts
 next CC → writes `midi_cc_to_knob` → UI frame-rate sync check persists to `AppConfig.midi_learn`.
+
+**Config evolution**: All new `AppConfig` / `UiConfig` fields must have `#[serde(default)]` so
+existing config files deserialise without error. New fields with non-trivial defaults use a
+`fn default_field_name() -> T` function named for the field (required by serde's default attr).
 
 ## Coding Conventions
 
