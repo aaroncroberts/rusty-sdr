@@ -1050,7 +1050,7 @@ impl SignalPath {
                         &iq_complex_buf
                     };
 
-                let stereo: Vec<StereoFrame> = match &mut demod {
+                let mut stereo: Vec<StereoFrame> = match &mut demod {
                     Demod::Wbfm(d) => {
                         let (frames, is_stereo, composite) = d.process_with_composite(iq_for_demod);
                         // Only acquire write lock when stereo status actually changes.
@@ -1134,14 +1134,15 @@ impl SignalPath {
                     }
                 };
 
-                // Extend directly — eliminates the stereo_processed intermediate Vec
-                // that was allocated and immediately appended every batch.
-                audio_accumulator.extend(
-                    vol.process(&stereo).into_iter().map(|f| StereoFrame {
-                        left: soft_limit(f.left),
-                        right: soft_limit(f.right),
-                    }),
-                );
+                // Apply volume and soft-limit in-place, then extend accumulator.
+                // vol.apply() avoids the intermediate Vec that vol.process() created;
+                // extend_from_slice is cheaper than into_iter().map().
+                vol.apply(&mut stereo);
+                for f in &mut stereo {
+                    f.left = soft_limit(f.left);
+                    f.right = soft_limit(f.right);
+                }
+                audio_accumulator.extend_from_slice(&stereo);
 
                 // Emit audio frames — drain directly into Arc<[StereoFrame]> to
                 // avoid the intermediate Vec allocation that .to_vec().into() caused.
