@@ -577,72 +577,6 @@ impl SdrApp {
         });
 
         ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(6.0);
-
-        // ── MIDI Status ───────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("MIDI").color(theme::TEXT_MUTED).small());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mapper_label = if self.show_midi_mapper { "▼ Mapper" } else { "▶ Mapper" };
-                let btn = egui::Button::new(
-                    RichText::new(mapper_label).color(theme::ACCENT).small(),
-                )
-                .fill(theme::WIDGET_BG)
-                .stroke(Stroke::new(1.0, if self.show_midi_mapper { theme::ACCENT } else { theme::BORDER }));
-                if ui.add(btn).clicked() {
-                    self.show_midi_mapper = !self.show_midi_mapper;
-                }
-            });
-        });
-        ui.add_space(4.0);
-
-        let (midi_device, midi_page) = {
-            let s = self.shared.read();
-            (s.midi_device.clone(), s.midi_page)
-        };
-
-        if let Some(ref device_name) = midi_device {
-            // Connected — draw a real circle (● glyph is missing from the embedded font)
-            ui.horizontal(|ui| {
-                status_dot(ui, theme::STATUS_OK);
-                // Truncate long device names so they don't overflow past the scrollbar
-                let name = if device_name.len() > 22 {
-                    format!("{}…", &device_name[..21])
-                } else {
-                    device_name.clone()
-                };
-                ui.label(RichText::new(name).color(theme::TEXT_PRIMARY).small());
-            });
-
-            // Page display with navigation buttons
-            let page_names = ["Tune", "Monitor", "Recorder"];
-            let page_label = page_names.get(midi_page).copied().unwrap_or("Page ?");
-            let page_color = theme::midi_page_color(midi_page);
-
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Page:").color(theme::TEXT_MUTED).small());
-                ui.label(
-                    RichText::new(format!("{midi_page}  {page_label}"))
-                        .color(page_color)
-                        .small()
-                        .strong(),
-                );
-            });
-        } else {
-            ui.horizontal(|ui| {
-                status_dot(ui, theme::TEXT_DISABLED);
-                ui.label(RichText::new("Not connected").color(theme::TEXT_MUTED).small());
-            });
-            ui.label(
-                RichText::new("Connect nanoKontrol2 via USB")
-                    .color(theme::TEXT_DISABLED)
-                    .small(),
-            );
-        }
-
-        ui.add_space(8.0);
 
         // ── ADS-B ─────────────────────────────────────────────────────────────
         ui.horizontal(|ui| {
@@ -990,10 +924,4 @@ impl SdrApp {
                 "Peak: {peak_db:.1} dBFS\nRMS: {rms_db:.1} dBFS"
             ));
     }
-}
-
-/// Draw a small inline status dot (avoids the ● glyph missing from the embedded font).
-fn status_dot(ui: &mut egui::Ui, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
-    ui.painter().circle_filled(rect.center(), 4.0, color);
 }
