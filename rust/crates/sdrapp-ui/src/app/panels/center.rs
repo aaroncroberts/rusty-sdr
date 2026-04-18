@@ -2,7 +2,7 @@
 
 use egui::{RichText, Ui, Vec2};
 
-use sdrapp_core::signal_path::{min_zoom_for_mode, DemodMode, DisplayCmd, ReceiverCmd};
+use sdrapp_core::signal_path::{min_zoom_for_mode, DemodMode, DisplayCmd};
 
 use super::super::SdrApp;
 use crate::{
@@ -289,10 +289,7 @@ impl SdrApp {
                 } else {
                     raw_freq
                 };
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
-                self.config.ui.frequency_hz = new_freq;
-                self.frequency_widget = FrequencyWidget::new(new_freq);
-                self.config_dirty = true;
+                self.apply_tune(new_freq);
             }
         }
 
@@ -308,10 +305,7 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(delta_hz as u64).max(1)
                 };
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
-                self.config.ui.frequency_hz = new_freq;
-                self.frequency_widget = FrequencyWidget::new(new_freq);
-                self.config_dirty = true;
+                self.apply_tune(new_freq);
             }
         }
 
@@ -333,10 +327,7 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(step).max(1)
                 };
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
-                self.config.ui.frequency_hz = new_freq;
-                self.frequency_widget = FrequencyWidget::new(new_freq);
-                self.config_dirty = true;
+                self.apply_tune(new_freq);
             }
         }
 
@@ -1415,10 +1406,7 @@ impl SdrApp {
                     (low + t as f64 * (high - low)).round() as u64
                 };
 
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
-                self.config.ui.frequency_hz = new_freq;
-                self.frequency_widget = FrequencyWidget::new(new_freq);
-                self.config_dirty = true;
+                self.apply_tune(new_freq);
             }
         }
 
@@ -1434,10 +1422,7 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(delta_hz as u64).max(1)
                 };
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(new_freq).into());
-                self.config.ui.frequency_hz = new_freq;
-                self.frequency_widget = FrequencyWidget::new(new_freq);
-                self.config_dirty = true;
+                self.apply_tune(new_freq);
             }
         }
 
@@ -1463,12 +1448,7 @@ impl SdrApp {
                 } else {
                     freq.saturating_sub(step).max(1)
                 };
-                let _ = self
-                    .cmd_tx
-                    .try_send(ReceiverCmd::SetFrequency(new_freq).into());
-                self.config.ui.frequency_hz = new_freq;
-                self.frequency_widget = FrequencyWidget::new(new_freq);
-                self.config_dirty = true;
+                self.apply_tune(new_freq);
             }
         }
 

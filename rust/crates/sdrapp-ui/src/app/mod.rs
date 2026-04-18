@@ -256,6 +256,24 @@ pub(crate) fn parse_config_demod_mode(s: &str) -> sdrapp_core::signal_path::Demo
     }
 }
 
+// ── SdrApp helpers ────────────────────────────────────────────────────────────
+
+impl SdrApp {
+    /// Apply a frequency change: send the hardware command, update config, and
+    /// rebuild the frequency widget so all three stay in sync.
+    ///
+    /// This 4-line pattern is the single correct way to tune from the UI — use
+    /// it everywhere instead of duplicating the three state writes inline.
+    pub(in crate::app) fn apply_tune(&mut self, freq: u64) {
+        let _ = self
+            .cmd_tx
+            .try_send(ReceiverCmd::SetFrequency(freq).into());
+        self.config.ui.frequency_hz = freq;
+        self.frequency_widget = FrequencyWidget::new(freq);
+        self.config_dirty = true;
+    }
+}
+
 impl eframe::App for SdrApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // ── --auto-start: fire Start on the very first rendered frame ─────────

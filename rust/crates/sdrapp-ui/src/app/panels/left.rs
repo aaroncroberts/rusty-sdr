@@ -3,7 +3,7 @@ use egui::{RichText, Stroke, Ui, Vec2};
 use sdrapp_core::signal_path::{DemodMode, ReceiverCmd, ScanCmd, SignalPathCommand};
 
 use super::super::SdrApp;
-use crate::{frequency::FrequencyWidget, knob::KnobWidget, theme};
+use crate::{knob::KnobWidget, theme};
 
 impl SdrApp {
     pub(in crate::app) fn left_panel(&mut self, ui: &mut Ui) {
@@ -162,12 +162,7 @@ impl SdrApp {
                     .clicked()
                 {
                     let new_freq = (freq as i64 + delta).max(1) as u64;
-                    let _ = self
-                        .cmd_tx
-                        .try_send(ReceiverCmd::SetFrequency(new_freq).into());
-                    self.config.ui.frequency_hz = new_freq;
-                    self.frequency_widget = FrequencyWidget::new(new_freq);
-                    self.config_dirty = true;
+                    self.apply_tune(new_freq);
                 }
             }
         });
