@@ -194,23 +194,36 @@ impl SdrApp {
                     };
                     if ui.add(map_btn).on_hover_text(hover).clicked() {
                         if !decoder_running {
-                            // Auto-tune to ADS-B frequency
-                            let _ = self.cmd_tx.try_send(
-                                ReceiverCmd::SetFrequency(1_090_000_000).into(),
-                            );
-                            self.config.ui.frequency_hz = 1_090_000_000;
-                            self.frequency_widget = FrequencyWidget::new(1_090_000_000);
-                            self.config_dirty = true;
-                            // Auto-start decoder
-                            if let Some(tx) = self.adsb_iq_tx.as_ref() {
-                                let iq_rx = tx.subscribe();
-                                let sr = self.shared.read().sample_rate_sps;
-                                self.adsb_decoder =
-                                    Some(crate::adsb_decoder::AdsbDecoder::start(
-                                        iq_rx,
-                                        std::sync::Arc::clone(&self.adsb_store),
-                                        sr,
-                                    ));
+                            let sr = self.shared.read().sample_rate_sps;
+                            if sr < 2_000_000 {
+                                // Block start — hardware is decimating below 2 Msps.
+                                // ADS-B PPM pulses (0.5 µs) are physically invisible
+                                // at rates below 2 Msps; don't even try.
+                                tracing::warn!(
+                                    effective_sps = sr,
+                                    "ADS-B start blocked: effective sample rate \
+                                     is {sr} Hz — need ≥ 2 Msps. Disable hardware \
+                                     decimation or raise sample rate."
+                                );
+                                // adsb_decoder stays None; the error line below will show.
+                            } else {
+                                // Auto-tune to ADS-B frequency
+                                let _ = self.cmd_tx.try_send(
+                                    ReceiverCmd::SetFrequency(1_090_000_000).into(),
+                                );
+                                self.config.ui.frequency_hz = 1_090_000_000;
+                                self.frequency_widget = FrequencyWidget::new(1_090_000_000);
+                                self.config_dirty = true;
+                                // Auto-start decoder
+                                if let Some(tx) = self.adsb_iq_tx.as_ref() {
+                                    let iq_rx = tx.subscribe();
+                                    self.adsb_decoder =
+                                        Some(crate::adsb_decoder::AdsbDecoder::start(
+                                            iq_rx,
+                                            std::sync::Arc::clone(&self.adsb_store),
+                                            sr,
+                                        ));
+                                }
                             }
                         }
                         self.show_adsb_map = !self.show_adsb_map;
@@ -233,6 +246,7 @@ impl SdrApp {
             });
 
             // Status line
+            let effective_sr = self.shared.read().sample_rate_sps;
             if decoder_running {
                 let frames = self.adsb_decoder
                     .as_ref()
@@ -244,17 +258,29 @@ impl SdrApp {
                     format!("  ● LIVE  listening…  {frames} frames")
                 };
                 ui.label(RichText::new(status).color(theme::STATUS_OK).small());
+                // Warn if somehow started at wrong rate (shouldn't happen after the
+                // guard above, but keep as a backstop for edge cases).
                 let decoder_sr = self.adsb_decoder.as_ref().map(|d| d.sample_rate).unwrap_or(0);
-                if decoder_sr != 2_000_000 {
+                if decoder_sr < 2_000_000 {
                     ui.label(
                         RichText::new(format!(
-                            "  ⚠ Sample rate {:.1} MHz — decoder needs 2 MHz",
-                            decoder_sr as f32 / 1_000_000.0,
+                            "  ⚠ {:.0} kHz effective — no frames possible",
+                            decoder_sr as f32 / 1_000.0,
                         ))
                         .color(theme::AMBER)
                         .small(),
                     );
                 }
+            } else if effective_sr < 2_000_000 {
+                // Not running + rate too low — show blocking error.
+                ui.label(
+                    RichText::new(format!(
+                        "  ✗ {:.0} kHz effective — set Rate 2M, Decim 1",
+                        effective_sr as f32 / 1_000.0,
+                    ))
+                    .color(theme::STATUS_ERROR)
+                    .small(),
+                );
             } else if count > 0 {
                 ui.label(
                     RichText::new(format!("  ○ {count} aircraft cached"))

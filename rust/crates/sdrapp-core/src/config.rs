@@ -102,8 +102,10 @@ pub struct SourceConfig {
     /// FM broadcast notch filter (reduces FM overload above 65 MHz).
     #[serde(default)]
     pub fm_notch_enabled: bool,
-    /// Hardware decimation factor (1 = off, 4 = default → 2 MHz / 4 = 500 kHz).
-    /// Reduces IQ stream rate and DSP load without changing center frequency.
+    /// Hardware decimation factor applied by the SDRplay API before streaming IQ.
+    /// Effective sample rate = sample_rate_sps / decimation_factor.
+    /// Must be 1 for ADS-B reception (requires ≥ 2 Msps effective rate).
+    /// Valid values: 1 (off), 2, 4, 8, 16, 32.
     #[serde(default = "default_decimation_factor")]
     pub decimation_factor: u32,
 }
@@ -115,7 +117,7 @@ fn default_agc_setpoint_dbfs() -> i32 {
     -60
 }
 fn default_decimation_factor() -> u32 {
-    4
+    1
 }
 
 impl Default for SourceConfig {
@@ -132,7 +134,7 @@ impl Default for SourceConfig {
             hdr_mode: false,
             am_notch_enabled: false,
             fm_notch_enabled: false,
-            decimation_factor: 4,
+            decimation_factor: 1,
         }
     }
 }
