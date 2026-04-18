@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use egui::{
-    Color32, FontId, Painter, Pos2, Rect, Response, Rounding, Sense, Stroke, Vec2,
+    Color32, FontId, Frame, Grid, Key, Margin, Painter, Pos2, Rect, Response,
+    RichText, Rounding, Sense, Stroke, Vec2,
 };
 use sdrapp_adsb::state::AircraftState;
 
@@ -26,6 +27,9 @@ const MAX_ZOOM: f32 = 800.0;
 
 /// Size of the aircraft icon (radius in pixels).
 const ICON_R: f32 = 9.0;
+
+/// Width of the aircraft detail side panel.
+const DETAIL_WIDTH: f32 = 210.0;
 
 // ── Altitude → color gradient ──────────────────────────────────────────────
 
@@ -157,11 +161,11 @@ impl AdsbMapWindow {
 
         egui::Window::new("ADS-B Aircraft Map")
             .open(open)
-            .default_size([800.0, 560.0])
+            .default_size([900.0, 560.0])
             .resizable(true)
             .collapsible(false)
             .frame(
-                egui::Frame::default()
+                Frame::default()
                     .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
                     .stroke(Stroke::new(1.0, Color32::from_rgb(0x2A, 0x30, 0x3A))),
             )
@@ -177,10 +181,15 @@ impl AdsbMapWindow {
                     aircraft.iter().map(|a| a.icao).collect();
                 self.trails.retain(|icao, _| active.contains(icao));
 
+                // Escape deselects
+                if ui.input(|i| i.key_pressed(Key::Escape)) {
+                    self.selected_icao = None;
+                }
+
                 // ── Toolbar ───────────────────────────────────────────────────
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("  {} aircraft", aircraft.len()))
+                        RichText::new(format!("  {} aircraft", aircraft.len()))
                             .color(Color32::from_rgb(0x8A, 0x9A, 0xB0))
                             .small(),
                     );
@@ -198,28 +207,39 @@ impl AdsbMapWindow {
                     }
                     ui.separator();
                     // Altitude legend
-                    ui.label(
-                        egui::RichText::new("●")
-                            .color(Color32::from_rgb(0x73, 0xC9, 0x91))
-                            .small(),
-                    );
-                    ui.label(egui::RichText::new("Low").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
-                    ui.label(
-                        egui::RichText::new("●")
-                            .color(Color32::from_rgb(0xE8, 0xC5, 0x4B))
-                            .small(),
-                    );
-                    ui.label(egui::RichText::new("Mid").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
-                    ui.label(
-                        egui::RichText::new("●")
-                            .color(Color32::from_rgb(0xFF, 0x55, 0x55))
-                            .small(),
-                    );
-                    ui.label(egui::RichText::new("High").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
+                    ui.label(RichText::new("●").color(Color32::from_rgb(0x73, 0xC9, 0x91)).small());
+                    ui.label(RichText::new("Low").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
+                    ui.label(RichText::new("●").color(Color32::from_rgb(0xE8, 0xC5, 0x4B)).small());
+                    ui.label(RichText::new("Mid").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
+                    ui.label(RichText::new("●").color(Color32::from_rgb(0xFF, 0x55, 0x55)).small());
+                    ui.label(RichText::new("High").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
                 });
                 ui.separator();
 
-                // ── Map canvas ────────────────────────────────────────────────
+                // ── Detail side panel (pre-clone to avoid borrow conflict) ───
+                let selected_ac = self.selected_icao
+                    .and_then(|icao| aircraft.iter().find(|a| a.icao == icao).cloned());
+
+                let mut close_detail = false;
+                if let Some(ref ac) = selected_ac {
+                    egui::SidePanel::right("adsb_detail_panel")
+                        .exact_width(DETAIL_WIDTH)
+                        .resizable(false)
+                        .frame(
+                            Frame::default()
+                                .fill(Color32::from_rgb(0x0D, 0x11, 0x1C))
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(0x22, 0x2A, 0x38)))
+                                .inner_margin(Margin::same(10.0)),
+                        )
+                        .show_inside(ui, |ui| {
+                            close_detail = show_aircraft_detail(ui, ac);
+                        });
+                }
+                if close_detail {
+                    self.selected_icao = None;
+                }
+
+                // ── Map canvas (takes all remaining space) ────────────────────
                 let available = ui.available_size();
                 let (response, painter) = ui.allocate_painter(available, Sense::click_and_drag());
                 let rect = response.rect;
@@ -371,9 +391,9 @@ impl AdsbMapWindow {
                 );
             }
 
-            // Click hit-test
+            // Click hit-test (12 px radius as per spec; ICON_R * 1.4 ≈ 12.6)
             if let Some(cp) = click_pos {
-                if (cp - screen).length() < ICON_R * 2.0 {
+                if (cp - screen).length() < ICON_R * 1.4 {
                     self.selected_icao = Some(ac.icao);
                     clicked_icao = Some(ac.icao);
                 }
@@ -520,6 +540,151 @@ impl Default for AdsbMapWindow {
     }
 }
 
+// ── Aircraft detail panel ─────────────────────────────────────────────────────
+
+/// Render the aircraft detail side panel.
+/// Returns `true` if the user clicked the deselect button.
+fn show_aircraft_detail(ui: &mut egui::Ui, ac: &AircraftState) -> bool {
+    let muted = Color32::from_rgb(0x5A, 0x6A, 0x7A);
+    let value_color = Color32::from_rgb(0xD8, 0xE8, 0xF0);
+    let accent = Color32::from_rgb(0x4E, 0xC9, 0xE0);
+
+    // ── ICAO address (click to copy) ─────────────────────────────────────────
+    let icao_str = format!("{:06X}", ac.icao);
+    let icao_resp = ui.add(
+        egui::Label::new(
+            RichText::new(&icao_str)
+                .monospace()
+                .size(18.0)
+                .color(accent),
+        )
+        .sense(Sense::click()),
+    );
+    if icao_resp.clicked() {
+        ui.ctx().copy_text(icao_str);
+        // Visual feedback via tooltip — egui doesn't have a toast API here
+    }
+    icao_resp.on_hover_text("Click to copy ICAO address");
+
+    // ── Callsign ─────────────────────────────────────────────────────────────
+    let callsign = ac.callsign.as_deref().map(str::trim).unwrap_or("—");
+    ui.label(RichText::new(callsign).size(15.0).color(Color32::WHITE));
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    // ── Telemetry grid ───────────────────────────────────────────────────────
+    Grid::new("adsb_detail_grid")
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            // Altitude
+            ui.label(RichText::new("ALT").small().color(muted));
+            if let Some(ft) = ac.altitude_ft {
+                let m = (ft as f64 * 0.3048) as i32;
+                ui.label(RichText::new(format!("{ft} ft / {m} m")).small().color(value_color));
+            } else {
+                ui.label(RichText::new("—").small().color(muted));
+            }
+            ui.end_row();
+
+            // Speed
+            ui.label(RichText::new("SPD").small().color(muted));
+            if let Some(kt) = ac.speed_kt {
+                let kmh = (kt * 1.852) as u32;
+                ui.label(RichText::new(format!("{kt:.0} kts / {kmh} km/h")).small().color(value_color));
+            } else {
+                ui.label(RichText::new("—").small().color(muted));
+            }
+            ui.end_row();
+
+            // Heading
+            ui.label(RichText::new("HDG").small().color(muted));
+            if let Some(h) = ac.heading_deg {
+                let compass = heading_compass(h);
+                ui.label(RichText::new(format!("{h:.0}°  {compass}")).small().color(value_color));
+            } else {
+                ui.label(RichText::new("—").small().color(muted));
+            }
+            ui.end_row();
+
+            // Vertical rate
+            ui.label(RichText::new("V/S").small().color(muted));
+            if let Some(vr) = ac.vert_rate_fpm {
+                let arrow = if vr > 64 { "▲" } else if vr < -64 { "▼" } else { "━" };
+                let vr_color = if vr > 64 {
+                    Color32::from_rgb(0x73, 0xC9, 0x91)
+                } else if vr < -64 {
+                    Color32::from_rgb(0xFF, 0x88, 0x55)
+                } else {
+                    muted
+                };
+                ui.label(RichText::new(format!("{arrow} {vr:+} fpm")).small().color(vr_color));
+            } else {
+                ui.label(RichText::new("—").small().color(muted));
+            }
+            ui.end_row();
+
+            // Position
+            ui.label(RichText::new("POS").small().color(muted));
+            if let (Some(lat), Some(lon)) = (ac.lat, ac.lon) {
+                let lat_hem = if lat >= 0.0 { "N" } else { "S" };
+                let lon_hem = if lon >= 0.0 { "E" } else { "W" };
+                ui.label(
+                    RichText::new(format!(
+                        "{:.3}°{lat_hem} {:.3}°{lon_hem}",
+                        lat.abs(), lon.abs()
+                    ))
+                    .small()
+                    .color(value_color),
+                );
+            } else {
+                ui.label(RichText::new("—").small().color(muted));
+            }
+            ui.end_row();
+
+            // Last seen
+            ui.label(RichText::new("AGE").small().color(muted));
+            let age = ac.last_seen.elapsed().as_secs_f32();
+            let age_str = if age < 60.0 {
+                format!("{age:.1} s ago")
+            } else {
+                format!("{:.0} min ago", age / 60.0)
+            };
+            let age_color = if age < 5.0 {
+                Color32::from_rgb(0x73, 0xC9, 0x91)
+            } else if age < 15.0 {
+                value_color
+            } else {
+                Color32::from_rgb(0xE8, 0xC5, 0x4B)
+            };
+            ui.label(RichText::new(age_str).small().color(age_color));
+            ui.end_row();
+        });
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    // ── Deselect button ───────────────────────────────────────────────────────
+    let close_clicked = ui
+        .add(egui::Button::new(RichText::new("✕  Deselect").small().color(muted)).frame(false))
+        .on_hover_text("Deselect aircraft (or press Escape)")
+        .clicked();
+
+    ui.add_space(2.0);
+    ui.label(RichText::new("Click map to change selection").size(9.0).color(muted));
+
+    close_clicked
+}
+
+/// Cardinal compass label for a heading in degrees.
+fn heading_compass(deg: f32) -> &'static str {
+    let idx = ((deg + 22.5) / 45.0) as usize % 8;
+    ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][idx]
+}
+
 // ── Aircraft icon ─────────────────────────────────────────────────────────────
 
 /// Generate three vertices of an aircraft-shaped triangle centered at `pos`,
@@ -541,4 +706,3 @@ fn aircraft_triangle(pos: Pos2, heading_deg: f32, r: f32) -> [Pos2; 3] {
         pos + Vec2::new(rx, ry)
     })
 }
-
