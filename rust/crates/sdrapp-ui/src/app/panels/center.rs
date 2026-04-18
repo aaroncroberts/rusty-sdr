@@ -1296,31 +1296,41 @@ impl SdrApp {
         }
 
         // ── Waterfall ─────────────────────────────────────────────────────────
-        // Keep the texture resolution in sync with the panel width so we don't
-        // render fewer pixels than the screen has — avoids blurring on wide displays
-        // and ensures the bin-to-pixel mapping in push_row stays accurate.
-        self.waterfall.set_width(spectrum_rect.width() as usize);
+        // The spectrum widget reserves SpectrumWidget::Y_LABEL_W pixels on the left
+        // for its dBFS axis labels.  The waterfall texture must cover only the plot
+        // area (not that label strip) so that equal frequencies land on the same
+        // horizontal pixel in both widgets.
+        let wf_left_offset = SpectrumWidget::Y_LABEL_W;
+        let plot_width = (spectrum_rect.width() - wf_left_offset).max(8.0);
+        self.waterfall.set_width(plot_width as usize);
         let wf_overlay = Some(WaterfallOverlay {
             vfo_hz: freq,
             freq_range: (freq.saturating_sub(span), freq + span),
             filter_lo_hz: show_filter_lo,
             filter_hi_hz: show_filter_hi,
         });
-        let waterfall_resp = self.waterfall.show(ui, &ctx, wf_overlay);
+        let waterfall_resp = self.waterfall.show(ui, &ctx, wf_overlay, wf_left_offset);
 
         // ── Synchronized crosshair: spectrum ↔ waterfall ─────────────────────
-        // Whichever view the cursor is in, project the same frequency line into both.
+        // Both widgets share the same plot origin: rect.left() + wf_left_offset.
+        // All t values are normalised within the plot area, not the raw rect.
         {
             let wf_rect = waterfall_resp.rect;
             let low = freq.saturating_sub(span) as f64;
             let high = freq as f64 + span as f64;
 
-            // Determine normalized [0,1] x from whichever rect the pointer is in.
+            // Plot-area left edge and width (same offset in both widgets).
+            let sp_plot_left = spectrum_rect.left() + wf_left_offset;
+            let sp_plot_width = spectrum_rect.width() - wf_left_offset;
+            let wf_plot_left = wf_rect.left() + wf_left_offset;
+            let wf_plot_width = wf_rect.width() - wf_left_offset;
+
+            // Determine normalized [0,1] x within the plot area.
             let hover_t: Option<f32> = ctx.pointer_hover_pos().and_then(|p| {
-                if wf_rect.contains(p) {
-                    Some(((p.x - wf_rect.left()) / wf_rect.width()).clamp(0.0, 1.0))
-                } else if spectrum_rect.contains(p) {
-                    Some(((p.x - spectrum_rect.left()) / spectrum_rect.width()).clamp(0.0, 1.0))
+                if wf_rect.contains(p) && wf_plot_width > 0.0 {
+                    Some(((p.x - wf_plot_left) / wf_plot_width).clamp(0.0, 1.0))
+                } else if spectrum_rect.contains(p) && sp_plot_width > 0.0 {
+                    Some(((p.x - sp_plot_left) / sp_plot_width).clamp(0.0, 1.0))
                 } else {
                     None
                 }
@@ -1334,8 +1344,8 @@ impl SdrApp {
                 let line_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 70);
                 let text_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200);
 
-                // Always draw the crosshair in the waterfall
-                let wf_x = wf_rect.left() + t * wf_rect.width();
+                // Always draw the crosshair in the waterfall (plot area only)
+                let wf_x = wf_plot_left + t * wf_plot_width;
                 let wf_painter = ui.painter_at(wf_rect);
                 wf_painter.line_segment(
                     [egui::pos2(wf_x, wf_rect.top()), egui::pos2(wf_x, wf_rect.bottom())],
@@ -1360,7 +1370,7 @@ impl SdrApp {
                     .map(|p| spectrum_rect.contains(p))
                     .unwrap_or(false);
                 if !cursor_in_spectrum {
-                    let sp_x = spectrum_rect.left() + t * spectrum_rect.width();
+                    let sp_x = sp_plot_left + t * sp_plot_width;
                     let sp_painter = ui.painter_at(spectrum_rect);
                     sp_painter.line_segment(
                         [

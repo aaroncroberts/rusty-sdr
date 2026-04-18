@@ -57,6 +57,11 @@ pub struct SpectrumWidget<'a> {
 }
 
 impl<'a> SpectrumWidget<'a> {
+    /// Width reserved on the left for dBFS axis labels.
+    /// The waterfall widget must use this same offset so its texture and overlay
+    /// lines align with the spectrum's plot area.
+    pub const Y_LABEL_W: f32 = 38.0;
+
     pub fn show(&self, ui: &mut Ui) -> Response {
         let available = ui.available_size();
         // Use hover-only so the parent (center.rs) owns all click/drag interactions.
@@ -76,8 +81,10 @@ impl<'a> SpectrumWidget<'a> {
         // ── Background ────────────────────────────────────────────────────────
         painter.rect_filled(rect, 0.0, theme::BG);
 
-        // Leave margins for the Y-axis labels on the left
-        let y_label_w = 38.0;
+        // Leave margins for the Y-axis labels on the left.
+        // This value is re-used by the waterfall to align its texture and overlay
+        // with the spectrum's plot area — see SpectrumWidget::Y_LABEL_W.
+        let y_label_w = Self::Y_LABEL_W;
         let x_label_h = 18.0;
         let plot_rect = Rect::from_min_max(
             Pos2::new(rect.left() + y_label_w, rect.top()),

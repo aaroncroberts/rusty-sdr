@@ -164,11 +164,14 @@ impl WaterfallWidget {
     ///
     /// Pass `overlay` to draw a VFO center-line and passband shading on top of
     /// the spectrogram texture (same visual feedback as the spectrum above).
+    /// `left_offset` is the number of pixels reserved on the left for axis labels —
+    /// use `SpectrumWidget::Y_LABEL_W` so the waterfall aligns with the spectrum above.
     pub fn show(
         &mut self,
         ui: &mut Ui,
         ctx: &egui::Context,
         overlay: Option<WaterfallOverlay>,
+        left_offset: f32,
     ) -> egui::Response {
         let image = ColorImage::from_rgba_unmultiplied([self.width, self.height], &self.pixels);
 
@@ -185,9 +188,27 @@ impl WaterfallWidget {
 
         if ui.is_rect_visible(rect) {
             let painter = ui.painter_at(rect);
+
+            // The texture pixel buffer is plot-width wide (freq_lo..freq_hi).
+            // Render it into the plot sub-rect, leaving the left_offset strip black.
+            let plot_rect = egui::Rect::from_x_y_ranges(
+                (rect.left() + left_offset)..=rect.right(),
+                rect.top()..=rect.bottom(),
+            );
+            if left_offset > 0.0 {
+                // Fill the axis-label strip with the background colour.
+                painter.rect_filled(
+                    egui::Rect::from_x_y_ranges(
+                        rect.left()..=(rect.left() + left_offset),
+                        rect.top()..=rect.bottom(),
+                    ),
+                    0.0,
+                    crate::theme::BG,
+                );
+            }
             painter.image(
                 texture.id(),
-                rect,
+                plot_rect,
                 Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -197,10 +218,10 @@ impl WaterfallWidget {
                 let (freq_lo, freq_hi) = ov.freq_range;
                 let span = (freq_hi as f64 - freq_lo as f64).max(1.0);
 
-                // Helper: frequency → x pixel within rect
+                // Frequency-to-x using the same plot_rect as the texture.
                 let freq_to_x = |hz: u64| -> f32 {
                     let t = ((hz as f64 - freq_lo as f64) / span).clamp(0.0, 1.0) as f32;
-                    rect.left() + t * rect.width()
+                    plot_rect.left() + t * plot_rect.width()
                 };
 
                 // Passband shading (semi-transparent tint matching the spectrum)
