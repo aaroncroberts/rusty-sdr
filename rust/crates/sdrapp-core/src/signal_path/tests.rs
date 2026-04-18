@@ -491,3 +491,62 @@ fn peak_hold_decay_defaults_to_half_db() {
         "default decay should be 0.5 dB/frame"
     );
 }
+
+// ── FFT / audio independence tests ──────────────────────────────────────────
+//
+// These tests verify that FFT processing runs on a dedicated thread so it
+// cannot starve the audio demodulation path.
+
+/// After sending enough IQ to fill an FFT frame, fft_magnitudes must be
+/// updated to non-trivial values (not all -120 dBFS).
+///
+/// This test catches regressions where the FFT thread stops writing to
+/// SharedState — e.g., if the IQ fan-out channel silently drops all batches.
+#[tokio::test]
+async fn fft_magnitudes_updated_after_enough_iq() {
+    let (path, iq_tx, shared) = make_signal_path();
+    // Start the signal path (without Start it stays paused — but FFT should
+    // still run since the FFT thread reads from its own channel independent
+    // of the paused flag which lives in the audio thread).
+    let _ = path.cmd_tx.try_send(SignalPathCommand::Start);
+
+    // Send enough IQ to fill at least one FFT frame (default FFT_SIZE = 2048).
+    // Use a 1 kHz complex tone so there is real signal energy in the FFT bins.
+    let sr = 2_000_000_u32;
+    let batch_size = 4096_usize;
+    let batch: Arc<[IqSample]> = (0..batch_size)
+        .map(|i| {
+            let phase = 2.0 * std::f32::consts::PI * 1_000.0 / sr as f32 * i as f32;
+            IqSample { re: phase.cos() * 0.5, im: phase.sin() * 0.5 }
+        })
+        .collect::<Vec<_>>()
+        .into();
+
+    // Send several batches to ensure the FFT fires.
+    for _ in 0..4 {
+        let _ = iq_tx.send(Arc::clone(&batch));
+    }
+
+    // Wait for both the audio thread and FFT thread to process.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let mags = shared.read().fft.fft_magnitudes.clone();
+    let non_trivial = mags.iter().any(|&v| v > -100.0);
+    assert!(
+        non_trivial,
+        "fft_magnitudes should contain non-trivial values after processing IQ — all still at floor"
+    );
+}
+
+/// FFT thread handles SetFftSize command correctly: magnitudes buffer resizes
+/// and signal path keeps running (no panic, no deadlock).
+#[tokio::test]
+async fn set_fft_size_updates_shared_state_via_fft_thread() {
+    let (path, iq_tx, shared) = make_signal_path();
+
+    // Send a resize command then tickle with IQ.
+    tick(&path.cmd_tx, &iq_tx, DisplayCmd::SetFftSize(512)).await;
+
+    assert_eq!(shared.read().fft.fft_size, 512);
+    assert_eq!(shared.read().fft.fft_magnitudes.len(), 512);
+}

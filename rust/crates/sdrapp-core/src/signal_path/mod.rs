@@ -50,6 +50,26 @@ pub(super) const FFT_SIZE: usize = 2048;
 // Smaller frame size = more frequent ring-buffer refills = fewer underruns.
 // 256 samples @ 48 kHz = 5.3 ms per chunk (was 1024 = 21.3 ms).
 const AUDIO_FRAME_SIZE: usize = 256;
+// IQ fan-out queue to the FFT thread.  Bounded so a slow FFT (large window,
+// many averages) can't grow unboundedly — batches are dropped rather than
+// backpressuring the audio demod thread.
+const FFT_IQ_QUEUE: usize = 16;
+
+/// Commands sent from the audio-demod thread to the FFT thread.
+///
+/// Only FFT-pipeline-specific operations that require `FftPipeline` state live
+/// here.  Broader `DisplayCmd` variants (zoom, waterfall speed, etc.) are
+/// handled directly on the audio-demod thread since they only write SharedState.
+#[derive(Debug)]
+enum FftCmd {
+    /// Rebuild the FFT processor for a new size and/or window type.
+    Resize { size: usize, window: crate::dsp::FftWindow },
+    /// Update the EMA averaging depth and reset the average buffer.
+    SetAveraging(u8),
+    /// Discard accumulated IQ — called after frequency changes or demod resets
+    /// so stale samples don't pollute the first post-change FFT frame.
+    ClearAccumulator,
+}
 
 /// Manages the running signal path tasks.
 pub struct SignalPath {
@@ -87,6 +107,50 @@ impl SignalPath {
         // Read initial sample rate before moving shared into the task
         let sample_rate = shared.read().sample_rate_sps;
 
+        // ── FFT thread ────────────────────────────────────────────────────────
+        // Dedicated OS thread for FFT magnitude computation so that large FFT
+        // sizes / high averaging depth cannot starve the audio demod path.
+        //
+        // The audio-demod thread fans out each IQ batch via a bounded channel
+        // (try_send — drops when full so audio is never delayed by a slow FFT).
+        // FFT pipeline settings are forwarded via a second channel (FftCmd).
+        let (iq_fft_tx, iq_fft_rx) =
+            crossbeam_channel::bounded::<Arc<[IqSample]>>(FFT_IQ_QUEUE);
+        let (fft_cmd_tx, fft_cmd_rx) = crossbeam_channel::bounded::<FftCmd>(32);
+
+        let fft_shared = Arc::clone(&shared);
+        let fft_egui_ctx = egui_ctx.clone();
+        let fft_handle = std::thread::Builder::new()
+            .name("sdrapp-fft".into())
+            .spawn(move || {
+                let mut fftp = FftPipeline::new(FFT_SIZE, crate::dsp::FftWindow::Hann, 4);
+                loop {
+                    // Drain FFT commands first (non-blocking).
+                    while let Ok(cmd) = fft_cmd_rx.try_recv() {
+                        match cmd {
+                            FftCmd::Resize { size, window } => {
+                                fftp.resize(size, window);
+                            }
+                            FftCmd::SetAveraging(n) => {
+                                fftp.fft_averaging = n.clamp(1, 16);
+                                fftp.fft_avg_buf = vec![-120.0; fftp.fft_size];
+                            }
+                            FftCmd::ClearAccumulator => {
+                                fftp.clear_accumulator();
+                            }
+                        }
+                    }
+                    // Block on the next IQ batch from the audio-demod thread.
+                    match iq_fft_rx.recv() {
+                        Ok(batch) => {
+                            fftp.tick(&batch, &fft_shared, &fft_egui_ctx);
+                        }
+                        Err(_) => break, // Sender dropped — app is shutting down.
+                    }
+                }
+            })
+            .expect("failed to spawn FFT thread");
+
         // Run the signal path on a dedicated OS thread rather than a Tokio task.
         // The upstream C++ app uses std::thread for DSP for the same reason:
         // real-time audio processing must not share a cooperative scheduler with
@@ -113,7 +177,11 @@ impl SignalPath {
             // bandwidth (max signal is 25 kHz for wide NFM).
             let mut narrow_decim: u32 = (sr / 200_000).max(1);
             let mut narrow_demod_sr: u32 = sr / narrow_decim;
-            let mut fftp = FftPipeline::new(FFT_SIZE, crate::dsp::FftWindow::Hann, 4);
+            // Shadow vars mirror the FFT thread's current configuration so that
+            // Resize commands can be constructed with correct full parameters
+            // (SetFftSize needs current window; SetFftWindow needs current size).
+            let mut current_fft_size: usize = FFT_SIZE;
+            let mut current_fft_window = crate::dsp::FftWindow::Hann;
             let mut vol = Volume::new(0.8);
             let mut demod: Demod = make_demod(DemodMode::Wbfm, sr, demod_sr, narrow_demod_sr, 12_500);
             let mut squelch = Squelch::new(48_000, -50.0);
@@ -314,19 +382,31 @@ impl SignalPath {
                             }
                             DisplayCmd::SetFftSize(sz) => {
                                 if sz.is_power_of_two() && (512..=8192).contains(&sz) {
-                                    fftp.resize(sz, fftp.window);
-                                    shared_clone.write().fft.fft_size = sz;
-                                    shared_clone.write().fft.fft_magnitudes = vec![-120.0; sz];
+                                    // Forward resize to the FFT thread; update SharedState
+                                    // immediately so the UI reads the correct size on the
+                                    // next frame (before the FFT thread processes the cmd).
+                                    let _ = fft_cmd_tx.try_send(FftCmd::Resize {
+                                        size: sz,
+                                        window: current_fft_window,
+                                    });
+                                    current_fft_size = sz;
+                                    let mut s = shared_clone.write();
+                                    s.fft.fft_size = sz;
+                                    s.fft.fft_magnitudes = vec![-120.0; sz];
                                 }
                             }
                             DisplayCmd::SetFftWindow(wf) => {
-                                fftp.resize(fftp.fft_size, wf);
+                                let _ = fft_cmd_tx.try_send(FftCmd::Resize {
+                                    size: current_fft_size,
+                                    window: wf,
+                                });
+                                current_fft_window = wf;
                                 shared_clone.write().fft.fft_window = wf;
                             }
                             DisplayCmd::SetFftAveraging(n) => {
-                                fftp.fft_averaging = n.clamp(1, 16);
-                                fftp.fft_avg_buf = vec![-120.0; fftp.fft_size];
-                                shared_clone.write().fft.fft_averaging = fftp.fft_averaging;
+                                let clamped = n.clamp(1, 16);
+                                let _ = fft_cmd_tx.try_send(FftCmd::SetAveraging(clamped));
+                                shared_clone.write().fft.fft_averaging = clamped;
                             }
                             DisplayCmd::SetBandPlanEnabled(en) => {
                                 shared_clone.write().fft.band_plan_enabled = en;
@@ -416,7 +496,7 @@ impl SignalPath {
                                 demod.reset();
                                 rds.reset();
                                 audio_accumulator.clear();
-                                fftp.clear_accumulator();
+                                let _ = fft_cmd_tx.try_send(FftCmd::ClearAccumulator);
                                 tracing::info!(
                                     freq_lo, freq_hi, step_hz, squelch_dbfs, stereo_only,
                                     "FM range scanner started"
@@ -449,7 +529,7 @@ impl SignalPath {
                                     demod.reset();
                                     rds.reset();
                                     audio_accumulator.clear();
-                                    fftp.clear_accumulator();
+                                    let _ = fft_cmd_tx.try_send(FftCmd::ClearAccumulator);
                                     tracing::debug!(
                                         category = %sc.category,
                                         first_freq_hz = bm_freq,
@@ -498,7 +578,7 @@ impl SignalPath {
                         SignalPathCommand::Start => {
                             if paused {
                                 paused = false;
-                                fftp.clear_accumulator();
+                                let _ = fft_cmd_tx.try_send(FftCmd::ClearAccumulator);
                                 audio_accumulator.clear();
                                 // Drain IQ that accumulated while the hardware was
                                 // initialising (typically ~3 s worth of batches).
@@ -579,7 +659,7 @@ impl SignalPath {
                             iq_rx = new_rx;
                             hw_cmd_tx = new_hw_tx;
                             source_dead = false;
-                            fftp.clear_accumulator();
+                            let _ = fft_cmd_tx.try_send(FftCmd::ClearAccumulator);
                             audio_accumulator.clear();
                             tracing::info!("IQ source hot-swapped — signal path live");
 
@@ -700,8 +780,9 @@ impl SignalPath {
                     continue;
                 }
 
-                // FFT: accumulate → EMA average → rate-limited shared-state write (~30 Hz).
-                fftp.tick(&batch, &shared_clone, &egui_ctx);
+                // Fan out IQ to the dedicated FFT thread (non-blocking: drops if the
+                // FFT thread's queue is full so audio demod is never delayed).
+                let _ = iq_fft_tx.try_send(Arc::clone(&batch));
 
                 // ── Scanner tick ─────────────────────────────────────────────
                 if sc.running {
@@ -767,7 +848,7 @@ impl SignalPath {
                                 demod.reset();
                                 rds.reset();
                                 audio_accumulator.clear();
-                                fftp.clear_accumulator();
+                                let _ = fft_cmd_tx.try_send(FftCmd::ClearAccumulator);
                                 last_is_stereo = false;
                             }
                             continue;
@@ -813,7 +894,7 @@ impl SignalPath {
                             rds.reset();
                             // Clear accumulators so no stale audio/IQ bleeds into the new channel.
                             audio_accumulator.clear();
-                            fftp.clear_accumulator();
+                            let _ = fft_cmd_tx.try_send(FftCmd::ClearAccumulator);
                         }
                     }
                 }
@@ -1011,7 +1092,7 @@ impl SignalPath {
         Self {
             shared,
             cmd_tx,
-            _handles: vec![handle],
+            _handles: vec![handle, fft_handle],
         }
     }
 
