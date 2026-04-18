@@ -505,13 +505,13 @@ fn peak_hold_decay_defaults_to_half_db() {
 #[tokio::test]
 async fn fft_magnitudes_updated_after_enough_iq() {
     let (path, iq_tx, shared) = make_signal_path();
-    // Start the signal path (without Start it stays paused — but FFT should
-    // still run since the FFT thread reads from its own channel independent
-    // of the paused flag which lives in the audio thread).
-    let _ = path.cmd_tx.try_send(SignalPathCommand::Start);
 
-    // Send enough IQ to fill at least one FFT frame (default FFT_SIZE = 2048).
-    // Use a 1 kHz complex tone so there is real signal energy in the FFT bins.
+    // Use tick() to send Start and wait for the signal path thread to process it.
+    // The signal path starts paused; IQ fan-out to the FFT thread only happens
+    // when paused == false, so we must synchronise before sending IQ data.
+    tick(&path.cmd_tx, &iq_tx, SignalPathCommand::Start).await;
+
+    // Build a 1 kHz complex tone — real signal energy ensures bins exceed -100 dBFS.
     let sr = 2_000_000_u32;
     let batch_size = 4096_usize;
     let batch: Arc<[IqSample]> = (0..batch_size)
@@ -522,16 +522,20 @@ async fn fft_magnitudes_updated_after_enough_iq() {
         .collect::<Vec<_>>()
         .into();
 
-    // Send several batches to ensure the FFT fires.
+    // Send several batches to ensure the FFT fires (FFT_SIZE = 2048, batch = 4096).
     for _ in 0..4 {
         let _ = iq_tx.send(Arc::clone(&batch));
     }
 
-    // Wait for both the audio thread and FFT thread to process.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let mags = shared.read().fft.fft_magnitudes.clone();
-    let non_trivial = mags.iter().any(|&v| v > -100.0);
+    // Poll until the FFT thread writes non-trivial values (up to 2 s).
+    let mut non_trivial = false;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        if shared.read().fft.fft_magnitudes.iter().any(|&v| v > -100.0) {
+            non_trivial = true;
+            break;
+        }
+    }
     assert!(
         non_trivial,
         "fft_magnitudes should contain non-trivial values after processing IQ — all still at floor"
