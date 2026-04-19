@@ -223,6 +223,12 @@ impl PpmDemodulator {
     }
 
     /// Attempt to decode a frame at `buf[pos..]`.
+    ///
+    /// Tries data-start offsets of `PREAMBLE_LEN - 1`, `PREAMBLE_LEN`, and
+    /// `PREAMBLE_LEN + 1` to handle ±1-sample phase slip at the preamble/data
+    /// boundary (common at 2 Msps where pulses straddle sample edges).
+    /// Returns the first CRC-valid result, or the `PREAMBLE_LEN` result if none
+    /// pass CRC.
     fn try_decode_at(&self, pos: usize) -> Option<RawFrame> {
         let window = &self.buf[pos..];
 
@@ -230,34 +236,50 @@ impl PpmDemodulator {
             return None;
         }
 
+        // Try three data-start offsets to absorb ±1-sample phase jitter.
+        for &data_start in &[PREAMBLE_LEN, PREAMBLE_LEN - 1, PREAMBLE_LEN + 1] {
+            if window.len() <= data_start + LONG_MSG_BITS * SAMPLES_PER_BIT {
+                continue;
+            }
+            let data_samples = &window[data_start..];
+
+            // Peek at first byte to determine frame length from DF.
+            let first_byte = decode_byte(&data_samples[..8 * SAMPLES_PER_BIT]);
+            let df = first_byte >> 3;
+
+            let num_bits = if matches!(df, 11 | 17 | 18 | 19) {
+                LONG_MSG_BITS
+            } else {
+                SHORT_MSG_BITS
+            };
+
+            if data_samples.len() < num_bits * SAMPLES_PER_BIT {
+                continue;
+            }
+
+            let data = decode_bits(data_samples, num_bits);
+            let num_bytes = num_bits / 8;
+            let crc_ok = crc24(&data[..num_bytes]) == [0, 0, 0];
+
+            if crc_ok {
+                return Some(RawFrame { bits: num_bits, data, crc_ok: true });
+            }
+        }
+
+        // No offset yielded a valid CRC — return the canonical offset result so
+        // preamble_count still increments (caller tracks it separately).
         let data_samples = &window[PREAMBLE_LEN..];
         if data_samples.len() < LONG_MSG_BITS * SAMPLES_PER_BIT {
             return None;
         }
-
-        // Peek at first byte to determine frame length from DF.
         let first_byte = decode_byte(&data_samples[..8 * SAMPLES_PER_BIT]);
         let df = first_byte >> 3;
-
-        let num_bits = if matches!(df, 11 | 17 | 18 | 19) {
-            LONG_MSG_BITS
-        } else {
-            SHORT_MSG_BITS
-        };
-
+        let num_bits = if matches!(df, 11 | 17 | 18 | 19) { LONG_MSG_BITS } else { SHORT_MSG_BITS };
         if data_samples.len() < num_bits * SAMPLES_PER_BIT {
             return None;
         }
-
         let data = decode_bits(data_samples, num_bits);
-        let num_bytes = num_bits / 8;
-        let crc_ok = crc24(&data[..num_bytes]) == [0, 0, 0];
-
-        Some(RawFrame {
-            bits: num_bits,
-            data,
-            crc_ok,
-        })
+        Some(RawFrame { bits: num_bits, data, crc_ok: false })
     }
 }
 

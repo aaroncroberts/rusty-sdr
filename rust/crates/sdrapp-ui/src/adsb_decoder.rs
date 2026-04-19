@@ -208,9 +208,9 @@ fn decode_loop(
                 if prune_counter & 0x0FFF == 0 {
                     store.lock().prune_expired();
 
-                    // Log DF distribution so we can see if we're decoding real
-                    // Mode S (DFs 0,4,5,11,17-19 dominant) or noise (flat/random).
+                    // Log batch stats unconditionally so we can confirm IQ data is flowing.
                     let total: u32 = df_counts.iter().sum();
+                    let pr = preamble_count.load(Ordering::Relaxed);
                     if total > 0 {
                         let dominant: Vec<String> = df_counts
                             .iter()
@@ -220,8 +220,15 @@ fn decode_loop(
                             .collect();
                         tracing::debug!(
                             total,
+                            preambles = pr,
                             distribution = dominant.join(" "),
                             "ADS-B DF distribution (last ~4096 batches)"
+                        );
+                    } else {
+                        tracing::debug!(
+                            batches = prune_counter,
+                            preambles = pr,
+                            "ADS-B: no frames in last ~4096 batches (signal absent or threshold too high)"
                         );
                     }
                     df_counts = [0u32; 32];
