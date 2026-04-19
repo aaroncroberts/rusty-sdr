@@ -5,7 +5,7 @@
 
 use egui::{RichText, Ui};
 
-use sdrapp_core::signal_path::{DemodMode, DisplayCmd};
+use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd};
 
 use crate::app::SdrApp;
 use crate::knob::KnobWidget;
@@ -34,6 +34,7 @@ impl SdrApp {
     ) {
         ui.add_space(3.0);
 
+        // Single scrollable toolbar — all groups left-to-right, no second row.
         // Bandwidth label derived from current zoom
         let bw_hz = (span * 2) as f64;
         let bw_label = if bw_hz >= 1_000_000.0 {
@@ -75,9 +76,9 @@ impl SdrApp {
             (s.fft.fft_size, s.fft.fft_window, s.fft.fft_averaging)
         };
 
-        // ── Row 1: REF LEVEL | ZOOM | WF SPD | VU ────────────────────────────
-        // Four logical groups spread across the full width, separated by dividers.
-        // Compact single-row height — knobs are 32 px so they fit alongside labels.
+        egui::ScrollArea::horizontal()
+            .id_salt("controls_row_scroll")
+            .show(ui, |ui| {
         ui.horizontal(|ui| {
             // ── Group A: REF LEVEL ───────────────────────────────────────────
             ui.label(RichText::new("REF").color(theme::TEXT_MUTED).small());
@@ -311,12 +312,10 @@ impl SdrApp {
                 format!("{:.0} dBFS", 20.0 * audio_level.log10())
             };
             vu_resp.on_hover_text(format!("Audio output level: {dbfs_label}"));
-        });
 
-        // ── Row 2: FFT settings | BP/PH | Signal quality | Palette ───────────
-        ui.add_space(1.0);
-        ui.horizontal(|ui| {
-            // ── Group A: FFT ─────────────────────────────────────────────────
+            ui.separator();
+
+            // ── Group E: FFT ─────────────────────────────────────────────────
             ui.label(RichText::new("FFT").color(theme::TEXT_MUTED).small());
             egui::ComboBox::from_id_salt("fft_size")
                 .selected_text(RichText::new(cur_fft_size.to_string()).small())
@@ -525,7 +524,39 @@ impl SdrApp {
                         }
                     }
                 });
+
+            ui.separator();
+
+            // ── Group E: DEMOD mode ──────────────────────────────────────────
+            ui.label(RichText::new("DEMOD").color(theme::TEXT_MUTED).small());
+            for (mode, label, tip) in [
+                (DemodMode::Wbfm, "WBFM", "Wideband FM — FM broadcast (88-108 MHz)"),
+                (DemodMode::Nfm,  "NFM",  "Narrow FM — voice comms (aviation, marine, amateur)"),
+                (DemodMode::Am,   "AM",   "Amplitude Modulation — AM broadcast, shortwave, aviation"),
+                (DemodMode::Usb,  "USB",  "Upper Sideband SSB — HF amateur and maritime voice"),
+                (DemodMode::Lsb,  "LSB",  "Lower Sideband SSB — HF amateur voice below 10 MHz"),
+                (DemodMode::Dsb,  "DSB",  "Double Sideband — both sidebands, suppressed carrier"),
+                (DemodMode::Cw,   "CW",   "CW / Morse code — narrow 400-900 Hz bandpass"),
+            ] {
+                let sel = demod_mode == mode;
+                let txt = if sel {
+                    RichText::new(label).color(theme::ACCENT).strong().small()
+                } else {
+                    RichText::new(label).color(theme::TEXT_MUTED).small()
+                };
+                if ui
+                    .selectable_label(sel, txt)
+                    .on_hover_text(tip)
+                    .clicked()
+                    && !sel
+                {
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
+                    self.config.ui.demod_mode = format!("{mode:?}");
+                    self.config_dirty = true;
+                }
+            }
         });
+        }); // ScrollArea
 
         // Handle MIDI Learn actions deferred from closures above
         if zoom_learn_req {

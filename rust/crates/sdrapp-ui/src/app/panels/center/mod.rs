@@ -1134,54 +1134,16 @@ impl SdrApp {
     }
 
     fn center_bottom_strip(&mut self, ui: &mut Ui) {
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(6.0);
-
-        // ── Demod mode selector ────────────────────────────────────────────────
-        // All seven modes in a single row with fixed-size buttons so they have a
-        // proper click target and visual weight rather than tiny inline text.
+        // ── Mode-specific sub-controls ─────────────────────────────────────────
+        // The mode selector itself lives in the toolbar row (show_display_controls).
+        // This strip only shows controls that are specific to the active mode.
         let current_mode = self.shared.read().demod.demod_mode;
 
-        // Button size: wide enough for 4-char labels, tall enough to click easily.
-        const BTN: Vec2 = Vec2::new(50.0, 26.0);
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("DEMOD").color(theme::TEXT_MUTED).small());
-            ui.separator();
-            for (mode, label, tip) in [
-                (DemodMode::Wbfm, "WBFM", "Wideband FM — FM broadcast (88-108 MHz)"),
-                (DemodMode::Nfm,  "NFM",  "Narrow FM — voice comms (aviation, marine, amateur)"),
-                (DemodMode::Am,   "AM",   "Amplitude Modulation — AM broadcast, shortwave, aviation"),
-                (DemodMode::Usb,  "USB",  "Upper Sideband SSB — HF amateur and maritime voice"),
-                (DemodMode::Lsb,  "LSB",  "Lower Sideband SSB — HF amateur voice below 10 MHz"),
-                (DemodMode::Dsb,  "DSB",  "Double Sideband — both sidebands, suppressed carrier"),
-                (DemodMode::Cw,   "CW",   "CW / Morse code — narrow 400-900 Hz bandpass"),
-            ] {
-                let sel = current_mode == mode;
-                let txt = if sel {
-                    RichText::new(label).color(theme::ACCENT).strong()
-                } else {
-                    RichText::new(label).color(theme::TEXT_MUTED)
-                };
-                if ui
-                    .add_sized(BTN, egui::SelectableLabel::new(sel, txt))
-                    .on_hover_text(tip)
-                    .clicked()
-                    && !sel
-                {
-                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
-                    self.config.ui.demod_mode = format!("{mode:?}");
-                    self.config_dirty = true;
-                }
-            }
-        });
-
-        ui.add_space(6.0);
-
-        // ── Mode-specific controls ─────────────────────────────────────────────
         match current_mode {
             DemodMode::Nfm => {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
                 let nfm_bw = self.shared.read().demod.nfm_bandwidth_hz;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("BW").color(theme::TEXT_MUTED).small());
