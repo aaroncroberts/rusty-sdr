@@ -53,10 +53,30 @@ fn default_bookmarks() -> Vec<BookmarkConfig> {
             .with_nfm_settings(25_000, -60.0, false)
             .with_category("Weather"),
         // ── Shortwave / ML-31 — Antenna C ─────────────────────────────────────
+        // NIST time signals (WWV Fort Collins CO): 2.5, 5, 10, 15, 20 MHz AM
+        BookmarkConfig::new("WWV 5 MHz (time signals)", 5_000_000, "Am")
+            .with_antenna("C").with_category(sw),
         BookmarkConfig::new("WWV 10 MHz (time signals)", 10_000_000, "Am")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("WWV 15 MHz (time signals)", 15_000_000, "Am")
+            .with_antenna("C").with_category(sw),
+        // CHU Canada (Ottawa ON) time signals: 3.330 / 7.850 / 14.670 MHz AM
+        BookmarkConfig::new("CHU Canada 7.850 MHz", 7_850_000, "Am")
+            .with_antenna("C").with_category(sw),
+        // BBC World Service North America: 5.875 MHz (night), 9.410 MHz (day)
+        BookmarkConfig::new("BBC World Service 5.875 MHz", 5_875_000, "Am")
             .with_antenna("C").with_category(sw),
         BookmarkConfig::new("BBC World Service 9.410 MHz", 9_410_000, "Am")
             .with_antenna("C").with_category(sw),
+        // Voice of America 9.490 MHz
+        BookmarkConfig::new("VOA 9.490 MHz", 9_490_000, "Am")
+            .with_antenna("C").with_category(sw),
+        // Aviation VOLMET weather broadcasts (USB)
+        BookmarkConfig::new("VOLMET Shannon 5.505 MHz", 5_505_000, "Usb")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("VOLMET New York 3.485 MHz", 3_485_000, "Usb")
+            .with_antenna("C").with_category(sw),
+        // Amateur radio 40m calling frequency
         BookmarkConfig::new("Ham 40m USB (7.200 MHz)", 7_200_000, "Usb")
             .with_antenna("C").with_category(sw),
     ]
@@ -522,34 +542,13 @@ impl AppConfig {
         cfg
     }
 
-    /// Merge / prune bookmark presets on load.
+    /// Ensure the curated Shortwave / ML-31 bookmark set is present.
     ///
-    /// Removes the 9 excess Shortwave / ML-31 presets that were shipped in an
-    /// earlier version, and ensures the current curated 3-entry set is present.
+    /// Idempotent: only adds bookmarks whose name is not already in the list.
+    /// Any user-created bookmarks in the same category are left untouched.
     fn migrate_bookmarks(&mut self) {
         const SW_CAT: &str = "Shortwave / ML-31";
 
-        // Names that were over-shipped and should be removed.
-        const EXCESS: &[&str] = &[
-            "WWV 5 MHz (time signals)",
-            "WWV 15 MHz (time signals)",
-            "CHU Canada 7.850 MHz",
-            "BBC World Service 5.875 MHz",
-            "VOA 9.500 MHz",
-            "Radio France Int. 15.300 MHz",
-            "Ham 20m USB (14.225 MHz)",
-            "VOLMET Shannon 5.505 MHz",
-            "Maritime CW 8.364 kHz",
-        ];
-        let before = self.bookmarks.len();
-        self.bookmarks
-            .retain(|b| !(b.category == SW_CAT && EXCESS.contains(&b.name.as_str())));
-        let removed = before - self.bookmarks.len();
-        if removed > 0 {
-            tracing::info!(removed, "pruned excess Shortwave / ML-31 preset bookmarks");
-        }
-
-        // Add the curated 3-entry set if any are missing.
         let sw_bookmarks: Vec<BookmarkConfig> = default_bookmarks()
             .into_iter()
             .filter(|b| b.category == SW_CAT)
@@ -558,7 +557,7 @@ impl AppConfig {
         if !sw_bookmarks.is_empty() {
             tracing::info!(
                 count = sw_bookmarks.len(),
-                "adding curated Shortwave / ML-31 bookmarks"
+                "adding Shortwave / ML-31 bookmark presets"
             );
             self.bookmarks.extend(sw_bookmarks);
         }
