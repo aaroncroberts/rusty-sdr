@@ -476,8 +476,10 @@ impl eframe::App for SdrApp {
 
         // Left panel (scrollable so controls are always reachable)
         egui::SidePanel::left("left_panel")
-            .min_width(190.0)
-            .max_width(250.0)
+            .resizable(true)
+            .default_width(210.0)
+            .min_width(180.0)
+            .max_width(360.0)
             .frame(
                 egui::Frame::none()
                     .fill(theme::PANEL_BG)

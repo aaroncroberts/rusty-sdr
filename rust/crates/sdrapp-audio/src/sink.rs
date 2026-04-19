@@ -211,8 +211,10 @@ fn run_audio_thread(
     // Note: volume applied in callback, not here, so it responds to changes without delay
     while let Ok(frames) = frame_rx.recv() {
         let mut buf = ring.lock();
-        // Don't let the buffer grow beyond 500ms — drop old samples if we're backed up
-        let max_samples = stream_config.sample_rate.0 as usize / 2 * 2; // 500ms stereo
+        // Don't let the buffer grow beyond 1s — drop old samples if we're backed up.
+        // Use 1s (not 500ms) so a single large batch (~48512 stereo frames at 48kHz)
+        // doesn't repeatedly hit the trim threshold and generate spurious debug noise.
+        let max_samples = stream_config.sample_rate.0 as usize * 2; // 1s stereo
         let buf_len = buf.len();
         if buf_len > max_samples {
             tracing::debug!(

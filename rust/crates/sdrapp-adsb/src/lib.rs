@@ -81,8 +81,12 @@ pub fn detect_preamble(samples: &[f32]) -> bool {
     let low_mean: f32 =
         PREAMBLE_LOW.iter().map(|&i| samples[i]).sum::<f32>() / PREAMBLE_LOW.len() as f32;
 
-    // Require: high positions are at least 3× the low positions, and above noise floor.
-    high_mean > low_mean * 3.0 && high_mean > 0.01
+    // Require: high positions are at least 1.8× the low positions, and above noise floor.
+    // 3.0× is too strict for real hardware: at exactly 2 Msps (Nyquist), Mode S pulses
+    // (0.5 µs wide) can land between sample points, reducing apparent peak amplitude.
+    // Real-world noise also raises low_mean above zero. dump1090 and other practical
+    // decoders use ~1.8–2.0× ratio. The lower absolute floor (0.002) handles weak signals.
+    high_mean > low_mean * 1.8 && high_mean > 0.002
 }
 
 // ── Bit / byte extraction ─────────────────────────────────────────────────────

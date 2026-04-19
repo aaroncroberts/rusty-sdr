@@ -375,48 +375,51 @@ impl AdsbMapWindow {
                     }
                     ui.separator();
                     if self.decoder_running || self.adsb_start_pending {
+                        let stop_color = Color32::from_rgb(0xFF, 0x88, 0x88);
                         if ui
-                            .small_button("Stop")
+                            .add(egui::Button::new(RichText::new("Stop").small().color(stop_color)).frame(false))
                             .on_hover_text("Stop ADS-B decoder · restore audio")
                             .clicked()
                         {
                             self.stop_requested = true;
                         }
                     } else {
-                        let start_lbl = if self.sample_rate_ok {
-                            "Start"
-                        } else {
-                            "Start*"
-                        };
+                        let start_lbl = if self.sample_rate_ok { "Start" } else { "Start*" };
                         let tip = if self.sample_rate_ok {
                             "Tune to 1090 MHz · switch to Antenna B · start decoder"
                         } else {
                             "Will auto-reconfigure hardware to 2 Msps, then start"
                         };
-                        if ui.small_button(start_lbl).on_hover_text(tip).clicked() {
+                        let start_color = Color32::from_rgb(0x73, 0xC9, 0x91);
+                        if ui
+                            .add(egui::Button::new(RichText::new(start_lbl).small().color(start_color)).frame(false))
+                            .on_hover_text(tip)
+                            .clicked()
+                        {
                             self.start_requested = true;
                         }
                     }
                     ui.separator();
 
+                    let muted = Color32::from_rgb(0x8A, 0x9A, 0xB0);
                     ui.label(
                         RichText::new(format!("  {} aircraft", aircraft.len()))
-                            .color(Color32::from_rgb(0x8A, 0x9A, 0xB0))
+                            .color(muted)
                             .small(),
                     );
                     ui.separator();
-                    if ui.small_button("+").on_hover_text("Zoom in").clicked() {
+                    if ui.add(egui::Button::new(RichText::new("+").small().color(muted)).frame(false)).on_hover_text("Zoom in").clicked() {
                         self.zoom_ppd = (self.zoom_ppd * 1.5).min(MAX_ZOOM);
                     }
-                    if ui.small_button("-").on_hover_text("Zoom out").clicked() {
+                    if ui.add(egui::Button::new(RichText::new("-").small().color(muted)).frame(false)).on_hover_text("Zoom out").clicked() {
                         self.zoom_ppd = (self.zoom_ppd / 1.5).max(MIN_ZOOM);
                     }
-                    if ui.small_button("Home").on_hover_text("Reset to saved home location").clicked() {
+                    if ui.add(egui::Button::new(RichText::new("Home").small().color(muted)).frame(false)).on_hover_text("Reset to saved home location").clicked() {
                         self.center_lat = home_lat;
                         self.center_lon = home_lon;
                         self.zoom_ppd = 100.0;
                     }
-                    if ui.small_button("Pin").on_hover_text("Save current view as home").clicked() {
+                    if ui.add(egui::Button::new(RichText::new("Pin").small().color(Color32::from_rgb(0x4E, 0xC9, 0xE0))).frame(false)).on_hover_text("Save current view as home").clicked() {
                         self.set_home_pending = true;
                     }
                     // Auto-center: fly to centroid of all aircraft with known positions.
