@@ -17,6 +17,110 @@ use egui::{
 };
 use sdrapp_adsb::state::AircraftState;
 
+// ── Flight info lookup ────────────────────────────────────────────────────────
+
+/// Enriched aircraft data fetched from external APIs.
+#[derive(Debug, Clone, Default)]
+pub struct FlightInfo {
+    /// Tail / registration number (e.g. "N12345", "G-EUOE").
+    pub registration: Option<String>,
+    /// ICAO aircraft type code (e.g. "B738", "A320").
+    pub aircraft_type: Option<String>,
+    /// Operator / airline (e.g. "United Airlines").
+    pub operator: Option<String>,
+    /// ICAO departure airport (e.g. "KORD").
+    pub origin: Option<String>,
+    /// ICAO arrival airport (e.g. "KJFK").
+    pub destination: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum FlightLookupState {
+    Fetching,
+    Ready(FlightInfo),
+    Failed,
+}
+
+struct FlightInfoResult {
+    icao: u32,
+    info: Option<FlightInfo>,
+}
+
+/// Spawn two background threads to fetch aircraft data:
+/// 1. adsb.lol  — registration, type, operator (fast, no auth)
+/// 2. OpenSky   — estimated departure / arrival airports
+fn fetch_flight_info_async(
+    tx: crossbeam_channel::Sender<FlightInfoResult>,
+    icao: u32,
+    callsign: Option<String>,
+) {
+    std::thread::spawn(move || {
+        let hex = format!("{:06x}", icao);
+        let mut info = FlightInfo::default();
+
+        // ── adsb.lol: registration + type + operator ──────────────────────────
+        let lol_url = format!("https://api.adsb.lol/v2/icao/{hex}");
+        if let Ok(resp) = ureq::get(&lol_url)
+            .set("User-Agent", "sdrapp ADS-B map/1.0 (desktop SDR application)")
+            .call()
+        {
+            if let Ok(body) = resp.into_string() {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(ac) = json["ac"].as_array().and_then(|a| a.first()) {
+                        info.registration = ac["r"].as_str()
+                            .filter(|s| !s.is_empty()).map(str::to_string);
+                        info.aircraft_type = ac["t"].as_str()
+                            .filter(|s| !s.is_empty()).map(str::to_string);
+                        info.operator = ac["ownOp"].as_str()
+                            .filter(|s| !s.is_empty()).map(str::to_string);
+                    }
+                }
+            }
+        }
+
+        // ── OpenSky: departure / arrival airports (last 24 h) ─────────────────
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let begin = now.saturating_sub(86_400);
+        let sky_url = format!(
+            "https://opensky-network.org/api/flights/aircraft?icao24={hex}&begin={begin}&end={now}"
+        );
+        if let Ok(resp) = ureq::get(&sky_url)
+            .set("User-Agent", "sdrapp ADS-B map/1.0 (desktop SDR application)")
+            .call()
+        {
+            if let Ok(body) = resp.into_string() {
+                if let Ok(serde_json::Value::Array(flights)) =
+                    serde_json::from_str::<serde_json::Value>(&body)
+                {
+                    // Use the most recent entry (last in the array).
+                    if let Some(last) = flights.last() {
+                        let valid_airport = |v: &serde_json::Value| -> Option<String> {
+                            v.as_str()
+                                .filter(|s| !s.is_empty() && *s != "null")
+                                .map(str::to_string)
+                        };
+                        info.origin = valid_airport(&last["estDepartureAirport"]);
+                        info.destination = valid_airport(&last["estArrivalAirport"]);
+                        // Fall back to callsign from OpenSky if we didn't have one.
+                        if callsign.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                            if let Some(cs) = last["callsign"].as_str()
+                                .map(str::trim).filter(|s| !s.is_empty())
+                            {
+                                let _ = cs; // callsign already in AircraftState
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let _ = tx.send(FlightInfoResult { icao, info: Some(info) });
+    });
+}
+
 // ── OSM tile types ─────────────────────────────────────────────────────────────
 
 /// (zoom_level, tile_x, tile_y)
@@ -231,6 +335,16 @@ pub struct AdsbMapWindow {
     /// Set when the user clicks Stop in the map toolbar; main app consumes & clears.
     pub stop_requested: bool,
 
+    // ── Flight info lookup cache ──────────────────────────────────────────────
+    /// Per-ICAO enriched data fetched from adsb.lol + OpenSky.
+    flight_info_cache: HashMap<u32, FlightLookupState>,
+    /// Sender cloned into worker threads.
+    flight_info_tx: crossbeam_channel::Sender<FlightInfoResult>,
+    /// Receiver drained each frame.
+    flight_info_rx: crossbeam_channel::Receiver<FlightInfoResult>,
+    /// ICAO that was selected last frame — used to detect selection changes.
+    prev_selected_icao: Option<u32>,
+
     // ── OSM tile cache ────────────────────────────────────────────────────────
     /// Loaded tile textures keyed by (z, x, y).
     tile_cache: HashMap<TileKey, TextureHandle>,
@@ -257,6 +371,7 @@ impl AdsbMapWindow {
     /// Create a map with a specific initial viewport (restored from config).
     pub fn with_viewport(center_lat: f64, center_lon: f64, zoom_ppd: f32) -> Self {
         let (tile_tx, tile_rx) = crossbeam_channel::unbounded();
+        let (fi_tx, fi_rx) = crossbeam_channel::unbounded::<FlightInfoResult>();
         Self {
             center_lat,
             center_lon,
@@ -281,6 +396,10 @@ impl AdsbMapWindow {
             tile_rx,
             last_tile_z: 255, // force first-frame flush
             evicted_tiles: Vec::new(),
+            flight_info_cache: HashMap::new(),
+            flight_info_tx: fi_tx,
+            flight_info_rx: fi_rx,
+            prev_selected_icao: None,
         }
     }
 
@@ -317,6 +436,29 @@ impl AdsbMapWindow {
         // Without this, deferred viewports only repaint on OS events (mouse move, etc.)
         // which means the map would appear static between interactions.
         ctx.request_repaint();
+
+        // ── Drain flight info results ─────────────────────────────────────────
+        while let Ok(result) = self.flight_info_rx.try_recv() {
+            let state = match result.info {
+                Some(info) => FlightLookupState::Ready(info),
+                None => FlightLookupState::Failed,
+            };
+            self.flight_info_cache.insert(result.icao, state);
+        }
+
+        // ── Trigger lookup when selection changes ─────────────────────────────
+        if self.selected_icao != self.prev_selected_icao {
+            self.prev_selected_icao = self.selected_icao;
+            if let Some(icao) = self.selected_icao {
+                if !self.flight_info_cache.contains_key(&icao) {
+                    let callsign = aircraft.iter()
+                        .find(|a| a.icao == icao)
+                        .and_then(|a| a.callsign.clone());
+                    self.flight_info_cache.insert(icao, FlightLookupState::Fetching);
+                    fetch_flight_info_async(self.flight_info_tx.clone(), icao, callsign);
+                }
+            }
+        }
 
         let mut clicked = None;
 
@@ -567,6 +709,8 @@ impl AdsbMapWindow {
                 // ── Detail side panel (pre-clone to avoid borrow conflict) ───
                 let selected_ac = self.selected_icao
                     .and_then(|icao| aircraft.iter().find(|a| a.icao == icao).cloned());
+                let selected_flight_info = self.selected_icao
+                    .and_then(|icao| self.flight_info_cache.get(&icao));
 
                 let mut close_detail = false;
                 if let Some(ref ac) = selected_ac {
@@ -580,7 +724,7 @@ impl AdsbMapWindow {
                                 .inner_margin(Margin::same(10.0)),
                         )
                         .show_inside(ui, |ui| {
-                            close_detail = show_aircraft_detail(ui, ac);
+                            close_detail = show_aircraft_detail(ui, ac, selected_flight_info);
                         });
                 }
                 if close_detail {
@@ -1055,7 +1199,11 @@ fn clip_segment(mut p0: Pos2, mut p1: Pos2, clip: Rect) -> Option<(Pos2, Pos2)> 
 
 /// Render the aircraft detail side panel.
 /// Returns `true` if the user clicked the deselect button.
-fn show_aircraft_detail(ui: &mut egui::Ui, ac: &AircraftState) -> bool {
+fn show_aircraft_detail(
+    ui: &mut egui::Ui,
+    ac: &AircraftState,
+    flight: Option<&FlightLookupState>,
+) -> bool {
     let muted = Color32::from_rgb(0x5A, 0x6A, 0x7A);
     let value_color = Color32::from_rgb(0xD8, 0xE8, 0xF0);
     let accent = Color32::from_rgb(0x4E, 0xC9, 0xE0);
@@ -1149,6 +1297,53 @@ fn show_aircraft_detail(ui: &mut egui::Ui, ac: &AircraftState) -> bool {
     ui.add_space(8.0);
     ui.separator();
     ui.add_space(6.0);
+
+    // ── Live flight data (adsb.lol + OpenSky) ────────────────────────────────
+    match flight {
+        None | Some(FlightLookupState::Fetching) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("Looking up…").small().color(muted));
+            });
+        }
+        Some(FlightLookupState::Failed) => {
+            ui.label(RichText::new("Lookup failed").small().color(muted));
+        }
+        Some(FlightLookupState::Ready(info)) => {
+            // Route banner: ORD → JFK
+            match (&info.origin, &info.destination) {
+                (Some(o), Some(d)) => {
+                    ui.label(
+                        RichText::new(format!("{o}  →  {d}"))
+                            .strong()
+                            .color(Color32::WHITE),
+                    );
+                }
+                (Some(o), None) => {
+                    ui.label(RichText::new(format!("From {o}")).color(value_color));
+                }
+                (None, Some(d)) => {
+                    ui.label(RichText::new(format!("To {d}")).color(value_color));
+                }
+                _ => {}
+            }
+            // Registration + type
+            let reg = info.registration.as_deref().unwrap_or("—");
+            let typ = info.aircraft_type.as_deref().unwrap_or("—");
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(reg).small().strong().color(accent));
+                ui.label(RichText::new(typ).small().color(muted));
+            });
+            // Operator
+            if let Some(ref op) = info.operator {
+                ui.label(RichText::new(op).small().color(value_color));
+            }
+        }
+    }
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
 
     // ── External lookup ───────────────────────────────────────────────────────
     let icao_hex = format!("{:06X}", ac.icao);
