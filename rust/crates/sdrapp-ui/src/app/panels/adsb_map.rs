@@ -229,18 +229,18 @@ impl AdsbMapWindow {
                             .small(),
                     );
                     ui.separator();
-                    if ui.small_button("⊕").on_hover_text("Zoom in").clicked() {
+                    if ui.small_button("+").on_hover_text("Zoom in").clicked() {
                         self.zoom_ppd = (self.zoom_ppd * 1.5).min(MAX_ZOOM);
                     }
-                    if ui.small_button("⊖").on_hover_text("Zoom out").clicked() {
+                    if ui.small_button("-").on_hover_text("Zoom out").clicked() {
                         self.zoom_ppd = (self.zoom_ppd / 1.5).max(MIN_ZOOM);
                     }
-                    if ui.small_button("⌖").on_hover_text("Reset to home").clicked() {
+                    if ui.small_button("Home").on_hover_text("Reset to home location").clicked() {
                         self.center_lat = home_lat;
                         self.center_lon = home_lon;
                         self.zoom_ppd = 12.0;
                     }
-                    if ui.small_button("📍").on_hover_text("Set current view as home").clicked() {
+                    if ui.small_button("Pin").on_hover_text("Set current view as home").clicked() {
                         self.set_home_pending = true;
                     }
                     ui.separator();
