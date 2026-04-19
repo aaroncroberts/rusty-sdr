@@ -166,49 +166,112 @@ impl SdrApp {
         let level = self.vu_peak * self.config.ui.volume;
         self.draw_vu_meter(ui, level, level * 0.92, self.muted, is_running);
 
-        // ── ADS-B Flight Tracker ──────────────────────────────────────────────
+        // ── Mode: LISTEN / ADS-B ─────────────────────────────────────────────
         ui.add_space(8.0);
         ui.separator();
-        ui.add_space(6.0);
+        ui.add_space(4.0);
 
         {
             let decoder_running = self.adsb_decoder
                 .as_ref()
                 .map(|d| d.is_running())
                 .unwrap_or(false);
+            let adsb_active = decoder_running || self.adsb_start_pending;
             let count = self.adsb_store.lock().len();
 
             ui.horizontal(|ui| {
-                ui.label(RichText::new("ADS-B").color(theme::TEXT_MUTED).small());
-                if decoder_running && count > 0 {
+                ui.label(RichText::new("MODE").color(theme::TEXT_MUTED).small());
+                if adsb_active && count > 0 {
                     ui.label(
-                        RichText::new(format!("{count} ac"))
+                        RichText::new(format!("· {count} ac"))
                             .color(theme::STATUS_OK)
                             .small()
                             .strong(),
                     );
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Map toggle button — Start/Stop controls live inside the map window.
-                    let map_lbl = if self.show_adsb_map { "^ Map" } else { "Map" };
-                    let map_color = if decoder_running { theme::STATUS_OK } else { theme::ACCENT };
-                    let map_btn = egui::Button::new(
-                        RichText::new(map_lbl).color(map_color).small(),
-                    )
-                    .fill(theme::WIDGET_BG)
-                    .stroke(Stroke::new(
-                        1.0,
-                        if self.show_adsb_map { map_color } else { theme::BORDER },
-                    ));
-                    if ui
-                        .add(map_btn)
-                        .on_hover_text("Open / close ADS-B aircraft map")
-                        .clicked()
-                    {
-                        self.show_adsb_map = !self.show_adsb_map;
-                    }
-                });
             });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
+                let btn_w = (ui.available_width() - 4.0) / 2.0 - 4.0;
+
+                // ── LISTEN button ────────────────────────────────────────────
+                let listen_active = !adsb_active;
+                let listen_fill = if listen_active {
+                    Color32::from_rgb(0x0E, 0x28, 0x18)
+                } else {
+                    theme::WIDGET_BG
+                };
+                let listen_stroke = Stroke::new(
+                    1.5,
+                    if listen_active { theme::STATUS_OK } else { theme::BORDER },
+                );
+                let listen_btn = egui::Button::new(
+                    RichText::new("LISTEN")
+                        .small()
+                        .strong()
+                        .color(if listen_active { theme::STATUS_OK } else { theme::TEXT_MUTED }),
+                )
+                .fill(listen_fill)
+                .stroke(listen_stroke);
+                if ui
+                    .add_sized(Vec2::new(btn_w, 28.0), listen_btn)
+                    .on_hover_text("Audio receive mode — listen to radio")
+                    .clicked()
+                    && adsb_active
+                {
+                    // Stop ADS-B, restore hardware, open audio
+                    self.adsb_map.lock().stop_requested = true;
+                }
+
+                ui.add_space(4.0);
+
+                // ── ADS-B button ─────────────────────────────────────────────
+                let adsb_fill = if adsb_active {
+                    Color32::from_rgb(0x0E, 0x20, 0x34)
+                } else {
+                    theme::WIDGET_BG
+                };
+                let adsb_stroke = Stroke::new(
+                    1.5,
+                    if adsb_active { theme::ACCENT } else { theme::BORDER },
+                );
+                let adsb_lbl = if self.adsb_start_pending {
+                    "ADS-B…"
+                } else if adsb_active {
+                    "ADS-B"
+                } else {
+                    "ADS-B"
+                };
+                let adsb_color = if adsb_active { theme::ACCENT } else { theme::TEXT_MUTED };
+                let adsb_btn = egui::Button::new(
+                    RichText::new(adsb_lbl).small().strong().color(adsb_color),
+                )
+                .fill(adsb_fill)
+                .stroke(adsb_stroke);
+                if ui
+                    .add_sized(Vec2::new(btn_w, 28.0), adsb_btn)
+                    .on_hover_text("ADS-B tracking — receive aircraft transponders on 1090 MHz")
+                    .clicked()
+                    && !adsb_active
+                {
+                    self.adsb_start_sequence();
+                    self.show_adsb_map = true;
+                }
+            });
+
+            // Map toggle link (small, under the mode buttons)
+            ui.add_space(4.0);
+            let map_lbl = if self.show_adsb_map { "^ Hide map" } else { "v Show map" };
+            let map_color = if adsb_active { theme::ACCENT } else { theme::TEXT_MUTED };
+            if ui
+                .add(egui::Label::new(RichText::new(map_lbl).small().color(map_color)).sense(egui::Sense::click()))
+                .on_hover_text("Toggle ADS-B aircraft map window")
+                .clicked()
+            {
+                self.show_adsb_map = !self.show_adsb_map;
+            }
         }
 
         // ── FM Band Scan ──────────────────────────────────────────────────────

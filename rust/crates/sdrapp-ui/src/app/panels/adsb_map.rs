@@ -243,6 +243,9 @@ pub struct AdsbMapWindow {
     /// OSM zoom level used for the most recent tile set. When this changes, the
     /// cache and pending set are flushed so stale tiles don't accumulate.
     last_tile_z: u8,
+    /// TextureHandles evicted during the previous frame, held for one extra frame
+    /// so in-flight GPU commands can finish before wgpu destroys the textures.
+    evicted_tiles: Vec<TextureHandle>,
 }
 
 impl AdsbMapWindow {
@@ -277,6 +280,7 @@ impl AdsbMapWindow {
             tile_tx,
             tile_rx,
             last_tile_z: 255, // force first-frame flush
+            evicted_tiles: Vec::new(),
         }
     }
 
@@ -619,9 +623,11 @@ impl AdsbMapWindow {
     fn draw_tiles(&mut self, painter: &Painter, rect: Rect) {
         let z = osm_zoom(self.zoom_ppd);
 
-        // When zoom level changes, flush stale tiles so memory doesn't grow unboundedly.
+        // When zoom level changes, move stale tiles into evicted_tiles rather than
+        // dropping immediately — in-flight GPU commands from the previous frame may
+        // still reference those textures.  We drop them next frame instead.
         if z != self.last_tile_z {
-            self.tile_cache.clear();
+            self.evicted_tiles.extend(self.tile_cache.drain().map(|(_, v)| v));
             self.pending_tiles.clear();
             self.last_tile_z = z;
         }
@@ -670,7 +676,8 @@ impl AdsbMapWindow {
                 let se = geo_to_screen(
                     rect, se_lat, se_lon, self.center_lat, self.center_lon, self.zoom_ppd,
                 );
-                let tile_rect = Rect::from_min_max(nw, se);
+                // Expand by 0.5 px on each side to close sub-pixel seams between tiles.
+                let tile_rect = Rect::from_min_max(nw, se).expand(0.5);
                 if !rect.intersects(tile_rect) {
                     continue;
                 }
@@ -706,6 +713,8 @@ impl AdsbMapWindow {
         painter.rect_filled(rect, Rounding::ZERO, Color32::from_rgb(0x0D, 0x11, 0x17));
 
         // ── Drain tile fetch results + draw OSM tiles ─────────────────────────
+        // Drop handles evicted last frame — GPU submit from that frame is now done.
+        self.evicted_tiles.clear();
         self.drain_tile_results(&response.ctx);
         self.draw_tiles(painter, rect);
 
@@ -980,6 +989,7 @@ impl AdsbMapWindow {
 
         let base_color = altitude_color(ac.altitude_ft);
         let now = Instant::now();
+        let clip = rect.expand(2.0);
 
         for i in 0..trail.points.len().saturating_sub(1) {
             let p0 = trail.points[i];
@@ -987,15 +997,16 @@ impl AdsbMapWindow {
             let t0 = trail.times[i];
 
             let age_secs = now.duration_since(t0).as_secs_f32();
-            let alpha = (1.0 - age_secs / 120.0).clamp(0.0, 0.6); // fade over 2 min
+            let alpha = (1.0 - age_secs / 120.0).clamp(0.0, 0.6);
             if alpha < 0.02 { continue; }
 
-            let c = base_color.linear_multiply(alpha);
             let s0 = geo_to_screen(rect, p0.0, p0.1, self.center_lat, self.center_lon, self.zoom_ppd);
             let s1 = geo_to_screen(rect, p1.0, p1.1, self.center_lat, self.center_lon, self.zoom_ppd);
 
-            if rect.expand(4.0).contains(s0) || rect.expand(4.0).contains(s1) {
-                painter.line_segment([s0, s1], Stroke::new(1.2, c));
+            // Cohen-Sutherland clip so long off-screen segments don't shoot across the map.
+            if let Some((c0, c1)) = clip_segment(s0, s1, clip) {
+                let c = base_color.linear_multiply(alpha);
+                painter.line_segment([c0, c1], Stroke::new(1.5, c));
             }
         }
     }
@@ -1004,6 +1015,39 @@ impl AdsbMapWindow {
 impl Default for AdsbMapWindow {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── Cohen-Sutherland line clipping ────────────────────────────────────────────
+
+/// Clip line segment (p0, p1) to the rectangle `clip`.
+/// Returns the clipped endpoints, or `None` if the segment is entirely outside.
+fn clip_segment(mut p0: Pos2, mut p1: Pos2, clip: Rect) -> Option<(Pos2, Pos2)> {
+    const LEFT: u8 = 1; const RIGHT: u8 = 2; const BOTTOM: u8 = 4; const TOP: u8 = 8;
+    let code = |p: Pos2| -> u8 {
+        let mut c = 0u8;
+        if p.x < clip.left()   { c |= LEFT; }
+        if p.x > clip.right()  { c |= RIGHT; }
+        if p.y < clip.top()    { c |= TOP; }
+        if p.y > clip.bottom() { c |= BOTTOM; }
+        c
+    };
+    let mut c0 = code(p0);
+    let mut c1 = code(p1);
+    loop {
+        if c0 | c1 == 0 { return Some((p0, p1)); }  // both inside
+        if c0 & c1 != 0 { return None; }             // trivially outside
+        let c = if c0 != 0 { c0 } else { c1 };
+        let pt = if c & TOP != 0 {
+            Pos2::new(p0.x + (p1.x - p0.x) * (clip.top()    - p0.y) / (p1.y - p0.y), clip.top())
+        } else if c & BOTTOM != 0 {
+            Pos2::new(p0.x + (p1.x - p0.x) * (clip.bottom() - p0.y) / (p1.y - p0.y), clip.bottom())
+        } else if c & RIGHT != 0 {
+            Pos2::new(clip.right(),  p0.y + (p1.y - p0.y) * (clip.right()  - p0.x) / (p1.x - p0.x))
+        } else {
+            Pos2::new(clip.left(),   p0.y + (p1.y - p0.y) * (clip.left()   - p0.x) / (p1.x - p0.x))
+        };
+        if c == c0 { p0 = pt; c0 = code(p0); } else { p1 = pt; c1 = code(p1); }
     }
 }
 
@@ -1103,6 +1147,34 @@ fn show_aircraft_detail(ui: &mut egui::Ui, ac: &AircraftState) -> bool {
         });
 
     ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(6.0);
+
+    // ── External lookup ───────────────────────────────────────────────────────
+    let icao_hex = format!("{:06X}", ac.icao);
+    let fa_url   = format!("https://flightaware.com/live/modes/{}/redirect", icao_hex.to_lowercase());
+    let adsbx_url = format!("https://globe.adsbexchange.com/?icao={}", icao_hex.to_lowercase());
+    let ps_url   = format!("https://www.planespotters.net/hex/{}", icao_hex.to_uppercase());
+
+    ui.label(RichText::new("Look up").small().color(muted));
+    let btn_fill = Color32::from_rgb(0x18, 0x24, 0x34);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().button_padding = egui::Vec2::new(5.0, 3.0);
+        if ui.add(egui::Button::new(RichText::new("FlightAware").small().color(accent)).fill(btn_fill))
+            .on_hover_text(&fa_url).clicked() {
+            let _ = open::that(&fa_url);
+        }
+        if ui.add(egui::Button::new(RichText::new("ADS-B Exch.").small().color(accent)).fill(btn_fill))
+            .on_hover_text(&adsbx_url).clicked() {
+            let _ = open::that(&adsbx_url);
+        }
+        if ui.add(egui::Button::new(RichText::new("Planespotters").small().color(accent)).fill(btn_fill))
+            .on_hover_text(&ps_url).clicked() {
+            let _ = open::that(&ps_url);
+        }
+    });
+
+    ui.add_space(6.0);
     ui.separator();
     ui.add_space(4.0);
 
