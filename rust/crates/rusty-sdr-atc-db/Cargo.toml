@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 ureq = { version = "2", features = ["tls"] }
+csv = "1"
 tracing = { workspace = true }
 dirs = { workspace = true }
 

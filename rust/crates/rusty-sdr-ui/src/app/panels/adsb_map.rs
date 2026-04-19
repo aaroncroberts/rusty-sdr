@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -16,6 +17,7 @@ use egui::{
     RichText, Rounding, Sense, Stroke, TextureHandle, TextureOptions, Vec2,
 };
 use rusty_sdr_adsb::state::AircraftState;
+use rusty_sdr_atc_db::{AtcDb, AtcFrequency};
 
 // ── Flight info lookup ────────────────────────────────────────────────────────
 
@@ -349,6 +351,8 @@ pub struct AdsbMapWindow {
     pub start_requested: bool,
     /// Set when the user clicks Stop in the map toolbar; main app consumes & clears.
     pub stop_requested: bool,
+    /// Set when the user clicks an ATC frequency button; main app tunes SDR and clears.
+    pub tune_frequency_hz: Option<u64>,
 
     /// Whether the FLIGHT DATA section in the detail panel is expanded.
     flight_info_expanded: bool,
@@ -362,6 +366,14 @@ pub struct AdsbMapWindow {
     flight_info_rx: crossbeam_channel::Receiver<FlightInfoResult>,
     /// ICAO that was selected last frame — used to detect selection changes.
     prev_selected_icao: Option<u32>,
+
+    // ── ATC frequency lookup ──────────────────────────────────────────────────
+    /// Shared ATC frequency database (loaded once at startup).
+    atc_db: Arc<AtcDb>,
+    /// ATC frequencies for the currently selected aircraft (empty if none selected / no position).
+    pub selected_atc_freqs: Vec<AtcFrequency>,
+    /// Position at which the last ATC query was run (lat, lon); None forces re-query.
+    last_atc_query_pos: Option<(f64, f64)>,
 
     // ── OSM tile cache ────────────────────────────────────────────────────────
     /// Loaded tile textures keyed by (z, x, y).
@@ -409,6 +421,7 @@ impl AdsbMapWindow {
             sample_rate_ok: true,
             start_requested: false,
             stop_requested: false,
+            tune_frequency_hz: None,
             tile_cache: HashMap::new(),
             pending_tiles: HashSet::new(),
             tile_tx,
@@ -420,6 +433,9 @@ impl AdsbMapWindow {
             flight_info_tx: fi_tx,
             flight_info_rx: fi_rx,
             prev_selected_icao: None,
+            atc_db: Arc::new(AtcDb::load()),
+            selected_atc_freqs: Vec::new(),
+            last_atc_query_pos: None,
         }
     }
 
@@ -446,6 +462,7 @@ impl AdsbMapWindow {
         aircraft: &[AircraftState],
         home_lat: f64,
         home_lon: f64,
+        atc_mode_active: bool,
     ) -> Option<u32> {
         // Handle OS window close button
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -469,6 +486,9 @@ impl AdsbMapWindow {
         // ── Trigger lookup when selection changes ─────────────────────────────
         if self.selected_icao != self.prev_selected_icao {
             self.prev_selected_icao = self.selected_icao;
+            // Clear ATC frequencies when selection changes; re-query below.
+            self.selected_atc_freqs.clear();
+            self.last_atc_query_pos = None;
             if let Some(icao) = self.selected_icao {
                 if !self.flight_info_cache.contains_key(&icao) {
                     let callsign = aircraft.iter()
@@ -476,6 +496,26 @@ impl AdsbMapWindow {
                         .and_then(|a| a.callsign.clone());
                     self.flight_info_cache.insert(icao, FlightLookupState::Fetching);
                     fetch_flight_info_async(self.flight_info_tx.clone(), icao, callsign);
+                }
+            }
+        }
+
+        // ── ATC frequency query (on selection or when aircraft moves > 1 nm) ──
+        if let Some(icao) = self.selected_icao {
+            if let Some(ac) = aircraft.iter().find(|a| a.icao == icao) {
+                if let (Some(lat), Some(lon)) = (ac.lat, ac.lon) {
+                    let needs_query = match self.last_atc_query_pos {
+                        None => true,
+                        Some((prev_lat, prev_lon)) => {
+                            rusty_sdr_atc_db::haversine_nm(lat, lon, prev_lat, prev_lon) > 1.0
+                        }
+                    };
+                    if needs_query {
+                        let alt_ft = ac.altitude_ft.unwrap_or(0) as f32;
+                        self.selected_atc_freqs =
+                            self.atc_db.query_nearby(lat, lon, alt_ft, 50.0);
+                        self.last_atc_query_pos = Some((lat, lon));
+                    }
                 }
             }
         }
@@ -596,6 +636,23 @@ impl AdsbMapWindow {
                         .clicked()
                     {
                         self.map_dim = !self.map_dim;
+                    }
+
+                    // ── Back to ADS-B (visible only in ATC mode) ─────────────
+                    if atc_mode_active {
+                        ui.separator();
+                        if ui
+                            .add(egui::Button::new(
+                                RichText::new("Back to ADS-B")
+                                    .color(Color32::from_rgb(0xFF, 0xCC, 0x44)),
+                            )
+                            .fill(Color32::from_rgb(0x38, 0x28, 0x08)))
+                            .on_hover_text("Return to 1090 MHz and restart ADS-B decoder")
+                            .clicked()
+                        {
+                            self.tune_frequency_hz = Some(1_090_000_000);
+                            self.start_requested = true;
+                        }
                     }
 
                     ui.separator();
@@ -781,6 +838,8 @@ impl AdsbMapWindow {
                             close_detail = show_aircraft_detail(
                                 ui, ac, selected_flight_info,
                                 &mut self.flight_info_expanded,
+                                &self.selected_atc_freqs,
+                                &mut self.tune_frequency_hz,
                             );
                         });
                 }
@@ -1346,6 +1405,8 @@ fn show_aircraft_detail(
     ac: &AircraftState,
     flight: Option<&FlightLookupState>,
     flight_expanded: &mut bool,
+    atc_freqs: &[AtcFrequency],
+    tune_frequency_hz: &mut Option<u64>,
 ) -> bool {
     let muted = Color32::from_rgb(0x5A, 0x6A, 0x7A);
     let value_color = Color32::from_rgb(0xD8, 0xE8, 0xF0);
@@ -1583,6 +1644,54 @@ fn show_aircraft_detail(
         if ui.add(egui::Button::new(RichText::new("↗ Planespotters").small().color(accent)).fill(btn_fill))
             .on_hover_text(&ps_url).clicked() { let _ = open::that(&ps_url); }
     });
+
+    // ── ATC COMMS ─────────────────────────────────────────────────────────────
+    if ac.lat.is_some() && ac.lon.is_some() {
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(RichText::new("ATC COMMS").small().color(muted));
+        ui.add_space(2.0);
+
+        if atc_freqs.is_empty() {
+            ui.label(RichText::new("No nearby airports found").small().color(muted));
+        } else {
+            // Group by airport (walk in order — already sorted by distance)
+            let mut last_ident = "";
+            for f in atc_freqs {
+                if f.airport_ident != last_ident {
+                    last_ident = &f.airport_ident;
+                    let dist_label = format!(
+                        "{} · {:.0} nm",
+                        f.airport_name, f.distance_nm
+                    );
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(&dist_label).small().color(accent));
+                }
+                let freq_mhz = f.freq_hz as f64 / 1_000_000.0;
+                let btn_label = format!("[{}] {:.3}", f.freq_type, freq_mhz);
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(&btn_label).small().color(value_color))
+                            .fill(Color32::from_rgb(0x10, 0x1E, 0x30))
+                    )
+                    .on_hover_text(format!(
+                        "Tune to {:.3} MHz AM · pauses ADS-B",
+                        freq_mhz
+                    ))
+                    .clicked()
+                {
+                    *tune_frequency_hz = Some(f.freq_hz);
+                }
+            }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Tuning pauses ADS-B tracking")
+                    .size(9.0)
+                    .color(Color32::from_rgb(0xFF, 0xCC, 0x44)),
+            );
+        }
+    }
 
     ui.add_space(6.0);
     ui.separator();

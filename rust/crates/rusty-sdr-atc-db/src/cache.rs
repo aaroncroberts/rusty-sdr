@@ -72,134 +72,114 @@ fn fetch_csv(url: &str, filename: &str) -> String {
 
 // ── CSV parsers ───────────────────────────────────────────────────────────────
 
-/// Parse airports.csv.
+/// Parse airports.csv using the `csv` crate.
 ///
-/// Expected header (columns that matter):
-/// `id,ident,type,name,latitude_deg,longitude_deg,...`
-fn parse_airports(csv: &str) -> Vec<Airport> {
+/// Uses header-based column lookup so column order changes in future
+/// OurAirports data releases are handled automatically.
+fn parse_airports(data: &str) -> Vec<Airport> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .flexible(true)
+        .trim(csv::Trim::All)
+        .from_reader(data.as_bytes());
+
+    let headers = match rdr.headers() {
+        Ok(h) => h.clone(),
+        Err(e) => {
+            tracing::warn!(error = %e, "airports.csv: failed to read headers");
+            return Vec::new();
+        }
+    };
+
+    let find = |col: &str| -> Option<usize> {
+        let idx = headers.iter().position(|h| h == col);
+        if idx.is_none() {
+            tracing::warn!("airports.csv missing '{}' column", col);
+        }
+        idx
+    };
+
+    let (Some(ident_idx), Some(name_idx), Some(lat_idx), Some(lon_idx)) = (
+        find("ident"),
+        find("name"),
+        find("latitude_deg"),
+        find("longitude_deg"),
+    ) else {
+        return Vec::new();
+    };
+
     let mut out = Vec::new();
-    let mut lines = csv.lines();
-
-    // Parse header to find column indices.
-    let header = match lines.next() {
-        Some(h) => h,
-        None => return out,
-    };
-    let cols: Vec<&str> = split_csv_row(header);
-    let Some(ident_idx) = cols.iter().position(|c| *c == "ident") else {
-        tracing::warn!("airports.csv missing 'ident' column");
-        return out;
-    };
-    let Some(name_idx) = cols.iter().position(|c| *c == "name") else {
-        tracing::warn!("airports.csv missing 'name' column");
-        return out;
-    };
-    let Some(lat_idx) = cols.iter().position(|c| *c == "latitude_deg") else {
-        tracing::warn!("airports.csv missing 'latitude_deg' column");
-        return out;
-    };
-    let Some(lon_idx) = cols.iter().position(|c| *c == "longitude_deg") else {
-        tracing::warn!("airports.csv missing 'longitude_deg' column");
-        return out;
-    };
-
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let fields = split_csv_row(line);
-        let max_idx = ident_idx.max(name_idx).max(lat_idx).max(lon_idx);
-        if fields.len() <= max_idx {
-            continue;
-        }
-        let lat: f64 = match fields[lat_idx].trim_matches('"').parse() {
-            Ok(v) => v,
+    for result in rdr.records() {
+        let rec = match result {
+            Ok(r) => r,
             Err(_) => continue,
         };
-        let lon: f64 = match fields[lon_idx].trim_matches('"').parse() {
-            Ok(v) => v,
-            Err(_) => continue,
+        let lat: f64 = match rec.get(lat_idx).and_then(|s| s.parse().ok()) {
+            Some(v) => v,
+            None => continue,
         };
-        out.push(Airport {
-            ident: fields[ident_idx].trim_matches('"').to_string(),
-            name: fields[name_idx].trim_matches('"').to_string(),
-            lat,
-            lon,
-        });
+        let lon: f64 = match rec.get(lon_idx).and_then(|s| s.parse().ok()) {
+            Some(v) => v,
+            None => continue,
+        };
+        let ident = match rec.get(ident_idx) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let name = rec.get(name_idx).unwrap_or("").to_string();
+        out.push(Airport { ident, name, lat, lon });
     }
     out
 }
 
-/// Parse airport-frequencies.csv.
-///
-/// Expected header (columns that matter):
-/// `id,airport_ref,airport_ident,type,description,frequency_mhz`
-fn parse_frequencies(csv: &str) -> Vec<AirportFrequency> {
+/// Parse airport-frequencies.csv using the `csv` crate.
+fn parse_frequencies(data: &str) -> Vec<AirportFrequency> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .flexible(true)
+        .trim(csv::Trim::All)
+        .from_reader(data.as_bytes());
+
+    let headers = match rdr.headers() {
+        Ok(h) => h.clone(),
+        Err(e) => {
+            tracing::warn!(error = %e, "airport-frequencies.csv: failed to read headers");
+            return Vec::new();
+        }
+    };
+
+    let find = |col: &str| -> Option<usize> {
+        let idx = headers.iter().position(|h| h == col);
+        if idx.is_none() {
+            tracing::warn!("airport-frequencies.csv missing '{}' column", col);
+        }
+        idx
+    };
+
+    let (Some(ident_idx), Some(type_idx), Some(mhz_idx)) = (
+        find("airport_ident"),
+        find("type"),
+        find("frequency_mhz"),
+    ) else {
+        return Vec::new();
+    };
+
     let mut out = Vec::new();
-    let mut lines = csv.lines();
-
-    let header = match lines.next() {
-        Some(h) => h,
-        None => return out,
-    };
-    let cols: Vec<&str> = split_csv_row(header);
-    let Some(ident_idx) = cols.iter().position(|c| *c == "airport_ident") else {
-        tracing::warn!("airport-frequencies.csv missing 'airport_ident' column");
-        return out;
-    };
-    let Some(type_idx) = cols.iter().position(|c| *c == "type") else {
-        tracing::warn!("airport-frequencies.csv missing 'type' column");
-        return out;
-    };
-    let Some(mhz_idx) = cols.iter().position(|c| *c == "frequency_mhz") else {
-        tracing::warn!("airport-frequencies.csv missing 'frequency_mhz' column");
-        return out;
-    };
-
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let fields = split_csv_row(line);
-        let max_idx = ident_idx.max(type_idx).max(mhz_idx);
-        if fields.len() <= max_idx {
-            continue;
-        }
-        let freq_mhz: f64 = match fields[mhz_idx].trim_matches('"').parse() {
-            Ok(v) => v,
+    for result in rdr.records() {
+        let rec = match result {
+            Ok(r) => r,
             Err(_) => continue,
         };
-        out.push(AirportFrequency {
-            airport_ident: fields[ident_idx].trim_matches('"').to_string(),
-            freq_type: fields[type_idx].trim_matches('"').to_string(),
-            freq_mhz,
-        });
+        let freq_mhz: f64 = match rec.get(mhz_idx).and_then(|s| s.parse().ok()) {
+            Some(v) => v,
+            None => continue,
+        };
+        let airport_ident = match rec.get(ident_idx) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let freq_type = rec.get(type_idx).unwrap_or("").to_string();
+        out.push(AirportFrequency { airport_ident, freq_type, freq_mhz });
     }
     out
-}
-
-/// Split a CSV row, handling double-quoted fields (no embedded newlines).
-/// This is intentionally simple — OurAirports CSVs are well-formed.
-fn split_csv_row(line: &str) -> Vec<&str> {
-    let mut fields = Vec::new();
-    let mut start = 0;
-    let mut in_quotes = false;
-    let bytes = line.as_bytes();
-
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => in_quotes = !in_quotes,
-            b',' if !in_quotes => {
-                fields.push(&line[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    fields.push(&line[start..]);
-    fields
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -287,11 +267,13 @@ id,airport_ref,airport_ident,type,description,frequency_mhz
     }
 
     #[test]
-    fn split_csv_row_handles_quoted_commas() {
-        let row = r#"1,"Name, with comma",37.0"#;
-        let fields = split_csv_row(row);
-        assert_eq!(fields.len(), 3);
-        assert_eq!(fields[1], r#""Name, with comma""#);
+    fn parse_airports_handles_quoted_commas_in_name() {
+        // Airport names like "San Francisco, Intl" contain embedded commas
+        let csv = "id,ident,type,name,latitude_deg,longitude_deg\n\
+                   1,KXYZ,airport,\"Name, with comma\",37.0,-122.0\n";
+        let airports = parse_airports(csv);
+        assert_eq!(airports.len(), 1);
+        assert_eq!(airports[0].name, "Name, with comma");
     }
 
     #[test]

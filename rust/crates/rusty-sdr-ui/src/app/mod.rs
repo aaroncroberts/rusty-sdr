@@ -195,6 +195,11 @@ pub struct SdrApp {
     sat_map: std::sync::Arc<parking_lot::Mutex<panels::sat_map::SatMapWindow>>,
     /// Whether the satellite map window is open.
     show_sat_map: bool,
+
+    // ── ATC tuning ────────────────────────────────────────────────────────────
+    /// True when the SDR is tuned to an ATC frequency via the ADS-B map panel.
+    /// Controls visibility of the "Back to ADS-B" toolbar button.
+    pub atc_mode_active: bool,
 }
 
 impl SdrApp {
@@ -330,6 +335,7 @@ impl SdrApp {
                 panels::sat_map::SatMapWindow::new(sat_map_home_lat, sat_map_home_lon),
             )),
             show_sat_map,
+            atc_mode_active: false,
         }
     }
 }
@@ -653,7 +659,7 @@ impl eframe::App for SdrApp {
                 .unwrap_or(0);
             let sr = self.shared.read().sample_rate_sps;
 
-            let (start_req, stop_req, window_closed) = {
+            let (start_req, stop_req, tune_freq, window_closed) = {
                 let mut map = self.adsb_map.lock();
 
                 // Push current state so the map window can display it
@@ -693,6 +699,7 @@ impl eframe::App for SdrApp {
                 (
                     std::mem::take(&mut map.start_requested),
                     std::mem::take(&mut map.stop_requested),
+                    map.tune_frequency_hz.take(),
                     window_closed,
                 )
             };
@@ -700,6 +707,23 @@ impl eframe::App for SdrApp {
             // Window closed by user — stop decoder, return to listen
             if window_closed {
                 self.adsb_stop_decoder();
+                self.atc_mode_active = false;
+            }
+
+            // ATC tune requested: set frequency + AM mode (or return to ADS-B)
+            if let Some(freq_hz) = tune_freq {
+                use rusty_sdr_core::signal_path::{DemodMode, ReceiverCmd};
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq_hz).into());
+                if freq_hz == 1_090_000_000 {
+                    // Returning to ADS-B — decoder restart handled by start_req above
+                    self.atc_mode_active = false;
+                } else {
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(DemodMode::Am).into());
+                    self.config.ui.frequency_hz = freq_hz;
+                    self.frequency_widget = crate::frequency::FrequencyWidget::new(freq_hz);
+                    self.config_dirty = true;
+                    self.atc_mode_active = true;
+                }
             }
 
             // Deferred start: fires each frame until the hardware reaches ≥ 2 Msps
@@ -724,6 +748,7 @@ impl eframe::App for SdrApp {
             let store_arc = std::sync::Arc::clone(&self.adsb_store);
             let home_lat = self.config.ui.home_lat;
             let home_lon = self.config.ui.home_lon;
+            let atc_mode_active = self.atc_mode_active;
             ctx.show_viewport_deferred(
                 egui::ViewportId::from_hash_of("adsb_map"),
                 egui::ViewportBuilder::default()
@@ -740,7 +765,7 @@ impl eframe::App for SdrApp {
                         .cloned().collect();
                     let mut map = map_arc.lock();
                     let mut open = true;
-                    map.show(ctx, &mut open, &aircraft, home_lat, home_lon);
+                    map.show(ctx, &mut open, &aircraft, home_lat, home_lon, atc_mode_active);
                     if !open {
                         map.viewport_open = false;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
