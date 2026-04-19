@@ -18,7 +18,9 @@ pub const EXPIRY: Duration = Duration::from_secs(300);
 pub const STALE_AFTER: Duration = Duration::from_secs(60);
 
 /// CPR frame window: pair must arrive within this interval to be decoded.
-const CPR_WINDOW: Duration = Duration::from_secs(60);
+/// 10 s matches dump1090/readsb — prevents pairing frames where the aircraft
+/// has crossed an NL zone boundary, which would produce a bad fix.
+const CPR_WINDOW: Duration = Duration::from_secs(10);
 
 /// Decoded state for one aircraft.
 #[derive(Debug, Clone)]
