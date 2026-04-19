@@ -87,8 +87,8 @@ pub enum BookmarkCmd {
     Add(String),
     /// Remove bookmark at the given index.
     Remove(usize),
-    /// Edit an existing bookmark at index: new (name, freq_hz, mode, category, nfm_bw, squelch, ctcss).
-    Edit(usize, String, u64, DemodMode, String, Option<u32>, Option<f32>, Option<bool>),
+    /// Edit an existing bookmark at index: new (name, freq_hz, mode, category, nfm_bw, squelch, ctcss, antenna).
+    Edit(usize, String, u64, DemodMode, String, Option<u32>, Option<f32>, Option<bool>, Option<String>),
 }
 
 /// Bookmark scanner commands.

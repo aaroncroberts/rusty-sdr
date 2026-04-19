@@ -322,6 +322,7 @@ impl SdrApp {
                     bm.nfm_bandwidth_hz.unwrap_or(12_500),
                     bm.squelch_threshold_dbfs.unwrap_or(-50.0),
                     bm.ctcss_enabled.unwrap_or(false),
+                    bm.antenna.clone(),
                 );
                 self.bookmark_edit_idx = Some(i);
             }
@@ -335,13 +336,14 @@ impl SdrApp {
                 let nfm_bw = self.bookmark_edit_buf.4;
                 let squelch = self.bookmark_edit_buf.5;
                 let ctcss = self.bookmark_edit_buf.6;
+                let antenna = self.bookmark_edit_buf.7.clone();
                 let (nfm_bw_opt, squelch_opt, ctcss_opt) = if mode == DemodMode::Nfm {
                     (Some(nfm_bw), Some(squelch), Some(ctcss))
                 } else {
                     (None, None, None)
                 };
                 let _ = self.cmd_tx.try_send(
-                    BookmarkCmd::Edit(i, name.clone(), freq, mode, cat.clone(), nfm_bw_opt, squelch_opt, ctcss_opt).into(),
+                    BookmarkCmd::Edit(i, name.clone(), freq, mode, cat.clone(), nfm_bw_opt, squelch_opt, ctcss_opt, antenna.clone()).into(),
                 );
                 if i < self.config.bookmarks.len() {
                     let mode_str = match mode {
@@ -361,6 +363,7 @@ impl SdrApp {
                         nfm_bandwidth_hz: nfm_bw_opt,
                         squelch_threshold_dbfs: squelch_opt,
                         ctcss_enabled: ctcss_opt,
+                        antenna,
                     };
                     self.config_dirty = true;
                 }
@@ -453,7 +456,11 @@ impl SdrApp {
                                 "Cw" => DemodMode::Cw,
                                 _ => DemodMode::Wbfm,
                             };
-                            Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category)
+                            {
+                                let mut bm = Bookmark::new(&b.name, b.freq_hz, mode).with_category(&b.category);
+                                bm.antenna = b.antenna.clone();
+                                bm
+                            }
                         })
                         .collect();
                     self.shared.write().bookmarks = new_bms;

@@ -448,7 +448,7 @@ impl SignalPath {
                                     }
                                 }
                             }
-                            BookmarkCmd::Edit(idx, name, freq, mode, cat, nfm_bw, squelch, ctcss) => {
+                            BookmarkCmd::Edit(idx, name, freq, mode, cat, nfm_bw, squelch, ctcss, antenna) => {
                                 let mut s = shared_clone.write();
                                 if idx < s.bookmarks.len() {
                                     s.bookmarks[idx] = Bookmark {
@@ -459,6 +459,7 @@ impl SignalPath {
                                         nfm_bandwidth_hz: nfm_bw,
                                         squelch_threshold_dbfs: squelch,
                                         ctcss_enabled: ctcss,
+                                        antenna,
                                     };
                                 }
                             }

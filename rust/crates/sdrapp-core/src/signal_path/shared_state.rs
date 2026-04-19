@@ -81,6 +81,9 @@ pub struct Bookmark {
     pub squelch_threshold_dbfs: Option<f32>,
     /// CTCSS tone squelch enabled (None = use current receiver setting).
     pub ctcss_enabled: Option<bool>,
+    /// Antenna port override: Some("A"), Some("B"), Some("C"), or None.
+    /// When set, recalling this bookmark switches to the specified hardware port.
+    pub antenna: Option<String>,
 }
 
 impl Bookmark {
@@ -94,6 +97,7 @@ impl Bookmark {
             nfm_bandwidth_hz: None,
             squelch_threshold_dbfs: None,
             ctcss_enabled: None,
+            antenna: None,
         }
     }
 

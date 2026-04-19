@@ -378,6 +378,10 @@ pub struct BookmarkConfig {
     /// Whether CTCSS tone squelch was enabled on this channel.
     #[serde(default)]
     pub ctcss_enabled: Option<bool>,
+    /// Antenna port override: Some("A"), Some("B"), Some("C"), or None (no override).
+    /// When set, recalling this bookmark automatically switches to the specified port.
+    #[serde(default)]
+    pub antenna: Option<String>,
 }
 
 impl BookmarkConfig {
@@ -390,6 +394,7 @@ impl BookmarkConfig {
             nfm_bandwidth_hz: None,
             squelch_threshold_dbfs: None,
             ctcss_enabled: None,
+            antenna: None,
         }
     }
 
@@ -440,6 +445,12 @@ impl BookmarkConfig {
     /// Builder method to attach a category.
     pub fn with_category(mut self, cat: impl Into<String>) -> Self {
         self.category = cat.into();
+        self
+    }
+
+    /// Set an antenna port override for this bookmark ("A", "B", or "C").
+    pub fn with_antenna(mut self, port: impl Into<String>) -> Self {
+        self.antenna = Some(port.into());
         self
     }
 
@@ -594,5 +605,35 @@ mod tests {
     fn adsb_show_map_defaults_to_false() {
         // Confirm the window is not shown on fresh config
         assert!(!UiConfig::default().show_adsb_map);
+    }
+
+    // ── BookmarkConfig antenna field ──────────────────────────────────────────
+
+    #[test]
+    fn bookmark_antenna_defaults_to_none_for_old_configs() {
+        // Old bookmark JSON without the antenna field should deserialize cleanly.
+        let old_json = r#"{"name":"BBC Radio 4","freq_hz":93500000,"mode":"Wbfm"}"#;
+        let bm: BookmarkConfig = serde_json::from_str(old_json).unwrap();
+        assert_eq!(bm.name, "BBC Radio 4");
+        assert!(bm.antenna.is_none(), "antenna should default to None");
+    }
+
+    #[test]
+    fn bookmark_antenna_round_trips() {
+        let bm = BookmarkConfig::new("WWV 10 MHz", 10_000_000, "Am")
+            .with_antenna("C");
+        let json = serde_json::to_string(&bm).unwrap();
+        let restored: BookmarkConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.antenna, Some("C".into()));
+    }
+
+    #[test]
+    fn bookmark_without_antenna_serializes_without_field() {
+        let bm = BookmarkConfig::new("FM Station", 105_700_000, "Wbfm");
+        let json = serde_json::to_string(&bm).unwrap();
+        // When antenna is None, serde should skip it (no "antenna":null in output)
+        // Deserializing again must still work cleanly
+        let restored: BookmarkConfig = serde_json::from_str(&json).unwrap();
+        assert!(restored.antenna.is_none());
     }
 }
