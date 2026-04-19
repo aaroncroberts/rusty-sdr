@@ -71,7 +71,7 @@ impl SdrApp {
         ui.label(RichText::new("VOLUME").color(theme::TEXT_MUTED).small());
         ui.add_space(4.0);
 
-        let (vol_learn, vol_cc, map_pending) = {
+        let (vol_learn, vol_cc, map_pending, is_running) = {
             let s = self.shared.read();
             let learn = s.midi_learn_target.as_deref() == Some("volume");
             let cc = s
@@ -79,7 +79,7 @@ impl SdrApp {
                 .iter()
                 .find(|(_, v)| v.as_str() == "volume")
                 .map(|(&c, _)| c);
-            (learn, cc, s.midi_map_pending.is_some())
+            (learn, cc, s.midi_map_pending.is_some(), s.is_running)
         };
         let mut vol_learn_req = false;
         let mut vol_learn_cancel = false;
@@ -163,9 +163,8 @@ impl SdrApp {
         }
 
         // VU meter (stereo bars)
-        // Peak level decays each frame; in real wiring this reads from AudioSink
         let level = self.vu_peak * self.config.ui.volume;
-        self.draw_vu_meter(ui, level, level * 0.92, self.muted);
+        self.draw_vu_meter(ui, level, level * 0.92, self.muted, is_running);
 
         // ── ADS-B Flight Tracker ──────────────────────────────────────────────
         ui.add_space(8.0);
@@ -816,12 +815,12 @@ impl SdrApp {
         }
     }
 
-    pub(in crate::app) fn draw_vu_meter(&mut self, ui: &mut Ui, left: f32, right: f32, muted: bool) {
+    pub(in crate::app) fn draw_vu_meter(&mut self, ui: &mut Ui, left: f32, right: f32, muted: bool, running: bool) {
         let bar_w = ui.available_width() / 2.0 - 4.0;
         let bar_h = 8.0;
 
         ui.horizontal(|ui| {
-            for &level in &[left, right] {
+            for &_level in &[left, right] {
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(bar_w, bar_h), egui::Sense::hover());
 
@@ -830,24 +829,15 @@ impl SdrApp {
                 // Background track
                 painter.rect_filled(rect, 2.0, theme::WIDGET_BG);
 
-                if muted {
-                    // Muted: full-width amber bar so the indicator is obvious.
+                if !running {
+                    // Stopped: no fill — dark background only.
+                } else if muted {
+                    // Muted: full-width amber/yellow bar.
                     let mute_color = Color32::from_rgba_premultiplied(0xC0, 0x80, 0x00, 0x88);
                     painter.rect_filled(rect, 2.0, mute_color);
                 } else {
-                    // Active: level-proportional bar with green/yellow/red color zones.
-                    let fill_w = rect.width() * level.clamp(0.0, 1.0);
-                    if fill_w > 0.5 {
-                        let fill_rect = egui::Rect::from_min_size(rect.min, Vec2::new(fill_w, bar_h));
-                        let color = if level > 0.9 {
-                            theme::VU_HIGH
-                        } else if level > 0.6 {
-                            theme::VU_MID
-                        } else {
-                            theme::VU_LOW
-                        };
-                        painter.rect_filled(fill_rect, 2.0, color);
-                    }
+                    // Running + unmuted: solid green bar.
+                    painter.rect_filled(rect, 2.0, theme::VU_LOW);
                 }
             }
         });
