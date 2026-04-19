@@ -31,9 +31,13 @@ pub struct AdsbDecoder {
     running: Arc<AtomicBool>,
     /// Total Mode S DF-17 frames that passed CRC (for status display).
     pub frame_count: Arc<AtomicU64>,
-    /// Total preamble detections before CRC check.
-    /// > 0 means signal is present; if frame_count stays 0 with preambles > 0,
-    /// the signal is detected but CRC is failing (wrong rate or frequency offset).
+    /// Frames where CRC passed, regardless of DF type.
+    /// > 0 means decoding is working; if frame_count stays 0 with crc_ok_count > 0,
+    /// we're decoding valid Mode S but seeing no DF17 ADS-B extended squitter.
+    pub crc_ok_count: Arc<AtomicU64>,
+    /// Total preamble detections (before CRC check).
+    /// > 0 means signal is present; if crc_ok_count stays 0 with preambles > 0,
+    /// the signal is detected but all frames are failing CRC.
     pub preamble_count: Arc<AtomicU64>,
     /// Sample rate the decoder was started with (Hz).
     pub sample_rate: u32,
@@ -66,10 +70,12 @@ impl AdsbDecoder {
 
         let running = Arc::new(AtomicBool::new(true));
         let frame_count = Arc::new(AtomicU64::new(0));
+        let crc_ok_count = Arc::new(AtomicU64::new(0));
         let preamble_count = Arc::new(AtomicU64::new(0));
 
         let running_clone = Arc::clone(&running);
         let frame_count_clone = Arc::clone(&frame_count);
+        let crc_ok_count_clone = Arc::clone(&crc_ok_count);
         let preamble_count_clone = Arc::clone(&preamble_count);
 
         let handle = std::thread::Builder::new()
@@ -80,6 +86,7 @@ impl AdsbDecoder {
                     store,
                     running_clone,
                     frame_count_clone,
+                    crc_ok_count_clone,
                     preamble_count_clone,
                     sample_rate,
                 );
@@ -89,6 +96,7 @@ impl AdsbDecoder {
         Self {
             running,
             frame_count,
+            crc_ok_count,
             preamble_count,
             sample_rate,
             handle: Some(handle),
@@ -113,9 +121,18 @@ impl AdsbDecoder {
         self.frame_count.load(Ordering::Relaxed)
     }
 
+    /// Number of frames where CRC-24 passed (any DF type).
+    ///
+    /// If this is > 0 but `frames_decoded()` is 0, the decoder is working but
+    /// the traffic happens to be non-DF17 (DF11 all-call, DF4/5 surveillance, etc.).
+    /// If this stays 0 but `preambles_detected()` > 0, all frames are failing CRC.
+    pub fn crc_ok_frames(&self) -> u64 {
+        self.crc_ok_count.load(Ordering::Relaxed)
+    }
+
     /// Number of preamble detections (before CRC / DF17 check).
     ///
-    /// If this is > 0 but `frames_decoded()` is 0, a signal is present but all
+    /// If this is > 0 but `crc_ok_frames()` is 0, a signal is present but all
     /// frames are failing CRC — usually a sample-rate or frequency mismatch.
     /// If this stays 0, no signal is reaching the decoder at all.
     pub fn preambles_detected(&self) -> u64 {
@@ -147,6 +164,7 @@ fn decode_loop(
     store: Arc<Mutex<AircraftStore>>,
     running: Arc<AtomicBool>,
     frame_count: Arc<AtomicU64>,
+    crc_ok_count: Arc<AtomicU64>,
     preamble_count: Arc<AtomicU64>,
     sample_rate: u32,
 ) {
@@ -168,10 +186,13 @@ fn decode_loop(
 
                 let frames = demod.process(&interleaved);
                 if !frames.is_empty() {
-                    // Count preambles detected (signal present, before CRC check)
+                    // Count all preamble detections (shape matched, before CRC)
                     preamble_count.fetch_add(frames.len() as u64, Ordering::Relaxed);
                     let mut locked = store.lock();
                     for frame in &frames {
+                        if frame.crc_ok {
+                            crc_ok_count.fetch_add(1, Ordering::Relaxed);
+                        }
                         if let Some(decoded) = parse_df17(frame) {
                             locked.update(&decoded);
                             frame_count.fetch_add(1, Ordering::Relaxed);

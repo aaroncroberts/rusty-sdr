@@ -212,11 +212,15 @@ pub struct AdsbMapWindow {
     pub decoder_running: bool,
     /// True while waiting for hardware to reconfigure to 2 Msps before starting.
     pub adsb_start_pending: bool,
-    /// DF-17 frames that passed CRC (reset on each decoder start).
+    /// DF-17 frames that passed CRC.
     pub frame_count: u64,
+    /// Frames where CRC-24 passed (any DF type).
+    /// > 0 means decoding is working.  If frame_count = 0 but crc_ok_count > 0,
+    /// we're decoding valid Mode S but no DF17 ADS-B squitter is present.
+    pub crc_ok_count: u64,
     /// Preamble detections before CRC check.  > 0 means signal is present.
-    /// If frame_count = 0 but preamble_count > 0, signal is arriving but CRC
-    /// is failing (sample-rate or frequency issue).
+    /// If crc_ok_count = 0 but preamble_count > 0, signal is detected but all
+    /// frames are failing CRC (sample-rate or frequency issue).
     pub preamble_count: u64,
     /// True when the hardware sample rate is ≥ 2 Msps (required for ADS-B).
     pub sample_rate_ok: bool,
@@ -263,6 +267,7 @@ impl AdsbMapWindow {
             decoder_running: false,
             adsb_start_pending: false,
             frame_count: 0,
+            crc_ok_count: 0,
             preamble_count: 0,
             sample_rate_ok: true,
             start_requested: false,
@@ -353,23 +358,21 @@ impl AdsbMapWindow {
                     if self.decoder_running {
                         let ac = aircraft.len();
                         let fr = self.frame_count;
+                        let ok = self.crc_ok_count;
                         let pr = self.preamble_count;
-                        // Show frame count (CRC passed) and preamble count (signal detected).
-                        // If pr > 0 but fr = 0: signal present but all CRC failing.
-                        // If pr = 0: no signal reaching decoder.
-                        let diag = if fr > 0 {
-                            format!(" {ac} ac  {fr} fr")
+                        // Three-tier diagnostic:
+                        //   fr > 0         → decoding DF17 ADS-B  (green)
+                        //   ok > 0, fr = 0 → valid Mode S but no DF17 squitter  (muted)
+                        //   pr > 0, ok = 0 → preambles detected but all CRC fail  (amber)
+                        //   pr = 0         → no signal at all  (dim red)
+                        let (diag, diag_color) = if fr > 0 {
+                            (format!(" {ac} ac  {fr} fr"), Color32::from_rgb(0x8A, 0x9A, 0xB0))
+                        } else if ok > 0 {
+                            (format!(" {ac} ac  {ok} Mode S (no DF17)"), Color32::from_rgb(0x6A, 0x8A, 0x6A))
                         } else if pr > 0 {
-                            format!(" {ac} ac  {pr} preambles (CRC failing)")
+                            (format!(" {ac} ac  {pr} preambles (CRC failing)"), Color32::from_rgb(0xC0, 0x80, 0x00))
                         } else {
-                            format!(" {ac} ac  no signal")
-                        };
-                        let diag_color = if fr > 0 {
-                            Color32::from_rgb(0x8A, 0x9A, 0xB0)
-                        } else if pr > 0 {
-                            Color32::from_rgb(0xC0, 0x80, 0x00) // amber — partial signal
-                        } else {
-                            Color32::from_rgb(0x6A, 0x3A, 0x3A) // dim red — no signal
+                            (format!(" {ac} ac  no signal"), Color32::from_rgb(0x6A, 0x3A, 0x3A))
                         };
                         ui.label(RichText::new(diag).color(diag_color).small());
                     }

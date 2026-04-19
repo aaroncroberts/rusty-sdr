@@ -119,13 +119,20 @@ impl SdrApp {
                     self.signal_ceil_ema =
                         ALPHA * self.signal_ceil_ema + (1.0 - ALPHA) * ceil_sample;
                 }
-                // Move display range when it differs by ≥ 1 dB from the EMA target.
-                let new_floor = (self.noise_floor_ema - 5.0).clamp(-160.0, -10.0);
-                let new_ceil = (self.signal_ceil_ema + 5.0).clamp(new_floor + 10.0, 0.0);
-                if (new_floor - self.fft_floor).abs() >= 1.0 {
+                // Snap floor/ceil to the nearest 5 dB step so grid lines only move
+                // when the optimal range shifts by a full tick-step.  Without snapping,
+                // the 1-dB hysteresis below still lets the scale shift every ~30 frames,
+                // causing all horizontal grid lines to visibly bounce up/down together.
+                const SNAP: f32 = 5.0;
+                let new_floor = ((self.noise_floor_ema - 5.0) / SNAP).floor() * SNAP;
+                let new_floor = new_floor.clamp(-160.0, -10.0);
+                let new_ceil = ((self.signal_ceil_ema + 5.0) / SNAP).ceil() * SNAP;
+                let new_ceil = new_ceil.clamp(new_floor + 10.0, 0.0);
+                // Only commit when the snapped value differs by ≥ SNAP from the current.
+                if (new_floor - self.fft_floor).abs() >= SNAP {
                     self.fft_floor = new_floor;
                 }
-                if (new_ceil - self.fft_ceil).abs() >= 1.0 {
+                if (new_ceil - self.fft_ceil).abs() >= SNAP {
                     self.fft_ceil = new_ceil;
                 }
             }

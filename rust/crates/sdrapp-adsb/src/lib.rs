@@ -68,9 +68,12 @@ pub fn crc24(data: &[u8]) -> [u8; 3] {
 
 /// Detect a Mode S preamble in a 16-sample magnitude window.
 ///
-/// Returns `true` when the mean of the four high-position samples is at
-/// least 3× the mean of the twelve low-position samples and above a minimum
-/// absolute threshold, indicating a valid PPM preamble.
+/// Two-stage check:
+/// 1. Mean ratio: average of the four high-position samples must be ≥ 1.8× the
+///    average of the twelve low-position samples, and above the noise floor.
+/// 2. Pulse-shape: each individual "on" sample must exceed its adjacent "off"
+///    neighbour.  This eliminates false positives where one large spike lifts the
+///    mean but the other pulse positions are actually in the noise.
 pub fn detect_preamble(samples: &[f32]) -> bool {
     if samples.len() < PREAMBLE_LEN {
         return false;
@@ -78,15 +81,33 @@ pub fn detect_preamble(samples: &[f32]) -> bool {
 
     let high_mean: f32 =
         PREAMBLE_HIGH.iter().map(|&i| samples[i]).sum::<f32>() / PREAMBLE_HIGH.len() as f32;
+
+    // Absolute floor first — skip entirely if we're just in the noise.
+    if high_mean < 0.002 {
+        return false;
+    }
+
     let low_mean: f32 =
         PREAMBLE_LOW.iter().map(|&i| samples[i]).sum::<f32>() / PREAMBLE_LOW.len() as f32;
 
-    // Require: high positions are at least 1.8× the low positions, and above noise floor.
-    // 3.0× is too strict for real hardware: at exactly 2 Msps (Nyquist), Mode S pulses
-    // (0.5 µs wide) can land between sample points, reducing apparent peak amplitude.
-    // Real-world noise also raises low_mean above zero. dump1090 and other practical
-    // decoders use ~1.8–2.0× ratio. The lower absolute floor (0.002) handles weak signals.
-    high_mean > low_mean * 1.8 && high_mean > 0.002
+    // Mean ratio: 1.8× threshold (dump1090 uses ~1.8–2.0).
+    if high_mean <= low_mean * 1.8 {
+        return false;
+    }
+
+    // Pulse-shape check: each of the four ICAO preamble pulses must individually
+    // exceed its neighbours.  At 2 Msps (0.5 µs/sample):
+    //   pulse 1 @ 0 µs  → samples[0] > samples[1]
+    //   pulse 2 @ 1 µs  → samples[2] > samples[1] && samples[2] > samples[3]
+    //   pulse 3 @ 3.5µs → samples[7] > samples[6] && samples[7] > samples[8]
+    //   pulse 4 @ 4.5µs → samples[9] > samples[8] && samples[9] > samples[10]
+    samples[0] > samples[1]
+        && samples[2] > samples[1]
+        && samples[2] > samples[3]
+        && samples[7] > samples[6]
+        && samples[7] > samples[8]
+        && samples[9] > samples[8]
+        && samples[9] > samples[10]
 }
 
 // ── Bit / byte extraction ─────────────────────────────────────────────────────
@@ -320,12 +341,12 @@ mod tests {
         assert!(!detect_preamble(&s), "Inverted preamble should not be detected");
     }
 
-    /// Noisy preamble (small high offset) → no preamble below noise floor.
+    /// Noisy preamble (tiny high offset) → no preamble below noise floor.
     #[test]
     fn detect_preamble_noise_floor() {
         let mut s = [0.0f32; 16];
         for &p in &PREAMBLE_HIGH {
-            s[p] = 0.005; // below 0.01 threshold
+            s[p] = 0.001; // below 0.002 absolute floor threshold
         }
         assert!(!detect_preamble(&s));
     }

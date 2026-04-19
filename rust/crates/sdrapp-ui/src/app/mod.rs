@@ -575,6 +575,11 @@ impl eframe::App for SdrApp {
                 .as_ref()
                 .map(|d| d.frames_decoded())
                 .unwrap_or(0);
+            let crc_ok_count = self
+                .adsb_decoder
+                .as_ref()
+                .map(|d| d.crc_ok_frames())
+                .unwrap_or(0);
             let preamble_count = self
                 .adsb_decoder
                 .as_ref()
@@ -588,6 +593,7 @@ impl eframe::App for SdrApp {
                 // Push current state so the map window can display it
                 map.decoder_running = decoder_running;
                 map.frame_count = frame_count;
+                map.crc_ok_count = crc_ok_count;
                 map.preamble_count = preamble_count;
                 map.sample_rate_ok = sr >= 2_000_000;
                 map.adsb_start_pending = self.adsb_start_pending;
