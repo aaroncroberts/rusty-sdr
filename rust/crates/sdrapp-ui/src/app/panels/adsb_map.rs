@@ -138,6 +138,9 @@ pub struct AdsbMapWindow {
     drag_start: Option<(Pos2, f64, f64)>,
     /// Set to true when the user clicks "Set Home" (📍); caller clears it and persists.
     pub set_home_pending: bool,
+    /// Tracks whether the OS viewport window is open. Set to false when the OS window
+    /// close button is pressed; caller resets to true when it re-opens the window.
+    pub viewport_open: bool,
 }
 
 impl AdsbMapWindow {
@@ -156,6 +159,7 @@ impl AdsbMapWindow {
             trails: HashMap::new(),
             drag_start: None,
             set_home_pending: false,
+            viewport_open: true,
         }
     }
 
@@ -167,6 +171,9 @@ impl AdsbMapWindow {
     pub fn zoom_ppd(&self) -> f32 { self.zoom_ppd }
 
     /// Show the ADS-B map window.  Returns the ICAO of any aircraft clicked.
+    ///
+    /// Renders directly as viewport content (no egui::Window wrapper).
+    /// `open` is set to false when the OS viewport close button is pressed.
     ///
     /// `home_lat` / `home_lon` are the saved home coordinates (from config) used
     /// by the ⌖ reset button.  If the user clicks 📍 Set Home, `set_home_pending`
@@ -180,17 +187,17 @@ impl AdsbMapWindow {
         home_lat: f64,
         home_lon: f64,
     ) -> Option<u32> {
+        // Handle OS window close button
+        if ctx.input(|i| i.viewport().close_requested()) {
+            *open = false;
+        }
+
         let mut clicked = None;
 
-        egui::Window::new("ADS-B Aircraft Map")
-            .open(open)
-            .default_size([900.0, 560.0])
-            .resizable(true)
-            .collapsible(false)
+        egui::CentralPanel::default()
             .frame(
-                Frame::default()
-                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(0x2A, 0x30, 0x3A))),
+                Frame::none()
+                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A)),
             )
             .show(ctx, |ui| {
                 // Update trails for aircraft that have positions.

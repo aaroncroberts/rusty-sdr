@@ -23,7 +23,7 @@ pub mod renderer;
 pub mod sections;
 
 use egui::{
-    Align, Color32, Context, Frame, Key, Layout, Margin, Pos2, Rect, RichText, Rounding, Stroke,
+    Align, Color32, Context, Frame, Key, Layout, Pos2, Rect, RichText, Rounding, Stroke,
     Vec2,
 };
 
@@ -59,6 +59,9 @@ pub struct HandbookWindow {
     pub section: usize,
     /// Active page index within the current section.
     pub page: usize,
+    /// Tracks whether the OS viewport window is open. Set to false when the OS window
+    /// close button is pressed; caller resets to true when it re-opens the window.
+    pub viewport_open: bool,
 }
 
 impl HandbookWindow {
@@ -69,6 +72,7 @@ impl HandbookWindow {
             assets: AssetLoader::new(),
             section: 0,
             page: 0,
+            viewport_open: true,
         }
     }
 
@@ -87,36 +91,31 @@ impl HandbookWindow {
             assets: AssetLoader::new(),
             section,
             page,
+            viewport_open: true,
         }
     }
 
     /// Render the handbook window.
     ///
-    /// `open` is toggled false when the user closes the window.
+    /// Renders directly as viewport content (no egui::Window wrapper).
+    /// `open` is set to false when the OS viewport close button is pressed,
+    /// or when the user presses F1 inside the viewport.
     pub fn show(&mut self, ctx: &Context, open: &mut bool) {
-        // F1 inside the window also closes it
+        // Handle OS window close button
+        if ctx.input(|i| i.viewport().close_requested()) {
+            *open = false;
+        }
+
+        // F1 inside the viewport also closes it
         if ctx.input(|i| i.key_pressed(Key::F1)) {
             *open = !*open;
         }
 
-        let mut still_open = *open;
-        egui::Window::new("📖  Operators Handbook")
-            .open(&mut still_open)
-            .default_size([920.0, 660.0])
-            .min_size([700.0, 450.0])
-            .resizable(true)
-            .collapsible(false)
-            .frame(
-                Frame::window(&ctx.style())
-                    .fill(LEATHER_BG)
-                    .stroke(Stroke::new(2.0, Color32::from_rgb(90, 55, 20)))
-                    .inner_margin(Margin::same(0.0))
-                    .rounding(Rounding::same(6.0)),
-            )
+        egui::CentralPanel::default()
+            .frame(Frame::none().fill(LEATHER_BG))
             .show(ctx, |ui| {
                 self.draw_binder(ui);
             });
-        *open = still_open;
     }
 
     // ── Top-level layout ──────────────────────────────────────────────────────

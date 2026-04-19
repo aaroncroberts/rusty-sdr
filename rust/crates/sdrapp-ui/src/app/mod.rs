@@ -138,11 +138,11 @@ pub struct SdrApp {
     /// Whether the MIDI mapper window is open.
     show_midi_mapper: bool,
     /// Operators Handbook floating window.
-    handbook: HandbookWindow,
+    handbook: std::sync::Arc<parking_lot::Mutex<crate::handbook::HandbookWindow>>,
     /// Whether the Operators Handbook window is open.
     show_handbook: bool,
     /// ADS-B aircraft map window.
-    adsb_map: panels::adsb_map::AdsbMapWindow,
+    adsb_map: std::sync::Arc<parking_lot::Mutex<panels::adsb_map::AdsbMapWindow>>,
     /// Whether the ADS-B map window is open.
     show_adsb_map: bool,
     /// Shared ADS-B aircraft store (populated when decoder is running).
@@ -266,9 +266,11 @@ impl SdrApp {
             show_shortcut_overlay: false,
             midi_mapper: MidiMapperWindow::new_nanokontrol2(),
             show_midi_mapper: false,
-            handbook: HandbookWindow::with_state(handbook_section, handbook_page),
+            handbook: std::sync::Arc::new(parking_lot::Mutex::new(
+                HandbookWindow::with_state(handbook_section, handbook_page),
+            )),
             show_handbook,
-            adsb_map,
+            adsb_map: std::sync::Arc::new(parking_lot::Mutex::new(adsb_map)),
             show_adsb_map,
             adsb_store: std::sync::Arc::new(parking_lot::Mutex::new(
                 sdrapp_adsb::AircraftStore::new(),
@@ -484,54 +486,94 @@ impl eframe::App for SdrApp {
         }
 
         // ── ADS-B Aircraft Map window ─────────────────────────────────────────
-        if self.show_adsb_map {
-            let aircraft: Vec<_> = self.adsb_store.lock().aircraft().into_iter().cloned().collect();
-            let home_lat = self.config.ui.home_lat;
-            let home_lon = self.config.ui.home_lon;
-            self.adsb_map.show(ctx, &mut self.show_adsb_map, &aircraft, home_lat, home_lon);
-            // 📍 Set Home: persist new home coordinates when user requests it
-            if self.adsb_map.set_home_pending {
-                self.adsb_map.set_home_pending = false;
-                self.config.ui.home_lat = self.adsb_map.center_lat();
-                self.config.ui.home_lon = self.adsb_map.center_lon();
+        // Process pending state from last frame (before show_viewport_deferred)
+        {
+            let mut map = self.adsb_map.lock();
+            if !map.viewport_open {
+                self.show_adsb_map = false;
+                map.viewport_open = true; // reset for next open
+            }
+            if map.set_home_pending {
+                map.set_home_pending = false;
+                self.config.ui.home_lat = map.center_lat();
+                self.config.ui.home_lon = map.center_lon();
                 self.config_dirty = true;
             }
-            // Persist viewport and open state each frame when map is visible
-            let (lat, lon, zoom) = (
-                self.adsb_map.center_lat(),
-                self.adsb_map.center_lon(),
-                self.adsb_map.zoom_ppd(),
-            );
-            if (self.config.ui.adsb_map_lat - lat).abs() > 0.001
+            let (lat, lon, zoom) = (map.center_lat(), map.center_lon(), map.zoom_ppd());
+            if self.show_adsb_map && ((self.config.ui.adsb_map_lat - lat).abs() > 0.001
                 || (self.config.ui.adsb_map_lon - lon).abs() > 0.001
-                || (self.config.ui.adsb_map_zoom - zoom).abs() > 0.1
-                || !self.config.ui.show_adsb_map
+                || (self.config.ui.adsb_map_zoom - zoom).abs() > 0.1)
             {
                 self.config.ui.adsb_map_lat = lat;
                 self.config.ui.adsb_map_lon = lon;
                 self.config.ui.adsb_map_zoom = zoom;
-                self.config.ui.show_adsb_map = true;
                 self.config_dirty = true;
             }
+        }
+        if self.show_adsb_map {
+            self.config.ui.show_adsb_map = true;
+            let map_arc = std::sync::Arc::clone(&self.adsb_map);
+            let store_arc = std::sync::Arc::clone(&self.adsb_store);
+            let home_lat = self.config.ui.home_lat;
+            let home_lon = self.config.ui.home_lon;
+            ctx.show_viewport_deferred(
+                egui::ViewportId::from_hash_of("adsb_map"),
+                egui::ViewportBuilder::default()
+                    .with_title("✈  ADS-B Aircraft Map")
+                    .with_inner_size([900.0, 560.0])
+                    .with_min_inner_size([600.0, 400.0]),
+                move |ctx, _class| {
+                    let aircraft: Vec<_> = store_arc.lock().aircraft().into_iter().cloned().collect();
+                    let mut map = map_arc.lock();
+                    let mut open = true;
+                    map.show(ctx, &mut open, &aircraft, home_lat, home_lon);
+                    if !open {
+                        map.viewport_open = false;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                },
+            );
         } else if self.config.ui.show_adsb_map {
-            // Map was closed — persist closed state
             self.config.ui.show_adsb_map = false;
             self.config_dirty = true;
         }
 
         // ── Operators Handbook window ─────────────────────────────────────────
-        if self.show_handbook {
-            self.handbook.show(ctx, &mut self.show_handbook);
-            // Persist navigation state each frame it's open
-            if self.config.ui.handbook_section != self.handbook.section
-                || self.config.ui.handbook_page != self.handbook.page
+        // Process handbook state from last frame
+        {
+            let hb = self.handbook.lock();
+            if !hb.viewport_open {
+                drop(hb);
+                self.show_handbook = false;
+                self.handbook.lock().viewport_open = true; // reset for next open
+            } else if self.config.ui.handbook_section != hb.section
+                || self.config.ui.handbook_page != hb.page
                 || self.config.ui.show_handbook != self.show_handbook
             {
-                self.config.ui.handbook_section = self.handbook.section;
-                self.config.ui.handbook_page = self.handbook.page;
+                self.config.ui.handbook_section = hb.section;
+                self.config.ui.handbook_page = hb.page;
                 self.config.ui.show_handbook = self.show_handbook;
                 self.config_dirty = true;
             }
+        }
+        if self.show_handbook {
+            let hb_arc = std::sync::Arc::clone(&self.handbook);
+            ctx.show_viewport_deferred(
+                egui::ViewportId::from_hash_of("handbook"),
+                egui::ViewportBuilder::default()
+                    .with_title("📖  Operators Handbook")
+                    .with_inner_size([920.0, 660.0])
+                    .with_min_inner_size([700.0, 450.0]),
+                move |ctx, _class| {
+                    let mut hb = hb_arc.lock();
+                    let mut open = true;
+                    hb.show(ctx, &mut open);
+                    if !open {
+                        hb.viewport_open = false;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                },
+            );
         }
 
         // Keep the UI live at ~30 fps unconditionally.
