@@ -877,6 +877,14 @@ impl SdrApp {
     /// Full ADS-B start sequence: switch to Antenna B, mute audio, configure
     /// sample rate if needed, then start the decoder (or set `adsb_start_pending`).
     pub(in crate::app) fn adsb_start_sequence(&mut self) {
+        // Ensure the SDR hardware pipeline is running — without this the IQ
+        // broadcast channel never receives data and the decoder sees only Empty.
+        if !self.shared.read().is_running {
+            tracing::info!("ADS-B start: auto-starting hardware pipeline");
+            let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
+            let saved_mode = crate::app::parse_config_demod_mode(&self.config.ui.demod_mode.clone());
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(saved_mode).into());
+        }
         // Switch to Antenna B where the ADS-B antenna is connected.
         if self.config.source.antenna != "B" {
             let prev_ant = self.config.source.antenna.clone();

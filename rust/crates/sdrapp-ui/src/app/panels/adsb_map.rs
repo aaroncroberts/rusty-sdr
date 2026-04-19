@@ -212,8 +212,12 @@ pub struct AdsbMapWindow {
     pub decoder_running: bool,
     /// True while waiting for hardware to reconfigure to 2 Msps before starting.
     pub adsb_start_pending: bool,
-    /// DF-17 frames decoded so far (reset on each decoder start).
+    /// DF-17 frames that passed CRC (reset on each decoder start).
     pub frame_count: u64,
+    /// Preamble detections before CRC check.  > 0 means signal is present.
+    /// If frame_count = 0 but preamble_count > 0, signal is arriving but CRC
+    /// is failing (sample-rate or frequency issue).
+    pub preamble_count: u64,
     /// True when the hardware sample rate is ≥ 2 Msps (required for ADS-B).
     pub sample_rate_ok: bool,
 
@@ -259,6 +263,7 @@ impl AdsbMapWindow {
             decoder_running: false,
             adsb_start_pending: false,
             frame_count: 0,
+            preamble_count: 0,
             sample_rate_ok: true,
             start_requested: false,
             stop_requested: false,
@@ -348,11 +353,25 @@ impl AdsbMapWindow {
                     if self.decoder_running {
                         let ac = aircraft.len();
                         let fr = self.frame_count;
-                        ui.label(
-                            RichText::new(format!(" {ac} ac  {fr} fr"))
-                                .color(Color32::from_rgb(0x8A, 0x9A, 0xB0))
-                                .small(),
-                        );
+                        let pr = self.preamble_count;
+                        // Show frame count (CRC passed) and preamble count (signal detected).
+                        // If pr > 0 but fr = 0: signal present but all CRC failing.
+                        // If pr = 0: no signal reaching decoder.
+                        let diag = if fr > 0 {
+                            format!(" {ac} ac  {fr} fr")
+                        } else if pr > 0 {
+                            format!(" {ac} ac  {pr} preambles (CRC failing)")
+                        } else {
+                            format!(" {ac} ac  no signal")
+                        };
+                        let diag_color = if fr > 0 {
+                            Color32::from_rgb(0x8A, 0x9A, 0xB0)
+                        } else if pr > 0 {
+                            Color32::from_rgb(0xC0, 0x80, 0x00) // amber — partial signal
+                        } else {
+                            Color32::from_rgb(0x6A, 0x3A, 0x3A) // dim red — no signal
+                        };
+                        ui.label(RichText::new(diag).color(diag_color).small());
                     }
                     ui.separator();
                     if self.decoder_running || self.adsb_start_pending {
