@@ -88,6 +88,8 @@ pub struct SdrApp {
     bookmark_cat_filter: String,
     /// Sort bookmarks by frequency (false = insertion order).
     bookmark_sort_by_freq: bool,
+    /// Whether the floating bookmark manager window is open.
+    show_bookmark_manager: bool,
     // ── Scanner state ─────────────────────────────────────────────────────────
     /// Dwell time in seconds (local UI state before sending command).
     scan_dwell_ui: f32,
@@ -259,6 +261,7 @@ impl SdrApp {
             bookmark_prev_antenna: None,
             bookmark_cat_filter: String::new(),
             bookmark_sort_by_freq: false,
+            show_bookmark_manager: false,
             scan_dwell_ui: 2.0,
             scan_cat_ui: String::new(),
             range_scan_lo_hz: 87_500_000,
@@ -498,13 +501,18 @@ impl eframe::App for SdrApp {
             .frame(
                 egui::Frame::none()
                     .fill(theme::PANEL_BG)
-                    // Extra right margin keeps text clear of the scrollbar track
-                    .inner_margin(egui::Margin { left: 8.0, right: 18.0, top: 6.0, bottom: 6.0 }),
+                    .inner_margin(egui::Margin { left: 8.0, right: 0.0, top: 6.0, bottom: 6.0 }),
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false; 2])
-                    .show(ui, |ui| self.right_panel(ui));
+                    .show(ui, |ui| {
+                        // Constrain content width so the scrollbar track (≈10 px) doesn't
+                        // overlay dropdowns and buttons on the right edge.
+                        let w = (ui.available_width() - 14.0).max(0.0);
+                        ui.set_max_width(w);
+                        self.right_panel(ui);
+                    });
             });
 
         // Center spectrum + waterfall
@@ -529,6 +537,9 @@ impl eframe::App for SdrApp {
         if self.show_settings {
             self.settings_window(ctx);
         }
+
+        // ── Bookmark manager window ───────────────────────────────────────────
+        self.bookmark_manager_window(ctx);
 
         // ── MIDI Mapper window ────────────────────────────────────────────────
         // Process pending state from last frame (before show_viewport_deferred)

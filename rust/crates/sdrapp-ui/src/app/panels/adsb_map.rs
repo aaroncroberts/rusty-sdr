@@ -338,107 +338,101 @@ impl AdsbMapWindow {
                     self.selected_icao = None;
                 }
 
-                // ── Toolbar ───────────────────────────────────────────────────
+                // ── Toolbar row 1: decoder status + start/stop ────────────────
                 ui.horizontal(|ui| {
-                    // Compact button spacing for the toolbar
-                    ui.spacing_mut().button_padding = Vec2::new(4.0, 1.0);
-                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.spacing_mut().button_padding = Vec2::new(8.0, 4.0);
+                    ui.spacing_mut().item_spacing.x = 6.0;
 
-                    // ── ADS-B decoder status + controls ───────────────────────
+                    // Status dot + text
                     let (dot_color, status_text) = if self.adsb_start_pending {
-                        (Color32::from_rgb(0xC0, 0x80, 0x00), "Configuring...")
+                        (Color32::from_rgb(0xC0, 0x80, 0x00), "Configuring…")
                     } else if self.decoder_running {
                         (Color32::from_rgb(0x73, 0xC9, 0x91), "LIVE")
                     } else {
-                        (Color32::from_rgb(0x4A, 0x5A, 0x6A), "Stopped")
+                        (Color32::from_rgb(0x6A, 0x7A, 0x8A), "Stopped")
                     };
-                    let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
-                    ui.painter().circle_filled(dot_rect.center(), 4.0, dot_color);
-                    ui.label(RichText::new(status_text).color(dot_color).small());
+                    let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(dot_rect.center(), 5.0, dot_color);
+                    ui.label(RichText::new(status_text).color(dot_color));
+
+                    // Diagnostic text when running
                     if self.decoder_running {
                         let ac = aircraft.len();
                         let fr = self.frame_count;
                         let ok = self.crc_ok_count;
                         let pr = self.preamble_count;
-                        // Three-tier diagnostic:
-                        //   fr > 0         → decoding DF17 ADS-B  (green)
-                        //   ok > 0, fr = 0 → valid Mode S but no DF17 squitter  (muted)
-                        //   pr > 0, ok = 0 → preambles detected but all CRC fail  (amber)
-                        //   pr = 0         → no signal at all  (dim red)
                         let (diag, diag_color) = if fr > 0 {
-                            (format!(" {ac} ac  {fr} fr"), Color32::from_rgb(0x8A, 0x9A, 0xB0))
+                            (format!("· {ac} ac  {fr} fr"), Color32::from_rgb(0x8A, 0x9A, 0xB0))
                         } else if ok > 0 {
-                            (format!(" {ac} ac  {ok} Mode S (no DF17)"), Color32::from_rgb(0x6A, 0x8A, 0x6A))
+                            (format!("· {ac} ac  {ok} Mode S"), Color32::from_rgb(0x6A, 0x8A, 0x6A))
                         } else if pr > 0 {
-                            (format!(" {ac} ac  {pr} preambles (CRC failing)"), Color32::from_rgb(0xC0, 0x80, 0x00))
+                            (format!("· {ac} ac  {pr} preambles"), Color32::from_rgb(0xC0, 0x80, 0x00))
                         } else {
-                            (format!(" {ac} ac  no signal"), Color32::from_rgb(0x6A, 0x3A, 0x3A))
+                            (format!("· {ac} ac  no signal"), Color32::from_rgb(0x8A, 0x4A, 0x4A))
                         };
                         ui.label(RichText::new(diag).color(diag_color).small());
                     }
-                    ui.separator();
+
+                    // Start / Stop button — inline after status, not right-aligned
                     if self.decoder_running || self.adsb_start_pending {
-                        let stop_color = Color32::from_rgb(0xFF, 0x88, 0x88);
                         if ui
-                            .add(egui::Button::new(RichText::new("Stop").small().color(stop_color)).frame(false))
+                            .add(egui::Button::new(
+                                RichText::new("  Stop  ").color(Color32::from_rgb(0xFF, 0x88, 0x88)),
+                            )
+                            .fill(Color32::from_rgb(0x38, 0x12, 0x12)))
                             .on_hover_text("Stop ADS-B decoder · restore audio")
                             .clicked()
                         {
                             self.stop_requested = true;
                         }
                     } else {
-                        let start_lbl = if self.sample_rate_ok { "Start" } else { "Start*" };
+                        let start_lbl = if self.sample_rate_ok { "  Start  " } else { "  Start*  " };
                         let tip = if self.sample_rate_ok {
                             "Tune to 1090 MHz · switch to Antenna B · start decoder"
                         } else {
                             "Will auto-reconfigure hardware to 2 Msps, then start"
                         };
-                        let start_color = Color32::from_rgb(0x73, 0xC9, 0x91);
                         if ui
-                            .add(egui::Button::new(RichText::new(start_lbl).small().color(start_color)).frame(false))
+                            .add(egui::Button::new(
+                                RichText::new(start_lbl).color(Color32::from_rgb(0x73, 0xC9, 0x91)),
+                            )
+                            .fill(Color32::from_rgb(0x10, 0x30, 0x18)))
                             .on_hover_text(tip)
                             .clicked()
                         {
                             self.start_requested = true;
                         }
                     }
-                    ui.separator();
+                });
 
+                // ── Toolbar row 2: map controls + altitude legend ──────────────
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().button_padding = Vec2::new(6.0, 3.0);
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     let muted = Color32::from_rgb(0x8A, 0x9A, 0xB0);
-                    ui.label(
-                        RichText::new(format!("  {} aircraft", aircraft.len()))
-                            .color(muted)
-                            .small(),
-                    );
-                    ui.separator();
-                    if ui.add(egui::Button::new(RichText::new("+").small().color(muted)).frame(false)).on_hover_text("Zoom in").clicked() {
+                    let accent = Color32::from_rgb(0x4E, 0xC9, 0xE0);
+
+                    if ui.add(egui::Button::new(RichText::new("+").color(muted)).frame(false)).on_hover_text("Zoom in").clicked() {
                         self.zoom_ppd = (self.zoom_ppd * 1.5).min(MAX_ZOOM);
                     }
-                    if ui.add(egui::Button::new(RichText::new("-").small().color(muted)).frame(false)).on_hover_text("Zoom out").clicked() {
+                    if ui.add(egui::Button::new(RichText::new("−").color(muted)).frame(false)).on_hover_text("Zoom out").clicked() {
                         self.zoom_ppd = (self.zoom_ppd / 1.5).max(MIN_ZOOM);
                     }
-                    if ui.add(egui::Button::new(RichText::new("Home").small().color(muted)).frame(false)).on_hover_text("Reset to saved home location").clicked() {
+                    ui.separator();
+                    if ui.add(egui::Button::new(RichText::new("Home").color(muted)).frame(false)).on_hover_text("Reset to saved home location").clicked() {
                         self.center_lat = home_lat;
                         self.center_lon = home_lon;
                         self.zoom_ppd = 100.0;
                     }
-                    if ui.add(egui::Button::new(RichText::new("Pin").small().color(Color32::from_rgb(0x4E, 0xC9, 0xE0))).frame(false)).on_hover_text("Save current view as home").clicked() {
+                    if ui.add(egui::Button::new(RichText::new("Pin").color(accent)).frame(false)).on_hover_text("Save current view as home").clicked() {
                         self.set_home_pending = true;
                     }
-                    // Auto-center: fly to centroid of all aircraft with known positions.
-                    // Useful for finding your location from received traffic.
                     let has_positions = aircraft.iter().any(|a| a.lat.is_some() && a.lon.is_some());
-                    let center_btn = egui::Button::new(
-                        RichText::new("Center").small()
-                            .color(if has_positions {
-                                Color32::from_rgb(0x4E, 0xC9, 0xE0)
-                            } else {
-                                Color32::from_rgb(0x4A, 0x5A, 0x6A)
-                            }),
-                    )
-                    .frame(false);
                     if ui
-                        .add(center_btn)
+                        .add(egui::Button::new(
+                            RichText::new("Center")
+                                .color(if has_positions { accent } else { Color32::from_rgb(0x4A, 0x5A, 0x6A) }),
+                        ).frame(false))
                         .on_hover_text("Center map on received aircraft")
                         .clicked()
                         && has_positions
@@ -453,32 +447,24 @@ impl AdsbMapWindow {
                             self.center_lon = sum_lon / count as f64;
                         }
                     }
-                    // Dim toggle
+                    let dim_color = if self.map_dim { accent } else { Color32::from_rgb(0x6A, 0x7A, 0x8A) };
                     let dim_label = if self.map_dim { "Dim: On" } else { "Dim: Off" };
-                    let dim_color = if self.map_dim {
-                        Color32::from_rgb(0x4E, 0xC9, 0xE0)
-                    } else {
-                        Color32::from_rgb(0x6A, 0x7A, 0x8A)
-                    };
-                    if ui
-                        .add(egui::Button::new(RichText::new(dim_label).small().color(dim_color)).frame(false))
-                        .on_hover_text("Toggle map brightness (dim makes aircraft easier to see)")
+                    if ui.add(egui::Button::new(RichText::new(dim_label).color(dim_color)).frame(false))
+                        .on_hover_text("Toggle map brightness")
                         .clicked()
                     {
                         self.map_dim = !self.map_dim;
                     }
                     ui.separator();
-                    // Altitude legend — draw small colored circles using the painter
-                    // (Unicode ● is not in egui's default font, renders as blank square)
-                    let muted_label = Color32::from_rgb(0x8A, 0x9A, 0xB0);
+                    // Altitude legend
                     for (color, label) in [
                         (Color32::from_rgb(0x73, 0xC9, 0x91), "Low"),
                         (Color32::from_rgb(0xE8, 0xC5, 0x4B), "Mid"),
                         (Color32::from_rgb(0xFF, 0x55, 0x55), "High"),
                     ] {
-                        let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                        let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
                         ui.painter().circle_filled(dot_rect.center(), 4.0, color);
-                        ui.label(RichText::new(label).color(muted_label).small());
+                        ui.label(RichText::new(label).color(muted));
                     }
                 });
                 ui.separator();
