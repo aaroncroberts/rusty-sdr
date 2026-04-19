@@ -153,6 +153,12 @@ pub struct SdrApp {
     adsb_iq_tx: Option<tokio::sync::broadcast::Sender<std::sync::Arc<[sdrapp_core::sample::IqSample]>>>,
     /// Running ADS-B decoder thread (Some = running, None = stopped).
     adsb_decoder: Option<crate::adsb_decoder::AdsbDecoder>,
+    /// Decimation factor saved before entering ADS-B mode so we can restore it on exit.
+    /// None = ADS-B mode did not change the hardware decimation.
+    adsb_prev_decimation: Option<u32>,
+    /// When true, the ADS-B decoder should be started as soon as sample_rate_sps >= 2 Msps.
+    /// Set after sending SetDecimationFactor(1) while waiting for the device to apply it.
+    adsb_start_pending: bool,
 }
 
 impl SdrApp {
@@ -266,6 +272,8 @@ impl SdrApp {
             )),
             adsb_iq_tx,
             adsb_decoder: None,
+            adsb_prev_decimation: None,
+            adsb_start_pending: false,
         }
     }
 }

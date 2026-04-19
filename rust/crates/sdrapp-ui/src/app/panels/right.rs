@@ -193,44 +193,36 @@ impl SdrApp {
                         "Open map · tune to 1090 MHz · start decoder"
                     };
                     if ui.add(map_btn).on_hover_text(hover).clicked() {
-                        if !decoder_running {
+                        if !decoder_running && !self.adsb_start_pending {
                             let sr = self.shared.read().sample_rate_sps;
                             if sr < 2_000_000 {
-                                // Block start — hardware is decimating below 2 Msps.
-                                // ADS-B PPM pulses (0.5 µs) are physically invisible
-                                // at rates below 2 Msps; don't even try.
-                                tracing::warn!(
-                                    effective_sps = sr,
-                                    "ADS-B start blocked: effective sample rate \
-                                     is {sr} Hz — need ≥ 2 Msps. Disable hardware \
-                                     decimation or raise sample rate."
-                                );
-                                // adsb_decoder stays None; the error line below will show.
-                            } else {
-                                // Auto-tune to ADS-B frequency
-                                let _ = self.cmd_tx.try_send(
-                                    ReceiverCmd::SetFrequency(1_090_000_000).into(),
-                                );
-                                self.config.ui.frequency_hz = 1_090_000_000;
-                                self.frequency_widget = FrequencyWidget::new(1_090_000_000);
+                                // Auto-reconfigure: save current decimation, set to 1,
+                                // then wait for device to apply before starting decoder.
+                                let prev = self.config.source.decimation_factor;
+                                self.adsb_prev_decimation = Some(prev);
+                                self.config.source.decimation_factor = 1;
                                 self.config_dirty = true;
-                                // Auto-start decoder
-                                if let Some(tx) = self.adsb_iq_tx.as_ref() {
-                                    let iq_rx = tx.subscribe();
-                                    self.adsb_decoder =
-                                        Some(crate::adsb_decoder::AdsbDecoder::start(
-                                            iq_rx,
-                                            std::sync::Arc::clone(&self.adsb_store),
-                                            sr,
-                                        ));
-                                }
+                                let _ = self.cmd_tx.try_send(
+                                    HardwareCommand::SetDecimationFactor(1).into(),
+                                );
+                                tracing::info!(
+                                    prev_decimation = prev,
+                                    "ADS-B entry: reconfiguring hardware to decimation=1 (2 Msps)"
+                                );
+                                self.adsb_start_pending = true;
+                            }
+                            // If sr is already ≥ 2 Msps, start immediately (handled below).
+                            // If reconfiguring, adsb_start_pending will fire next frame.
+                            let current_sr = self.shared.read().sample_rate_sps;
+                            if current_sr >= 2_000_000 && !self.adsb_start_pending {
+                                self.adsb_start_decoder();
                             }
                         }
                         self.show_adsb_map = !self.show_adsb_map;
                     }
 
-                    // ■ Stop button (only shown when running)
-                    if decoder_running {
+                    // ■ Stop button (shown when running or pending start)
+                    if decoder_running || self.adsb_start_pending {
                         let stop_btn = egui::Button::new(
                             RichText::new("■ Stop").color(theme::AMBER).small(),
                         )
@@ -240,14 +232,46 @@ impl SdrApp {
                             if let Some(mut d) = self.adsb_decoder.take() {
                                 d.stop();
                             }
+                            self.adsb_start_pending = false;
+                            // Restore previous decimation if we changed it
+                            if let Some(prev) = self.adsb_prev_decimation.take() {
+                                if prev > 1 {
+                                    self.config.source.decimation_factor = prev;
+                                    self.config_dirty = true;
+                                    let _ = self.cmd_tx.try_send(
+                                        HardwareCommand::SetDecimationFactor(prev).into(),
+                                    );
+                                    tracing::info!(
+                                        decimation = prev,
+                                        "ADS-B exit: restoring previous decimation factor"
+                                    );
+                                }
+                            }
                         }
                     }
                 });
             });
 
+            // Deferred start: check each frame whether the device has applied our
+            // SetDecimationFactor(1) command (sample_rate_sps will flip to ≥ 2 Msps).
+            if self.adsb_start_pending {
+                let current_sr = self.shared.read().sample_rate_sps;
+                if current_sr >= 2_000_000 {
+                    self.adsb_start_pending = false;
+                    // Tune and start now that the hardware is correctly configured
+                    self.adsb_start_decoder();
+                }
+            }
+
             // Status line
             let effective_sr = self.shared.read().sample_rate_sps;
-            if decoder_running {
+            if self.adsb_start_pending {
+                ui.label(
+                    RichText::new("  ⟳ Reconfiguring hardware for ADS-B…")
+                        .color(theme::AMBER)
+                        .small(),
+                );
+            } else if decoder_running {
                 let frames = self.adsb_decoder
                     .as_ref()
                     .map(|d| d.frames_decoded())
@@ -272,14 +296,11 @@ impl SdrApp {
                     );
                 }
             } else if effective_sr < 2_000_000 {
-                // Not running + rate too low — show blocking error.
+                // Rate too low — ✈ Map will auto-reconfigure hardware to 2 Msps.
                 ui.label(
-                    RichText::new(format!(
-                        "  ✗ {:.0} kHz effective — set Rate 2M, Decim 1",
-                        effective_sr as f32 / 1_000.0,
-                    ))
-                    .color(theme::STATUS_ERROR)
-                    .small(),
+                    RichText::new("  ✈ Map will auto-configure hardware for ADS-B")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
                 );
             } else if count > 0 {
                 ui.label(
@@ -720,6 +741,25 @@ impl SdrApp {
                 }
             });
         }); // end Device Diagnostics collapsing
+    }
+
+    /// Tune to 1090 MHz and start the ADS-B decoder at the current hardware sample rate.
+    /// Call only when `shared.sample_rate_sps >= 2_000_000`.
+    pub(in crate::app) fn adsb_start_decoder(&mut self) {
+        let sr = self.shared.read().sample_rate_sps;
+        let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(1_090_000_000).into());
+        self.config.ui.frequency_hz = 1_090_000_000;
+        self.frequency_widget = FrequencyWidget::new(1_090_000_000);
+        self.config_dirty = true;
+        if let Some(tx) = self.adsb_iq_tx.as_ref() {
+            let iq_rx = tx.subscribe();
+            self.adsb_decoder = Some(crate::adsb_decoder::AdsbDecoder::start(
+                iq_rx,
+                std::sync::Arc::clone(&self.adsb_store),
+                sr,
+            ));
+            tracing::info!(sample_rate_sps = sr, "ADS-B decoder started");
+        }
     }
 
     pub(in crate::app) fn draw_vu_meter(&mut self, ui: &mut Ui, left: f32, right: f32) {
