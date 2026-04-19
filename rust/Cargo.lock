@@ -3434,6 +3434,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-sdr-atc-db"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "filetime",
+ "tempfile",
+ "tracing",
+ "ureq",
+]
+
+[[package]]
 name = "rusty-sdr-audio"
 version = "0.1.0"
 dependencies = [

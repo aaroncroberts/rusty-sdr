@@ -12,6 +12,7 @@ members = [
     "crates/rusty-sdr-adsb",
     "crates/rusty-sdr-orbcomm",
     "crates/rusty-sdr-tle",
+    "crates/rusty-sdr-atc-db",
     ".",
 ]
 
