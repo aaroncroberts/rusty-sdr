@@ -156,6 +156,9 @@ pub struct SdrApp {
     /// Decimation factor saved before entering ADS-B mode so we can restore it on exit.
     /// None = ADS-B mode did not change the hardware decimation.
     adsb_prev_decimation: Option<u32>,
+    /// Antenna port ("A"/"B"/"C") saved before entering ADS-B mode so we can restore on exit.
+    /// None = ADS-B mode did not change the antenna.
+    adsb_prev_antenna: Option<String>,
     /// When true, the ADS-B decoder should be started as soon as sample_rate_sps >= 2 Msps.
     /// Set after sending SetDecimationFactor(1) while waiting for the device to apply it.
     adsb_start_pending: bool,
@@ -273,6 +276,7 @@ impl SdrApp {
             adsb_iq_tx,
             adsb_decoder: None,
             adsb_prev_decimation: None,
+            adsb_prev_antenna: None,
             adsb_start_pending: false,
         }
     }

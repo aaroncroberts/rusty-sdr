@@ -194,6 +194,16 @@ impl SdrApp {
                     };
                     if ui.add(map_btn).on_hover_text(hover).clicked() {
                         if !decoder_running && !self.adsb_start_pending {
+                            // Switch to Antenna B (ADS-B antenna) if not already there.
+                            if self.config.source.antenna != "B" {
+                                let prev_ant = self.config.source.antenna.clone();
+                                self.adsb_prev_antenna = Some(prev_ant);
+                                self.config.source.antenna = "B".into();
+                                self.config_dirty = true;
+                                let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(1).into());
+                                tracing::info!("ADS-B entry: switching to Antenna B");
+                            }
+
                             let sr = self.shared.read().sample_rate_sps;
                             if sr < 2_000_000 {
                                 // Auto-reconfigure: save current decimation, set to 1,
@@ -233,6 +243,14 @@ impl SdrApp {
                                 d.stop();
                             }
                             self.adsb_start_pending = false;
+                            // Restore previous antenna if we changed it
+                            if let Some(prev_ant) = self.adsb_prev_antenna.take() {
+                                let port: u8 = match prev_ant.as_str() { "B" => 1, "C" => 2, _ => 0 };
+                                self.config.source.antenna = prev_ant;
+                                self.config_dirty = true;
+                                let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port).into());
+                                tracing::info!(antenna = port, "ADS-B exit: restoring previous antenna");
+                            }
                             // Restore previous decimation if we changed it
                             if let Some(prev) = self.adsb_prev_decimation.take() {
                                 if prev > 1 {
