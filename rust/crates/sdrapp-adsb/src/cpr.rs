@@ -103,6 +103,45 @@ pub fn decode_global(a: CprFrame, b: CprFrame) -> Option<(f64, f64)> {
     Some((lat, lon))
 }
 
+/// Decode position locally from a single CPR frame, given a reference position.
+///
+/// The reference must be within ~1.2° of the actual position (~80 nm / 130 km).
+/// This is valid for all normal in-flight updates once a global fix has been
+/// established.  It does **not** require a frame pair — call it on every
+/// airborne position message once `lat_ref`/`lon_ref` are known.
+pub fn decode_local(frame: CprFrame, ref_lat: f64, ref_lon: f64) -> (f64, f64) {
+    let odd = frame.odd as i32;
+    let d_lat = 360.0 / (4.0 * NZ - odd as f64);
+
+    let lat_cpr = frame.lat_cpr as f64 / 131_072.0;
+    let lon_cpr = frame.lon_cpr as f64 / 131_072.0;
+
+    // Zone index centred on the reference latitude.
+    let j = (ref_lat / d_lat).floor()
+        + (0.5 + (ref_lat / d_lat).fract() - lat_cpr).floor();
+    let lat = d_lat * (j + lat_cpr);
+
+    // Longitude zones at the decoded latitude.
+    let nl_lat = nl(lat).max(1.0);
+    let nl_lon = (nl_lat - odd as f64).max(1.0);
+    let d_lon = 360.0 / nl_lon;
+
+    let m = (ref_lon / d_lon).floor()
+        + (0.5 + (ref_lon / d_lon).fract() - lon_cpr).floor();
+    let lon_raw = d_lon * (m + lon_cpr);
+
+    // Normalise to [-180, 180).
+    let lon = if lon_raw >= 180.0 {
+        lon_raw - 360.0
+    } else if lon_raw < -180.0 {
+        lon_raw + 360.0
+    } else {
+        lon_raw
+    };
+
+    (lat, lon)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -148,6 +187,22 @@ mod tests {
     fn cpr_global_decode_same_parity_returns_none() {
         let frame = CprFrame { odd: false, lat_cpr: 93000, lon_cpr: 51372 };
         assert!(decode_global(frame, frame).is_none());
+    }
+
+    /// Local decode of known even frame with its global position as reference.
+    #[test]
+    fn cpr_local_decode_known_frame() {
+        let even = CprFrame { odd: false, lat_cpr: 93000, lon_cpr: 51372 };
+        // Reference = the known global position (52.2572°N, 3.9194°E)
+        let (lat, lon) = decode_local(even, 52.2572, 3.9194);
+        assert!(
+            (lat - 52.2572).abs() < 0.01,
+            "Local lat mismatch: {lat:.4}"
+        );
+        assert!(
+            (lon - 3.9194).abs() < 0.01,
+            "Local lon mismatch: {lon:.4}"
+        );
     }
 
     /// NL zones: spot-check known values.

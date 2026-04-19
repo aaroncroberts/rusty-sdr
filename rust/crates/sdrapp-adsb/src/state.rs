@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::parser::{AdsbDecoded, AdsbMessage};
-use crate::cpr::{decode_global, CprFrame};
+use crate::cpr::{decode_global, decode_local, CprFrame};
 
 /// Expiry window for aircraft entries.  60 s gives aircraft time to pass
 /// through brief signal shadows without disappearing from the map.
@@ -108,22 +108,33 @@ impl AircraftStore {
                     entry.pending_even = Some((frame, now));
                 }
 
-                // Try to decode position if we have a recent even+odd pair.
-                let position = match (entry.pending_even, entry.pending_odd) {
-                    (Some((even, t_even)), Some((odd, t_odd))) => {
-                        let age = if t_even > t_odd { t_even - t_odd } else { t_odd - t_even };
-                        if age <= CPR_WINDOW {
-                            decode_global(even, odd)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-
-                if let Some((lat, lon)) = position {
+                // If we already have a fix, use local CPR for a smooth single-frame
+                // update — no need to wait for a fresh even+odd pair.
+                if let (Some(lat_ref), Some(lon_ref)) = (entry.lat, entry.lon) {
+                    let (lat, lon) = decode_local(frame, lat_ref, lon_ref);
                     entry.lat = Some(lat);
                     entry.lon = Some(lon);
+                } else {
+                    // No fix yet — try global decode from the pending even+odd pair.
+                    let position = match (entry.pending_even, entry.pending_odd) {
+                        (Some((even, t_even)), Some((odd, t_odd))) => {
+                            let age = if t_even > t_odd {
+                                t_even - t_odd
+                            } else {
+                                t_odd - t_even
+                            };
+                            if age <= CPR_WINDOW {
+                                decode_global(even, odd)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some((lat, lon)) = position {
+                        entry.lat = Some(lat);
+                        entry.lon = Some(lon);
+                    }
                 }
             }
             AdsbMessage::AirborneVelocity { speed_kt, heading_deg, vert_rate_fpm } => {
