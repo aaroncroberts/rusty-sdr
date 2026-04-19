@@ -1,14 +1,14 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-use sdrapp_core::{
+use rusty_sdr_core::{
     block::Block,
     config::AppConfig,
     signal_path::{SharedState, SignalPath},
     sink::AudioSink,
     source::Source,
 };
-use sdrapp_ui::SdrApp;
+use rusty_sdr_ui::SdrApp;
 
 fn main() -> anyhow::Result<()> {
     // CLI flags
@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     let config = AppConfig::load_or_default();
     tracing::info!(
         freq_hz = config.ui.frequency_hz,
-        config_path = %sdrapp_core::config::config_path().display(),
+        config_path = %rusty_sdr_core::config::config_path().display(),
         "config loaded"
     );
 
@@ -52,10 +52,10 @@ fn main() -> anyhow::Result<()> {
         s.fft.fft_averaging = config.ui.fft_averaging;
         s.fft.band_plan_enabled = config.ui.band_plan_enabled;
         s.fft.fft_window = match config.ui.fft_window.as_str() {
-            "Rectangular" => sdrapp_core::dsp::FftWindow::Rectangular,
-            "Hamming" => sdrapp_core::dsp::FftWindow::Hamming,
-            "BlackmanHarris" => sdrapp_core::dsp::FftWindow::BlackmanHarris,
-            _ => sdrapp_core::dsp::FftWindow::Hann,
+            "Rectangular" => rusty_sdr_core::dsp::FftWindow::Rectangular,
+            "Hamming" => rusty_sdr_core::dsp::FftWindow::Hamming,
+            "BlackmanHarris" => rusty_sdr_core::dsp::FftWindow::BlackmanHarris,
+            _ => rusty_sdr_core::dsp::FftWindow::Hann,
         };
         s.fft.fft_magnitudes = vec![-120.0; config.ui.fft_size];
         // Load persisted MIDI Learn bindings (knob_id → CC becomes CC → knob_id)
@@ -65,10 +65,10 @@ fn main() -> anyhow::Result<()> {
             .map(|(knob_id, &cc)| (cc, knob_id.clone()))
             .collect();
         // Load persisted bookmarks — from external file if configured, else inline.
-        use sdrapp_core::signal_path::{Bookmark, DemodMode};
-        let bookmark_configs: Vec<sdrapp_core::config::BookmarkConfig> =
+        use rusty_sdr_core::signal_path::{Bookmark, DemodMode};
+        let bookmark_configs: Vec<rusty_sdr_core::config::BookmarkConfig> =
             if let Some(ref path) = config.bookmarks_file {
-                let loaded = sdrapp_core::config::BookmarkConfig::load_from_csv(path);
+                let loaded = rusty_sdr_core::config::BookmarkConfig::load_from_csv(path);
                 if loaded.is_empty() {
                     tracing::warn!(path, "bookmarks_file set but no bookmarks loaded — using inline");
                     config.bookmarks.clone()
@@ -118,7 +118,7 @@ fn main() -> anyhow::Result<()> {
 
     // ── Audio sink ────────────────────────────────────────────────────────────
     // Volume is applied by the signal path's Volume DSP block; sink runs at unity.
-    let mut audio_sink = sdrapp_audio::CpalAudioSink::new(sdrapp_audio::AudioConfig {
+    let mut audio_sink = rusty_sdr_audio::CpalAudioSink::new(rusty_sdr_audio::AudioConfig {
         device_name: None,
         sample_rate: 48_000,
         volume: 1.0,
@@ -141,16 +141,16 @@ fn main() -> anyhow::Result<()> {
     //
     // Two subscribers are created: one for the signal path, one for IQ recording.
     let antenna = match config.source.antenna.as_str() {
-        "B" => sdrapp_sdrplay::Antenna::B,
-        "C" => sdrapp_sdrplay::Antenna::C,
-        _ => sdrapp_sdrplay::Antenna::A,
+        "B" => rusty_sdr_sdrplay::Antenna::B,
+        "C" => rusty_sdr_sdrplay::Antenna::C,
+        _ => rusty_sdr_sdrplay::Antenna::A,
     };
 
-    let mut _sdrplay_source: Option<sdrapp_sdrplay::RspdxSource> = None;
-    let mut _rtlsdr_source: Option<sdrapp_rtlsdr::RtlSdrSource> = None;
-    let mut _demo_source: Option<sdrapp_core::test_source::TestSignalSource> = None;
+    let mut _sdrplay_source: Option<rusty_sdr_sdrplay::RspdxSource> = None;
+    let mut _rtlsdr_source: Option<rusty_sdr_rtlsdr::RtlSdrSource> = None;
+    let mut _demo_source: Option<rusty_sdr_core::test_source::TestSignalSource> = None;
     // Holds a hot-plugged hardware source so it stays alive for the app lifetime.
-    let hotplug_source: std::sync::Arc<parking_lot::Mutex<Option<sdrapp_sdrplay::RspdxSource>>> =
+    let hotplug_source: std::sync::Arc<parking_lot::Mutex<Option<rusty_sdr_sdrplay::RspdxSource>>> =
         std::sync::Arc::new(parking_lot::Mutex::new(None));
 
     // Probe for hardware on a background thread with a timeout so a hung
@@ -158,14 +158,14 @@ fn main() -> anyhow::Result<()> {
     let sdrplay_available = {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(sdrapp_sdrplay::RspdxSource::is_device_available());
+            let _ = tx.send(rusty_sdr_sdrplay::RspdxSource::is_device_available());
         });
         rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or(false)
     };
     let rtlsdr_available = if !sdrplay_available {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(sdrapp_rtlsdr::RtlSdrSource::is_device_available());
+            let _ = tx.send(rusty_sdr_rtlsdr::RtlSdrSource::is_device_available());
         });
         rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or(false)
     } else {
@@ -193,7 +193,7 @@ fn main() -> anyhow::Result<()> {
                     _ => 0,
                 };
             }
-            let mut src = sdrapp_sdrplay::RspdxSource::new(sdrapp_sdrplay::RspdxConfig {
+            let mut src = rusty_sdr_sdrplay::RspdxSource::new(rusty_sdr_sdrplay::RspdxConfig {
                 frequency_hz: config.ui.frequency_hz,
                 sample_rate_sps: config.source.sample_rate_sps,
                 antenna,
@@ -207,11 +207,11 @@ fn main() -> anyhow::Result<()> {
                 fm_notch_enabled: config.source.fm_notch_enabled,
                 decimation_factor: config.source.decimation_factor,
                 if_mode: match config.source.if_mode.as_str() {
-                    "LowIF200kHz" => sdrapp_sdrplay::IfMode::LowIf200kHz,
-                    "LowIF500kHz" => sdrapp_sdrplay::IfMode::LowIf500kHz,
-                    "LowIF1MHz"   => sdrapp_sdrplay::IfMode::LowIf1MHz,
-                    "LowIF2MHz"   => sdrapp_sdrplay::IfMode::LowIf2MHz,
-                    _             => sdrapp_sdrplay::IfMode::ZeroIf,
+                    "LowIF200kHz" => rusty_sdr_sdrplay::IfMode::LowIf200kHz,
+                    "LowIF500kHz" => rusty_sdr_sdrplay::IfMode::LowIf500kHz,
+                    "LowIF1MHz"   => rusty_sdr_sdrplay::IfMode::LowIf1MHz,
+                    "LowIF2MHz"   => rusty_sdr_sdrplay::IfMode::LowIf2MHz,
+                    _             => rusty_sdr_sdrplay::IfMode::ZeroIf,
                 },
             })
             .with_shared(Arc::clone(&shared));
@@ -230,13 +230,13 @@ fn main() -> anyhow::Result<()> {
                     }
                     let status = status_rx.borrow().clone();
                     let name = match &status {
-                        sdrapp_sdrplay::DeviceStatus::Running { serial, .. } =>
+                        rusty_sdr_sdrplay::DeviceStatus::Running { serial, .. } =>
                             format!("SDRplay RSPdx-R2 ({})", serial),
-                        sdrapp_sdrplay::DeviceStatus::Reconnecting { attempt, .. } =>
+                        rusty_sdr_sdrplay::DeviceStatus::Reconnecting { attempt, .. } =>
                             format!("SDRplay RSPdx-R2 (reconnecting…  attempt {attempt})"),
-                        sdrapp_sdrplay::DeviceStatus::Disconnected =>
+                        rusty_sdr_sdrplay::DeviceStatus::Disconnected =>
                             "SDRplay RSPdx-R2 (disconnected)".into(),
-                        sdrapp_sdrplay::DeviceStatus::Connecting =>
+                        rusty_sdr_sdrplay::DeviceStatus::Connecting =>
                             "SDRplay RSPdx-R2 (connecting…)".into(),
                     };
                     shared_for_status.write().source_name = Some(name);
@@ -247,13 +247,13 @@ fn main() -> anyhow::Result<()> {
             (rx, iq_rec_rx, iq_adsb, fa, Some(hw_tx))
         } else if rtlsdr_available {
             tracing::info!("RTL-SDR device found — starting in RTL-SDR mode");
-            let rtl_cfg = sdrapp_rtlsdr::RtlSdrConfig {
+            let rtl_cfg = rusty_sdr_rtlsdr::RtlSdrConfig {
                 frequency_hz: config.ui.frequency_hz,
                 sample_rate_sps: config.source.sample_rate_sps.min(2_048_000),
                 ..Default::default()
             };
             let caps_name = "RTL-SDR (device 0)".to_string();
-            let mut src = sdrapp_rtlsdr::RtlSdrSource::open(rtl_cfg)
+            let mut src = rusty_sdr_rtlsdr::RtlSdrSource::open(rtl_cfg)
                 .expect("device available but open failed");
             shared.write().source_name = Some(caps_name);
             let rx = src.subscribe();
@@ -269,7 +269,7 @@ fn main() -> anyhow::Result<()> {
             );
             shared.write().source_name = Some("Demo Mode".to_string());
 
-            let mut src = sdrapp_core::test_source::TestSignalSource::new(
+            let mut src = rusty_sdr_core::test_source::TestSignalSource::new(
                 config.ui.frequency_hz,
                 config.source.sample_rate_sps,
             );
@@ -283,7 +283,7 @@ fn main() -> anyhow::Result<()> {
         };
 
     // ── Recorder ─────────────────────────────────────────────────────────────
-    let mut recorder = sdrapp_recorder::Recorder::new(sdrapp_recorder::RecorderConfig {
+    let mut recorder = rusty_sdr_recorder::Recorder::new(rusty_sdr_recorder::RecorderConfig {
         output_dir: dirs::audio_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
         sample_rate: 48_000,
     });
@@ -316,7 +316,7 @@ fn main() -> anyhow::Result<()> {
         let shared_probe = Arc::clone(&shared);
         let cmd_tx_probe = cmd_tx.clone();
         let holder = std::sync::Arc::clone(&hotplug_source);
-        let sdrplay_cfg = sdrapp_sdrplay::RspdxConfig {
+        let sdrplay_cfg = rusty_sdr_sdrplay::RspdxConfig {
             frequency_hz: config.ui.frequency_hz,
             sample_rate_sps: config.source.sample_rate_sps,
             antenna,
@@ -330,11 +330,11 @@ fn main() -> anyhow::Result<()> {
             fm_notch_enabled: config.source.fm_notch_enabled,
             decimation_factor: config.source.decimation_factor,
             if_mode: match config.source.if_mode.as_str() {
-                "LowIF200kHz" => sdrapp_sdrplay::IfMode::LowIf200kHz,
-                "LowIF500kHz" => sdrapp_sdrplay::IfMode::LowIf500kHz,
-                "LowIF1MHz"   => sdrapp_sdrplay::IfMode::LowIf1MHz,
-                "LowIF2MHz"   => sdrapp_sdrplay::IfMode::LowIf2MHz,
-                _             => sdrapp_sdrplay::IfMode::ZeroIf,
+                "LowIF200kHz" => rusty_sdr_sdrplay::IfMode::LowIf200kHz,
+                "LowIF500kHz" => rusty_sdr_sdrplay::IfMode::LowIf500kHz,
+                "LowIF1MHz"   => rusty_sdr_sdrplay::IfMode::LowIf1MHz,
+                "LowIF2MHz"   => rusty_sdr_sdrplay::IfMode::LowIf2MHz,
+                _             => rusty_sdr_sdrplay::IfMode::ZeroIf,
             },
         };
         rt.spawn(async move {
@@ -345,13 +345,13 @@ fn main() -> anyhow::Result<()> {
                     break;
                 }
                 let available =
-                    tokio::task::spawn_blocking(sdrapp_sdrplay::RspdxSource::is_device_available)
+                    tokio::task::spawn_blocking(rusty_sdr_sdrplay::RspdxSource::is_device_available)
                         .await
                         .unwrap_or(false);
 
                 if available {
                     tracing::info!("hardware device detected while running — hot-swapping source");
-                    let mut src = sdrapp_sdrplay::RspdxSource::new(sdrplay_cfg.clone())
+                    let mut src = rusty_sdr_sdrplay::RspdxSource::new(sdrplay_cfg.clone())
                         .with_shared(Arc::clone(&shared_probe));
                     let new_rx = src.subscribe();
                     let new_hw_tx = src.hardware_cmd_tx();
@@ -359,7 +359,7 @@ fn main() -> anyhow::Result<()> {
                     *holder.lock() = Some(src);
                     shared_probe.write().source_name = Some("SDRplay RSPdx-R2".to_string());
                     let _ = cmd_tx_probe.try_send(
-                        sdrapp_core::signal_path::SignalPathCommand::ReconnectSource {
+                        rusty_sdr_core::signal_path::SignalPathCommand::ReconnectSource {
                             iq_rx: new_rx,
                             hardware_cmd_tx: Some(new_hw_tx),
                         },
@@ -373,7 +373,7 @@ fn main() -> anyhow::Result<()> {
 
     // Apply persisted FFT settings (signal path starts with defaults; sync from config).
     {
-        use sdrapp_core::{dsp::FftWindow, signal_path::DisplayCmd};
+        use rusty_sdr_core::{dsp::FftWindow, signal_path::DisplayCmd};
         if config.ui.fft_size != 2048 {
             let _ = cmd_tx.try_send(DisplayCmd::SetFftSize(config.ui.fft_size).into());
         }
@@ -400,14 +400,14 @@ fn main() -> anyhow::Result<()> {
         let cmd_tx_for_rigctl = cmd_tx.clone();
         let port = config.rigctl.port;
         rt.spawn(async move {
-            let handle = sdrapp_core::rigctl::start(port, shared_for_rigctl, cmd_tx_for_rigctl);
+            let handle = rusty_sdr_core::rigctl::start(port, shared_for_rigctl, cmd_tx_for_rigctl);
             let _ = handle.await;
         });
     }
 
     // ── MIDI controller ───────────────────────────────────────────────────────
-    let midi_ctrl = sdrapp_midi::MidiController::new(
-        sdrapp_midi::MidiConfig::with_nanokontrol2_defaults(),
+    let midi_ctrl = rusty_sdr_midi::MidiController::new(
+        rusty_sdr_midi::MidiConfig::with_nanokontrol2_defaults(),
         recorder_cmd_tx.clone(),
     );
 
@@ -422,7 +422,7 @@ fn main() -> anyhow::Result<()> {
     // ── eframe (main thread UI loop) ─────────────────────────────────────────
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("SDR App")
+            .with_title("Rusty SDR")
             .with_inner_size([config.ui.window_width, config.ui.window_height])
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
@@ -431,7 +431,7 @@ fn main() -> anyhow::Result<()> {
     // Build MIDI binding descriptions for the help panel.
     // Converts nanoKontrol2 default bindings to (page, key_name, action_name) tuples.
     let midi_bindings: Vec<(usize, String, String)> = {
-        use sdrapp_midi::{MidiConfig, MidiKeyKind};
+        use rusty_sdr_midi::{MidiConfig, MidiKeyKind};
         let cfg = MidiConfig::with_nanokontrol2_defaults();
         cfg.bindings
             .iter()
@@ -448,7 +448,7 @@ fn main() -> anyhow::Result<()> {
 
     let shared_for_app = Arc::clone(&shared);
     eframe::run_native(
-        "SDR App",
+        "Rusty SDR",
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(SdrApp::new(

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# bundle_macos.sh — build and package SDRApp.app for macOS distribution
+# bundle_macos.sh — build and package RustySDR.app for macOS distribution
 #
 # Usage:
 #   sh rust/bundle_macos.sh          # from repo root
 #   sh bundle_macos.sh               # from rust/
 #
-# Output: rust/dist/SDRApp.app
+# Output: rust/dist/RustySDR.app
 #
 # Requires: cargo, install_name_tool, codesign, sips, iconutil, otool
 set -euo pipefail
@@ -14,9 +14,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"   # always operate from rust/
 
-BINARY_NAME="sdrapp"
-APP_NAME="SDRApp"
-BUNDLE_ID="com.sdrapp.sdrapp"
+BINARY_NAME="rusty-sdr"
+APP_NAME="RustySDR"
+BUNDLE_ID="com.rusty-sdr.app"
 DIST_DIR="dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
 CONTENTS="$APP_DIR/Contents"

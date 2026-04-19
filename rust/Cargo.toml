@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/sdrapp-core",
-    "crates/sdrapp-sdrplay-sys",
-    "crates/sdrapp-sdrplay",
-    "crates/sdrapp-audio",
-    "crates/sdrapp-recorder",
-    "crates/sdrapp-midi",
-    "crates/sdrapp-rtlsdr",
-    "crates/sdrapp-ui",
-    "crates/sdrapp-adsb",
-    "crates/sdrapp-orbcomm",
-    "crates/sdrapp-tle",
+    "crates/rusty-sdr-core",
+    "crates/rusty-sdr-sdrplay-sys",
+    "crates/rusty-sdr-sdrplay",
+    "crates/rusty-sdr-audio",
+    "crates/rusty-sdr-recorder",
+    "crates/rusty-sdr-midi",
+    "crates/rusty-sdr-rtlsdr",
+    "crates/rusty-sdr-ui",
+    "crates/rusty-sdr-adsb",
+    "crates/rusty-sdr-orbcomm",
+    "crates/rusty-sdr-tle",
     ".",
 ]
 
@@ -69,7 +69,7 @@ proptest = "1"
 approx = "0.5"
 
 [package]
-name = "sdrapp"
+name = "rusty-sdr"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -77,7 +77,7 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "sdrapp"
+name = "rusty-sdr"
 path = "src/main.rs"
 
 [dependencies]
@@ -90,13 +90,13 @@ egui = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-channel = { workspace = true }
 dirs = { workspace = true }
-sdrapp-core = { path = "crates/sdrapp-core" }
-sdrapp-sdrplay = { path = "crates/sdrapp-sdrplay" }
-sdrapp-audio = { path = "crates/sdrapp-audio" }
-sdrapp-recorder = { path = "crates/sdrapp-recorder" }
-sdrapp-midi = { path = "crates/sdrapp-midi" }
-sdrapp-rtlsdr = { path = "crates/sdrapp-rtlsdr" }
-sdrapp-ui = { path = "crates/sdrapp-ui" }
+rusty-sdr-core = { path = "crates/rusty-sdr-core" }
+rusty-sdr-sdrplay = { path = "crates/rusty-sdr-sdrplay" }
+rusty-sdr-audio = { path = "crates/rusty-sdr-audio" }
+rusty-sdr-recorder = { path = "crates/rusty-sdr-recorder" }
+rusty-sdr-midi = { path = "crates/rusty-sdr-midi" }
+rusty-sdr-rtlsdr = { path = "crates/rusty-sdr-rtlsdr" }
+rusty-sdr-ui = { path = "crates/rusty-sdr-ui" }
 
 [dev-dependencies]
 hound = { workspace = true }
@@ -106,13 +106,13 @@ tokio = { workspace = true }
 # DSP and audio crates are compute-bound — running them at opt-level 2 in debug
 # builds eliminates the IQ-channel lag that causes choppy audio and dropped
 # batches.  The UI/app crates stay unoptimized so incremental builds stay fast.
-[profile.dev.package.sdrapp-core]
+[profile.dev.package.rusty-sdr-core]
 opt-level = 2
 
-[profile.dev.package.sdrapp-sdrplay]
+[profile.dev.package.rusty-sdr-sdrplay]
 opt-level = 2
 
-[profile.dev.package.sdrapp-audio]
+[profile.dev.package.rusty-sdr-audio]
 opt-level = 2
 
 [profile.dev.package.rustfft]

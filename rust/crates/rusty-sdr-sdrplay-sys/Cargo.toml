@@ -1,0 +1,13 @@
+[package]
+name = "rusty-sdr-sdrplay-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "sdrplay_api"
+
+[build-dependencies]
+bindgen = "0.70"
+
+[dependencies]

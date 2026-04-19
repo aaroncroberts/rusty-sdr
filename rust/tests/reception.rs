@@ -8,10 +8,10 @@
 //! limitation of only one Open/Close per process invocation.
 //!
 //! Run pipeline tests (always pass):
-//!   cargo test -p sdrapp --test reception -- --nocapture
+//!   cargo test -p rusty-sdr --test reception -- --nocapture
 //!
 //! Run real RSPdx-R2 test (requires device connected):
-//!   cargo test -p sdrapp --test reception -- --include-ignored --nocapture
+//!   cargo test -p rusty-sdr --test reception -- --include-ignored --nocapture
 
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,7 @@ use crossbeam_channel::{bounded, Receiver};
 use parking_lot::RwLock;
 use std::sync::{atomic::AtomicU64, Arc};
 
-use sdrapp_core::{
+use rusty_sdr_core::{
     block::Block,
     sample::StereoFrame,
     signal_path::{ReceiverCmd, SharedState, SignalPath, SignalPathCommand},
@@ -45,7 +45,7 @@ struct Fixture {
 impl Fixture {
     /// Start with a synthetic TestSignalSource — always available.
     fn synthetic() -> Option<Self> {
-        let mut src = sdrapp_core::test_source::TestSignalSource::new(WMJI_FREQ_HZ, SAMPLE_RATE_SPS);
+        let mut src = rusty_sdr_core::test_source::TestSignalSource::new(WMJI_FREQ_HZ, SAMPLE_RATE_SPS);
         let iq_rx = src.subscribe();
         let fa: Arc<AtomicU64> = Source::frequency_atomic(&src);
         let _handle = src.start();
@@ -58,7 +58,7 @@ impl Fixture {
     /// and close the SDRplay API, and a second Open immediately after causes
     /// the SDRplay service to hang. Let start() discover hardware gracefully.
     fn rspdx(freq_hz: u64) -> Option<Self> {
-        let mut src = sdrapp_sdrplay::RspdxSource::new(sdrapp_sdrplay::RspdxConfig {
+        let mut src = rusty_sdr_sdrplay::RspdxSource::new(rusty_sdr_sdrplay::RspdxConfig {
             frequency_hz: freq_hz,
             sample_rate_sps: SAMPLE_RATE_SPS,
             agc_enabled: true,
@@ -75,7 +75,7 @@ impl Fixture {
 
     fn wire(
         name: impl Into<String>,
-        iq_rx: tokio::sync::broadcast::Receiver<Arc<[sdrapp_core::sample::IqSample]>>,
+        iq_rx: tokio::sync::broadcast::Receiver<Arc<[rusty_sdr_core::sample::IqSample]>>,
         fa: Arc<AtomicU64>,
         _is_real: bool,
     ) -> Option<Self> {
@@ -85,7 +85,7 @@ impl Fixture {
             let mut s = SharedState::new();
             s.center_freq_hz = WMJI_FREQ_HZ;
             s.sample_rate_sps = SAMPLE_RATE_SPS;
-            s.demod.demod_mode = sdrapp_core::signal_path::DemodMode::Wbfm;
+            s.demod.demod_mode = rusty_sdr_core::signal_path::DemodMode::Wbfm;
             s.demod.volume = 0.8;
             s
         }));
@@ -245,7 +245,7 @@ fn test_quality_report_and_wav_output() {
 // SDRplay service.
 //
 // Run with:
-//   cargo test -p sdrapp --test reception -- --include-ignored rspdx -- --nocapture
+//   cargo test -p rusty-sdr --test reception -- --include-ignored rspdx -- --nocapture
 
 #[test]
 #[ignore = "requires SDRplay RSPdx-R2 connected and sdrplay_api installed"]

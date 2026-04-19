@@ -1,0 +1,22 @@
+[package]
+name = "rusty-sdr-audio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusty-sdr-core = { path = "../rusty-sdr-core" }
+cpal = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam-channel = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

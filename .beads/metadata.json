@@ -2,6 +2,6 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "server",
-  "dolt_database": "sdrpp",
+  "dolt_database": "rusty-sdr",
   "project_id": "37e423bb-098e-4f46-9469-c7c6474d3aad"
 }

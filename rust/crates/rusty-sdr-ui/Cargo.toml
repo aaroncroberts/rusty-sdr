@@ -1,0 +1,29 @@
+[package]
+name = "rusty-sdr-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusty-sdr-core = { path = "../rusty-sdr-core" }
+rusty-sdr-adsb = { path = "../rusty-sdr-adsb" }
+rusty-sdr-orbcomm = { path = "../rusty-sdr-orbcomm" }
+rusty-sdr-tle = { path = "../rusty-sdr-tle" }
+num-complex = { workspace = true }
+rusty-sdr-midi = { path = "../rusty-sdr-midi" }
+rusty-sdr-recorder = { path = "../rusty-sdr-recorder" }
+egui = { workspace = true }
+eframe = { workspace = true }
+egui_plot = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam-channel = { workspace = true }
+dirs = { workspace = true }
+serde_json = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+ureq = { version = "2", features = ["tls"] }
+open = "5"

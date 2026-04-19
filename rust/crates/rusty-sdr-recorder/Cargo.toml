@@ -1,0 +1,21 @@
+[package]
+name = "rusty-sdr-recorder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusty-sdr-core = { path = "../rusty-sdr-core" }
+parking_lot = { workspace = true }
+hound = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

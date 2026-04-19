@@ -4,10 +4,10 @@ run:
 	cargo run -- --auto-start
 
 test:
-	cargo test --workspace --exclude sdrapp-sdrplay --exclude sdrapp-sdrplay-sys
+	cargo test --workspace --exclude rusty-sdr-sdrplay --exclude rusty-sdr-sdrplay-sys
 
 lint:
-	cargo clippy --workspace --exclude sdrapp-sdrplay --exclude sdrapp-sdrplay-sys -- -D warnings
+	cargo clippy --workspace --exclude rusty-sdr-sdrplay --exclude rusty-sdr-sdrplay-sys -- -D warnings
 
 fmt:
 	cargo fmt --all

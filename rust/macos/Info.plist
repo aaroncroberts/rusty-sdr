@@ -3,16 +3,16 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.sdrapp.sdrapp</string>
+    <string>com.rusty-sdr.app</string>
 
     <key>CFBundleName</key>
-    <string>SDRApp</string>
+    <string>RustySDR</string>
 
     <key>CFBundleDisplayName</key>
-    <string>SDRApp</string>
+    <string>Rusty SDR</string>
 
     <key>CFBundleExecutable</key>
-    <string>sdrapp</string>
+    <string>rusty-sdr</string>
 
     <key>CFBundlePackageType</key>
     <string>APPL</string>
@@ -30,7 +30,7 @@
     <true/>
 
     <key>NSMicrophoneUsageDescription</key>
-    <string>SDRApp uses the audio system for SDR receiver output.</string>
+    <string>Rusty SDR uses the audio system for SDR receiver output.</string>
 
     <!-- Allow non-sandboxed access to MIDI and audio devices -->
     <key>NSPrincipalClass</key>
