@@ -5,6 +5,7 @@
 //! `impl` blocks in child modules to access parent-module private fields).
 
 pub(super) mod adsb_map;
+mod orbcomm;
 pub(super) mod center;
 pub(super) mod left;
 mod left_bookmarks;
