@@ -178,7 +178,6 @@ impl SdrApp {
                 .unwrap_or(false);
             let count = self.adsb_store.lock().len();
 
-            // Header row: label + live aircraft count badge + ✈ Map button
             ui.horizontal(|ui| {
                 ui.label(RichText::new("ADS-B").color(theme::TEXT_MUTED).small());
                 if decoder_running && count > 0 {
@@ -190,11 +189,7 @@ impl SdrApp {
                     );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // ✈ Map — the single entry point. One click:
-                    //   • tunes to 1090 MHz
-                    //   • starts the decoder (if not already running)
-                    //   • opens the map window
-                    // When already running, just toggles the map window.
+                    // Map toggle button — Start/Stop controls live inside the map window.
                     let map_lbl = if self.show_adsb_map { "^ Map" } else { "Map" };
                     let map_color = if decoder_running { theme::STATUS_OK } else { theme::ACCENT };
                     let map_btn = egui::Button::new(
@@ -205,167 +200,15 @@ impl SdrApp {
                         1.0,
                         if self.show_adsb_map { map_color } else { theme::BORDER },
                     ));
-                    let hover = if decoder_running {
-                        "Toggle aircraft map"
-                    } else {
-                        "Open map · tune to 1090 MHz · start decoder"
-                    };
-                    if ui.add(map_btn).on_hover_text(hover).clicked() {
-                        if !decoder_running && !self.adsb_start_pending {
-                            // Switch to Antenna B (ADS-B antenna) if not already there.
-                            if self.config.source.antenna != "B" {
-                                let prev_ant = self.config.source.antenna.clone();
-                                self.adsb_prev_antenna = Some(prev_ant);
-                                self.config.source.antenna = "B".into();
-                                self.config_dirty = true;
-                                let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(1).into());
-                                tracing::info!("ADS-B entry: switching to Antenna B");
-                            }
-
-                            // Mute audio while ADS-B decoder is running.
-                            if !self.muted {
-                                self.muted = true;
-                                self.adsb_did_mute = true;
-                                let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
-                                tracing::info!("ADS-B entry: muting audio");
-                            }
-
-                            let sr = self.shared.read().sample_rate_sps;
-                            if sr < 2_000_000 {
-                                // Auto-reconfigure: save current decimation, set to 1,
-                                // then wait for device to apply before starting decoder.
-                                let prev = self.config.source.decimation_factor;
-                                self.adsb_prev_decimation = Some(prev);
-                                self.config.source.decimation_factor = 1;
-                                self.config_dirty = true;
-                                let _ = self.cmd_tx.try_send(
-                                    HardwareCommand::SetDecimationFactor(1).into(),
-                                );
-                                tracing::info!(
-                                    prev_decimation = prev,
-                                    "ADS-B entry: reconfiguring hardware to decimation=1 (2 Msps)"
-                                );
-                                self.adsb_start_pending = true;
-                            }
-                            // If sr is already ≥ 2 Msps, start immediately (handled below).
-                            // If reconfiguring, adsb_start_pending will fire next frame.
-                            let current_sr = self.shared.read().sample_rate_sps;
-                            if current_sr >= 2_000_000 && !self.adsb_start_pending {
-                                self.adsb_start_decoder();
-                            }
-                        }
+                    if ui
+                        .add(map_btn)
+                        .on_hover_text("Open / close ADS-B aircraft map")
+                        .clicked()
+                    {
                         self.show_adsb_map = !self.show_adsb_map;
-                    }
-
-                    // ■ Stop button (shown when running or pending start)
-                    if decoder_running || self.adsb_start_pending {
-                        let stop_btn = egui::Button::new(
-                            RichText::new("Stop").color(theme::AMBER).small(),
-                        )
-                        .fill(theme::WIDGET_BG)
-                        .stroke(Stroke::new(1.0, theme::BORDER));
-                        if ui.add(stop_btn).on_hover_text("Stop ADS-B decoder").clicked() {
-                            if let Some(mut d) = self.adsb_decoder.take() {
-                                d.stop();
-                            }
-                            self.adsb_start_pending = false;
-                            // Restore previous antenna if we changed it
-                            if let Some(prev_ant) = self.adsb_prev_antenna.take() {
-                                let port: u8 = match prev_ant.as_str() { "B" => 1, "C" => 2, _ => 0 };
-                                self.config.source.antenna = prev_ant;
-                                self.config_dirty = true;
-                                let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port).into());
-                                tracing::info!(antenna = port, "ADS-B exit: restoring previous antenna");
-                            }
-                            // Unmute if ADS-B was the one that muted
-                            if self.adsb_did_mute {
-                                self.muted = false;
-                                self.adsb_did_mute = false;
-                                let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(false).into());
-                                tracing::info!("ADS-B exit: unmuting audio");
-                            }
-                            // Restore previous decimation if we changed it
-                            if let Some(prev) = self.adsb_prev_decimation.take() {
-                                if prev > 1 {
-                                    self.config.source.decimation_factor = prev;
-                                    self.config_dirty = true;
-                                    let _ = self.cmd_tx.try_send(
-                                        HardwareCommand::SetDecimationFactor(prev).into(),
-                                    );
-                                    tracing::info!(
-                                        decimation = prev,
-                                        "ADS-B exit: restoring previous decimation factor"
-                                    );
-                                }
-                            }
-                        }
                     }
                 });
             });
-
-            // Deferred start: check each frame whether the device has applied our
-            // SetDecimationFactor(1) command (sample_rate_sps will flip to ≥ 2 Msps).
-            if self.adsb_start_pending {
-                let current_sr = self.shared.read().sample_rate_sps;
-                if current_sr >= 2_000_000 {
-                    self.adsb_start_pending = false;
-                    // Tune and start now that the hardware is correctly configured
-                    self.adsb_start_decoder();
-                }
-            }
-
-            // Status line
-            let effective_sr = self.shared.read().sample_rate_sps;
-            if self.adsb_start_pending {
-                ui.label(
-                    RichText::new("  Reconfiguring hardware for ADS-B...")
-                        .color(theme::AMBER)
-                        .small(),
-                );
-            } else if decoder_running {
-                let frames = self.adsb_decoder
-                    .as_ref()
-                    .map(|d| d.frames_decoded())
-                    .unwrap_or(0);
-                let status = if count > 0 {
-                    format!("  LIVE  {count} aircraft  {frames} frames")
-                } else {
-                    format!("  LIVE  listening...  {frames} frames")
-                };
-                ui.label(RichText::new(status).color(theme::STATUS_OK).small());
-                // Warn if somehow started at wrong rate (shouldn't happen after the
-                // guard above, but keep as a backstop for edge cases).
-                let decoder_sr = self.adsb_decoder.as_ref().map(|d| d.sample_rate).unwrap_or(0);
-                if decoder_sr < 2_000_000 {
-                    ui.label(
-                        RichText::new(format!(
-                            "  ! {:.0} kHz effective - no frames possible",
-                            decoder_sr as f32 / 1_000.0,
-                        ))
-                        .color(theme::AMBER)
-                        .small(),
-                    );
-                }
-            } else if effective_sr < 2_000_000 {
-                // Rate too low — ✈ Map will auto-reconfigure hardware to 2 Msps.
-                ui.label(
-                    RichText::new("  Map will auto-configure hardware for ADS-B")
-                        .color(theme::TEXT_MUTED)
-                        .small(),
-                );
-            } else if count > 0 {
-                ui.label(
-                    RichText::new(format!("  {count} aircraft cached"))
-                        .color(theme::TEXT_MUTED)
-                        .small(),
-                );
-            } else {
-                ui.label(
-                    RichText::new("  Press Map to tune and start")
-                        .color(theme::TEXT_DISABLED)
-                        .small(),
-                );
-            }
         }
 
         // ── FM Band Scan ──────────────────────────────────────────────────────
@@ -1028,6 +871,75 @@ impl SdrApp {
                 sr,
             ));
             tracing::info!(sample_rate_sps = sr, "ADS-B decoder started");
+        }
+    }
+
+    /// Full ADS-B start sequence: switch to Antenna B, mute audio, configure
+    /// sample rate if needed, then start the decoder (or set `adsb_start_pending`).
+    pub(in crate::app) fn adsb_start_sequence(&mut self) {
+        // Switch to Antenna B where the ADS-B antenna is connected.
+        if self.config.source.antenna != "B" {
+            let prev_ant = self.config.source.antenna.clone();
+            self.adsb_prev_antenna = Some(prev_ant);
+            self.config.source.antenna = "B".into();
+            self.config_dirty = true;
+            let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(1).into());
+            tracing::info!("ADS-B start: switching to Antenna B");
+        }
+        // Mute audio while decoder is running.
+        if !self.muted {
+            self.muted = true;
+            self.adsb_did_mute = true;
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
+            tracing::info!("ADS-B start: muting audio");
+        }
+        let sr = self.shared.read().sample_rate_sps;
+        if sr < 2_000_000 {
+            // Auto-reconfigure: set decimation to 1, wait for hardware to apply.
+            let prev = self.config.source.decimation_factor;
+            self.adsb_prev_decimation = Some(prev);
+            self.config.source.decimation_factor = 1;
+            self.config_dirty = true;
+            let _ = self.cmd_tx.try_send(HardwareCommand::SetDecimationFactor(1).into());
+            tracing::info!(
+                prev_decimation = prev,
+                "ADS-B start: reconfiguring hardware to decimation=1 (2 Msps)"
+            );
+            self.adsb_start_pending = true;
+        } else {
+            self.adsb_start_decoder();
+        }
+    }
+
+    /// Stop the ADS-B decoder and restore hardware state (antenna, mute, decimation).
+    pub(in crate::app) fn adsb_stop_decoder(&mut self) {
+        if let Some(mut d) = self.adsb_decoder.take() {
+            d.stop();
+        }
+        self.adsb_start_pending = false;
+        // Restore previous antenna if we changed it
+        if let Some(prev_ant) = self.adsb_prev_antenna.take() {
+            let port: u8 = match prev_ant.as_str() { "B" => 1, "C" => 2, _ => 0 };
+            self.config.source.antenna = prev_ant;
+            self.config_dirty = true;
+            let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port).into());
+            tracing::info!(antenna = port, "ADS-B stop: restoring previous antenna");
+        }
+        // Unmute if ADS-B was the one that muted
+        if self.adsb_did_mute {
+            self.muted = false;
+            self.adsb_did_mute = false;
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(false).into());
+            tracing::info!("ADS-B stop: unmuting audio");
+        }
+        // Restore previous decimation if we changed it
+        if let Some(prev) = self.adsb_prev_decimation.take() {
+            if prev > 1 {
+                self.config.source.decimation_factor = prev;
+                self.config_dirty = true;
+                let _ = self.cmd_tx.try_send(HardwareCommand::SetDecimationFactor(prev).into());
+                tracing::info!(decimation = prev, "ADS-B stop: restoring decimation factor");
+            }
         }
     }
 

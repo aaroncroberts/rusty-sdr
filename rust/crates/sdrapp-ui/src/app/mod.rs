@@ -562,26 +562,71 @@ impl eframe::App for SdrApp {
         // ── ADS-B Aircraft Map window ─────────────────────────────────────────
         // Process pending state from last frame (before show_viewport_deferred)
         {
-            let mut map = self.adsb_map.lock();
-            if !map.viewport_open {
-                self.show_adsb_map = false;
-                map.viewport_open = true; // reset for next open
+            // Snapshot decoder state to push into the map window
+            let decoder_running = self
+                .adsb_decoder
+                .as_ref()
+                .map(|d| d.is_running())
+                .unwrap_or(false);
+            let frame_count = self
+                .adsb_decoder
+                .as_ref()
+                .map(|d| d.frames_decoded())
+                .unwrap_or(0);
+            let sr = self.shared.read().sample_rate_sps;
+
+            let (start_req, stop_req) = {
+                let mut map = self.adsb_map.lock();
+
+                // Push current state so the map window can display it
+                map.decoder_running = decoder_running;
+                map.frame_count = frame_count;
+                map.sample_rate_ok = sr >= 2_000_000;
+                map.adsb_start_pending = self.adsb_start_pending;
+
+                if !map.viewport_open {
+                    self.show_adsb_map = false;
+                    map.viewport_open = true; // reset for next open
+                }
+                if map.set_home_pending {
+                    map.set_home_pending = false;
+                    self.config.ui.home_lat = map.center_lat();
+                    self.config.ui.home_lon = map.center_lon();
+                    self.config_dirty = true;
+                }
+                let (lat, lon, zoom) = (map.center_lat(), map.center_lon(), map.zoom_ppd());
+                if self.show_adsb_map
+                    && ((self.config.ui.adsb_map_lat - lat).abs() > 0.001
+                        || (self.config.ui.adsb_map_lon - lon).abs() > 0.001
+                        || (self.config.ui.adsb_map_zoom - zoom).abs() > 0.1)
+                {
+                    self.config.ui.adsb_map_lat = lat;
+                    self.config.ui.adsb_map_lon = lon;
+                    self.config.ui.adsb_map_zoom = zoom;
+                    self.config_dirty = true;
+                }
+
+                // Consume action requests set by the map's toolbar buttons
+                (
+                    std::mem::take(&mut map.start_requested),
+                    std::mem::take(&mut map.stop_requested),
+                )
+            };
+
+            // Deferred start: fires each frame until the hardware reaches ≥ 2 Msps
+            if self.adsb_start_pending && sr >= 2_000_000 {
+                self.adsb_start_pending = false;
+                self.adsb_start_decoder();
             }
-            if map.set_home_pending {
-                map.set_home_pending = false;
-                self.config.ui.home_lat = map.center_lat();
-                self.config.ui.home_lon = map.center_lon();
-                self.config_dirty = true;
+
+            // Start requested by map toolbar
+            if start_req && !decoder_running && !self.adsb_start_pending {
+                self.adsb_start_sequence();
             }
-            let (lat, lon, zoom) = (map.center_lat(), map.center_lon(), map.zoom_ppd());
-            if self.show_adsb_map && ((self.config.ui.adsb_map_lat - lat).abs() > 0.001
-                || (self.config.ui.adsb_map_lon - lon).abs() > 0.001
-                || (self.config.ui.adsb_map_zoom - zoom).abs() > 0.1)
-            {
-                self.config.ui.adsb_map_lat = lat;
-                self.config.ui.adsb_map_lon = lon;
-                self.config.ui.adsb_map_zoom = zoom;
-                self.config_dirty = true;
+
+            // Stop requested by map toolbar
+            if stop_req {
+                self.adsb_stop_decoder();
             }
         }
         if self.show_adsb_map {

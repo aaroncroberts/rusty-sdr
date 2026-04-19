@@ -207,6 +207,22 @@ pub struct AdsbMapWindow {
     /// close button is pressed; caller resets to true when it re-opens the window.
     pub viewport_open: bool,
 
+    // ── Decoder state (written by main app each frame) ────────────────────────
+    /// True while the ADS-B decoder thread is running.
+    pub decoder_running: bool,
+    /// True while waiting for hardware to reconfigure to 2 Msps before starting.
+    pub adsb_start_pending: bool,
+    /// DF-17 frames decoded so far (reset on each decoder start).
+    pub frame_count: u64,
+    /// True when the hardware sample rate is ≥ 2 Msps (required for ADS-B).
+    pub sample_rate_ok: bool,
+
+    // ── Action requests (set by map UI, consumed by main app each frame) ──────
+    /// Set when the user clicks Start in the map toolbar; main app consumes & clears.
+    pub start_requested: bool,
+    /// Set when the user clicks Stop in the map toolbar; main app consumes & clears.
+    pub stop_requested: bool,
+
     // ── OSM tile cache ────────────────────────────────────────────────────────
     /// Loaded tile textures keyed by (z, x, y).
     tile_cache: HashMap<TileKey, TextureHandle>,
@@ -240,6 +256,12 @@ impl AdsbMapWindow {
             map_dim: true,
             set_home_pending: false,
             viewport_open: true,
+            decoder_running: false,
+            adsb_start_pending: false,
+            frame_count: 0,
+            sample_rate_ok: true,
+            start_requested: false,
+            stop_requested: false,
             tile_cache: HashMap::new(),
             pending_tiles: HashSet::new(),
             tile_tx,
@@ -311,6 +333,52 @@ impl AdsbMapWindow {
                     // Compact button spacing for the toolbar
                     ui.spacing_mut().button_padding = Vec2::new(4.0, 1.0);
                     ui.spacing_mut().item_spacing.x = 3.0;
+
+                    // ── ADS-B decoder status + controls ───────────────────────
+                    let (dot_color, status_text) = if self.adsb_start_pending {
+                        (Color32::from_rgb(0xC0, 0x80, 0x00), "Configuring...")
+                    } else if self.decoder_running {
+                        (Color32::from_rgb(0x73, 0xC9, 0x91), "LIVE")
+                    } else {
+                        (Color32::from_rgb(0x4A, 0x5A, 0x6A), "Stopped")
+                    };
+                    let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(dot_rect.center(), 4.0, dot_color);
+                    ui.label(RichText::new(status_text).color(dot_color).small());
+                    if self.decoder_running {
+                        let ac = aircraft.len();
+                        let fr = self.frame_count;
+                        ui.label(
+                            RichText::new(format!(" {ac} ac  {fr} fr"))
+                                .color(Color32::from_rgb(0x8A, 0x9A, 0xB0))
+                                .small(),
+                        );
+                    }
+                    ui.separator();
+                    if self.decoder_running || self.adsb_start_pending {
+                        if ui
+                            .small_button("Stop")
+                            .on_hover_text("Stop ADS-B decoder · restore audio")
+                            .clicked()
+                        {
+                            self.stop_requested = true;
+                        }
+                    } else {
+                        let start_lbl = if self.sample_rate_ok {
+                            "Start"
+                        } else {
+                            "Start*"
+                        };
+                        let tip = if self.sample_rate_ok {
+                            "Tune to 1090 MHz · switch to Antenna B · start decoder"
+                        } else {
+                            "Will auto-reconfigure hardware to 2 Msps, then start"
+                        };
+                        if ui.small_button(start_lbl).on_hover_text(tip).clicked() {
+                            self.start_requested = true;
+                        }
+                    }
+                    ui.separator();
 
                     ui.label(
                         RichText::new(format!("  {} aircraft", aircraft.len()))
