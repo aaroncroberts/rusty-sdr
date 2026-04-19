@@ -94,6 +94,15 @@ impl SdrApp {
                 {
                     self.orbcomm_log.clear();
                 }
+                // Map toggle
+                let map_lbl = if self.show_sat_map { "^ Map" } else { "🛰 Map" };
+                if ui
+                    .small_button(RichText::new(map_lbl).small())
+                    .on_hover_text("Show Orbcomm satellite map with ground tracks and pass schedule")
+                    .clicked()
+                {
+                    self.show_sat_map = !self.show_sat_map;
+                }
             });
         });
 

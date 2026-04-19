@@ -10,6 +10,7 @@ publish.workspace = true
 sdrapp-core = { path = "../sdrapp-core" }
 sdrapp-adsb = { path = "../sdrapp-adsb" }
 sdrapp-orbcomm = { path = "../sdrapp-orbcomm" }
+sdrapp-tle = { path = "../sdrapp-tle" }
 num-complex = { workspace = true }
 sdrapp-midi = { path = "../sdrapp-midi" }
 sdrapp-recorder = { path = "../sdrapp-recorder" }

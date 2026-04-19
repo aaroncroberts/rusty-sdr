@@ -186,6 +186,12 @@ pub struct SdrApp {
     /// Pass log: decoded Orbcomm frames with receive timestamps, newest last.
     /// Capped at [`MAX_ORBCOMM_LOG`] entries.
     pub orbcomm_log: Vec<crate::orbcomm_decoder::OrbcommLogEntry>,
+
+    // ── Satellite map ─────────────────────────────────────────────────────────
+    /// Orbcomm satellite map window.
+    sat_map: std::sync::Arc<parking_lot::Mutex<panels::sat_map::SatMapWindow>>,
+    /// Whether the satellite map window is open.
+    show_sat_map: bool,
 }
 
 impl SdrApp {
@@ -224,6 +230,9 @@ impl SdrApp {
         let handbook_page = config.ui.handbook_page;
         let show_handbook = config.ui.show_handbook;
         let show_adsb_map = config.ui.show_adsb_map;
+        let show_sat_map = config.ui.show_sat_map;
+        let sat_map_home_lat = config.ui.home_lat;
+        let sat_map_home_lon = config.ui.home_lon;
         let adsb_map = panels::adsb_map::AdsbMapWindow::with_viewport(
             config.ui.adsb_map_lat,
             config.ui.adsb_map_lon,
@@ -313,6 +322,10 @@ impl SdrApp {
             adsb_start_pending: false,
             orbcomm_decoder: None,
             orbcomm_log: Vec::new(),
+            sat_map: std::sync::Arc::new(parking_lot::Mutex::new(
+                panels::sat_map::SatMapWindow::new(sat_map_home_lat, sat_map_home_lon),
+            )),
+            show_sat_map,
         }
     }
 }
@@ -717,6 +730,57 @@ impl eframe::App for SdrApp {
             );
         } else if self.config.ui.show_adsb_map {
             self.config.ui.show_adsb_map = false;
+            self.config_dirty = true;
+        }
+
+        // ── Satellite map window ──────────────────────────────────────────────
+        {
+            let map = self.sat_map.lock();
+            if !map.viewport_open {
+                drop(map);
+                self.show_sat_map = false;
+                self.sat_map.lock().viewport_open = true;
+            } else if self.config.ui.show_sat_map != self.show_sat_map {
+                self.config.ui.show_sat_map = self.show_sat_map;
+                self.config_dirty = true;
+            }
+        }
+        if self.show_sat_map {
+            self.config.ui.show_sat_map = true;
+            let map_arc = std::sync::Arc::clone(&self.sat_map);
+            let home_lat = self.config.ui.home_lat;
+            let home_lon = self.config.ui.home_lon;
+            // Forward decoded NORAD IDs for flash effect.
+            {
+                let mut map = self.sat_map.lock();
+                for entry in &self.orbcomm_log {
+                    if let sdrapp_orbcomm::parser::PacketType::SatelliteTelemetry { sat_id, .. } =
+                        entry.packet.packet_type
+                    {
+                        if let Some(norad) = sdrapp_tle::orbcomm_norad_id(sat_id) {
+                            map.flash_norad_ids.push(norad);
+                        }
+                    }
+                }
+            }
+            ctx.show_viewport_deferred(
+                egui::ViewportId::from_hash_of("sat_map"),
+                egui::ViewportBuilder::default()
+                    .with_title("🛰  Orbcomm Satellite Map")
+                    .with_inner_size([900.0, 560.0])
+                    .with_min_inner_size([600.0, 400.0]),
+                move |ctx, _class| {
+                    let mut map = map_arc.lock();
+                    let mut open = true;
+                    map.show(ctx, &mut open, home_lat, home_lon);
+                    if !open {
+                        map.viewport_open = false;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                },
+            );
+        } else if self.config.ui.show_sat_map {
+            self.config.ui.show_sat_map = false;
             self.config_dirty = true;
         }
 

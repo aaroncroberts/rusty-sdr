@@ -299,6 +299,10 @@ pub struct UiConfig {
     /// Home longitude (degrees).  Pairs with `home_lat`.
     #[serde(default = "default_home_lon")]
     pub home_lon: f64,
+    // ── Satellite map ──────────────────────────────────────────────────────────
+    /// Whether the satellite map window is open.
+    #[serde(default)]
+    pub show_sat_map: bool,
 }
 
 fn default_zoom_level() -> f32 {
@@ -411,6 +415,7 @@ impl Default for UiConfig {
             adsb_map_zoom: 100.0,
             home_lat: 41.5,   // Cleveland OH — edit in config.json to your location
             home_lon: -81.7,  // Cleveland OH
+            show_sat_map: false,
         }
     }
 }
