@@ -113,17 +113,30 @@ impl AircraftStore {
 
     /// Apply a decoded short-frame (DF5/DF11/DF21) to the store.
     ///
-    /// Creates a new entry if the ICAO is unknown.  Updates squawk if present.
-    /// If the aircraft later sends a DF17/18 frame, [`update`] will clear the
-    /// `mode_s_only` flag automatically.
+    /// **DF11** (CRC verified, `icao_recovered = false`): creates a new entry if
+    /// the ICAO is unknown — the ICAO is directly readable and trustworthy.
+    ///
+    /// **DF5/DF21** (`icao_recovered = true`): only updates an *existing* entry
+    /// (adds squawk).  Never creates a new entry — ICAO recovery is computed from
+    /// an unverified payload, so it would create spurious entries from noise frames.
     pub fn update_short(&mut self, msg: &ShortFrameDecoded) {
         let now = Instant::now();
+        if msg.icao_recovered {
+            // DF5/DF21: only enrich a known aircraft; don't create phantom entries.
+            if let Some(entry) = self.map.get_mut(&msg.icao) {
+                entry.last_seen = now;
+                if let Some(sq) = msg.squawk {
+                    entry.squawk = Some(sq);
+                }
+            }
+            return;
+        }
+        // DF11 (CRC-verified): safe to create a new entry.
         let entry = self.map.entry(msg.icao).or_insert_with(|| AircraftState::new(msg.icao));
         entry.last_seen = now;
         if let Some(sq) = msg.squawk {
             entry.squawk = Some(sq);
         }
-        // Only set mode_s_only if this aircraft has never been seen via ADS-B.
         if entry.callsign.is_none() && entry.lat.is_none() {
             entry.mode_s_only = true;
         }

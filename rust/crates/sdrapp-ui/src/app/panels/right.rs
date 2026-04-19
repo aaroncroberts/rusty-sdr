@@ -261,17 +261,31 @@ impl SdrApp {
                 }
             });
 
-            // Map toggle link (small, under the mode buttons)
+            // Map toggles — ADS-B map and Sat map side by side
             ui.add_space(4.0);
-            let map_lbl = if self.show_adsb_map { "^ Hide map" } else { "v Show map" };
-            let map_color = if adsb_active { theme::ACCENT } else { theme::TEXT_MUTED };
-            if ui
-                .add(egui::Label::new(RichText::new(map_lbl).small().color(map_color)).sense(egui::Sense::click()))
-                .on_hover_text("Toggle ADS-B aircraft map window")
-                .clicked()
-            {
-                self.show_adsb_map = !self.show_adsb_map;
-            }
+            ui.horizontal(|ui| {
+                let map_lbl = if self.show_adsb_map { "^ ADS" } else { "v ADS" };
+                let map_color = if adsb_active { theme::ACCENT } else { theme::TEXT_MUTED };
+                if ui
+                    .add(egui::Label::new(RichText::new(map_lbl).small().color(map_color)).sense(egui::Sense::click()))
+                    .on_hover_text("Toggle ADS-B aircraft map window")
+                    .clicked()
+                {
+                    self.show_adsb_map = !self.show_adsb_map;
+                }
+
+                ui.label(RichText::new("·").small().color(theme::TEXT_MUTED));
+
+                let sat_lbl = if self.show_sat_map { "^ SAT" } else { "v SAT" };
+                let sat_color = theme::TEXT_MUTED;
+                if ui
+                    .add(egui::Label::new(RichText::new(sat_lbl).small().color(sat_color)).sense(egui::Sense::click()))
+                    .on_hover_text("Toggle Orbcomm satellite map window")
+                    .clicked()
+                {
+                    self.show_sat_map = !self.show_sat_map;
+                }
+            });
         }
 
         // ── FM Band Scan ──────────────────────────────────────────────────────
