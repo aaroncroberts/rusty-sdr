@@ -679,13 +679,82 @@ impl SdrApp {
             }
         }
 
-        // ── Device Diagnostics (collapsible) ─────────────────────────────────
+        // ── MIDI Controller ───────────────────────────────────────────────────
         ui.separator();
         ui.add_space(2.0);
+        self.midi_section(ui);
+    }
+
+    /// MIDI controller status + mapper toggle.
+    /// Extracted so it can be placed in whatever panel the layout requires.
+    pub(in crate::app) fn midi_section(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("MIDI").color(theme::TEXT_MUTED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mapper_label = if self.show_midi_mapper { "v Mapper" } else { "> Mapper" };
+                let btn = egui::Button::new(
+                    RichText::new(mapper_label).color(theme::ACCENT).small(),
+                )
+                .fill(theme::WIDGET_BG)
+                .stroke(egui::Stroke::new(1.0, if self.show_midi_mapper { theme::ACCENT } else { theme::BORDER }));
+                if ui.add(btn).clicked() {
+                    self.show_midi_mapper = !self.show_midi_mapper;
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        let (midi_device, midi_page) = {
+            let s = self.shared.read();
+            (s.midi_device.clone(), s.midi_page)
+        };
+
+        if let Some(ref device_name) = midi_device {
+            ui.horizontal(|ui| {
+                let (dr, _) = ui.allocate_exact_size(egui::Vec2::splat(10.0), egui::Sense::hover());
+                ui.painter().circle_filled(dr.center(), 4.0, theme::STATUS_OK);
+                let name = if device_name.len() > 22 {
+                    format!("{}...", &device_name[..21])
+                } else {
+                    device_name.clone()
+                };
+                ui.label(RichText::new(name).color(theme::TEXT_PRIMARY).small());
+            });
+
+            let page_names = ["Tune", "Monitor", "Recorder"];
+            let page_label = page_names.get(midi_page).copied().unwrap_or("Page ?");
+            let page_color = theme::midi_page_color(midi_page);
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Page:").color(theme::TEXT_MUTED).small());
+                ui.label(
+                    RichText::new(format!("{midi_page}  {page_label}"))
+                        .color(page_color)
+                        .small()
+                        .strong(),
+                );
+            });
+        } else {
+            ui.horizontal(|ui| {
+                let (dr, _) = ui.allocate_exact_size(egui::Vec2::splat(10.0), egui::Sense::hover());
+                ui.painter().circle_filled(dr.center(), 4.0, theme::TEXT_DISABLED);
+                ui.label(RichText::new("Not connected").color(theme::TEXT_MUTED).small());
+            });
+            ui.label(
+                RichText::new("Connect nanoKontrol2 via USB")
+                    .color(theme::TEXT_DISABLED)
+                    .small(),
+            );
+        }
+    }
+
+    /// Device diagnostics grid + error log (collapsible).
+    /// Lives in the left panel (under bookmarks).
+    pub(in crate::app) fn device_diagnostics_section(&mut self, ui: &mut Ui) {
         ui.collapsing(
             RichText::new("DEVICE DIAGNOSTICS").color(theme::TEXT_MUTED).small(),
             |ui| {
-        ui.add_space(4.0);
         ui.add_space(4.0);
 
         let (serial, hw_ver, api_version, status, error_count, iq_lag_count, sample_rate, all_errors) = {
@@ -771,13 +840,11 @@ impl SdrApp {
                 }
             });
 
-        // Scrollable error log — always visible, shows all entries (newest first)
         ui.add_space(4.0);
         ui.label(RichText::new("Error log:").small().color(theme::TEXT_MUTED));
-        let log_height = 80.0_f32;
         egui::ScrollArea::vertical()
             .id_salt("diag_error_log")
-            .max_height(log_height)
+            .max_height(80.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 if all_errors.is_empty() {
@@ -793,7 +860,7 @@ impl SdrApp {
                     }
                 }
             });
-        }); // end Device Diagnostics collapsing
+        });
     }
 
     /// Tune to 1090 MHz and start the ADS-B decoder at the current hardware sample rate.

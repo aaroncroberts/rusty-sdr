@@ -1,6 +1,6 @@
 //! Bookmark list UI: display, recall, add, edit, remove, export, import.
 
-use egui::{RichText, Ui};
+use egui::{RichText, Ui, Vec2};
 
 use sdrapp_core::{
     config::BookmarkConfig,
@@ -19,7 +19,7 @@ impl SdrApp {
         let open = ui.ctx().data_mut(|d| *d.get_persisted_mut_or_insert_with(header_id, || true));
 
         ui.horizontal(|ui| {
-            let arrow = if open { "▼" } else { "▶" };
+            let arrow = if open { "v" } else { ">" };
             let header_text = RichText::new(format!("{arrow} BOOKMARKS")).color(theme::TEXT_MUTED).small();
             if ui.add(egui::Label::new(header_text).sense(egui::Sense::click())).clicked() {
                 ui.ctx().data_mut(|d| {
@@ -237,24 +237,30 @@ impl SdrApp {
                 });
             } else {
                 ui.horizontal(|ui| {
-                    // Recall button (star for active, circle for inactive)
-                    let icon = if is_active { "[*]" } else { "[ ]" };
-                    let icon_color = if is_active {
-                        theme::ACCENT
+                    // Recall button — filled dot (active) or ring (inactive), drawn with painter
+                    let (dot_rect, dot_resp) =
+                        ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::click());
+                    let dot_color = if is_active { theme::ACCENT } else { theme::TEXT_MUTED };
+                    let c = dot_rect.center();
+                    if is_active {
+                        ui.painter().circle_filled(c, 4.5, dot_color);
                     } else {
-                        theme::TEXT_MUTED
-                    };
-                    if ui
-                        .small_button(RichText::new(icon).color(icon_color))
-                        .clicked()
-                    {
+                        ui.painter().circle_stroke(c, 4.0, egui::Stroke::new(1.0, dot_color));
+                    }
+                    if dot_resp.on_hover_text("Recall bookmark").clicked() {
                         recall_idx = Some(i);
                     }
-                    // Category dot
+
+                    // Category dot — colored filled circle drawn with painter
                     if !bm.category.is_empty() {
                         let cat_color = category_color(&bm.category);
-                        ui.label(RichText::new("●").color(cat_color).small());
+                        let (cr, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(cr.center(), 3.5, cat_color);
+                    } else {
+                        // Reserve the same width so names stay aligned
+                        ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
                     }
+
                     // Bookmark name (click recalls)
                     let freq_label = format!("{:.3} MHz", bm.freq_hz as f64 / 1_000_000.0);
                     let text = format!("{} — {}", bm.name, freq_label);
@@ -264,21 +270,19 @@ impl SdrApp {
                             RichText::new(&text).color(theme::TEXT_PRIMARY).small(),
                         )
                         .on_hover_text(format!(
-                            "Mode: {:?}  Category: {}",
+                            "Mode: {:?}  Category: {}  Antenna: {}",
                             bm.mode,
-                            if bm.category.is_empty() {
-                                "—"
-                            } else {
-                                &bm.category
-                            }
+                            if bm.category.is_empty() { "—" } else { &bm.category },
+                            bm.antenna.as_deref().unwrap_or("default"),
                         ))
                         .clicked()
                     {
                         recall_idx = Some(i);
                     }
-                    // Edit button
+
+                    // Edit button — pencil label, right-aligned
                     if ui
-                        .small_button(RichText::new("Ed").color(theme::TEXT_MUTED))
+                        .small_button(RichText::new("edit").color(theme::TEXT_MUTED).small())
                         .on_hover_text("Edit bookmark")
                         .clicked()
                     {
@@ -286,7 +290,8 @@ impl SdrApp {
                     }
                     // Delete button
                     if ui
-                        .small_button(RichText::new("×").color(theme::TEXT_MUTED))
+                        .small_button(RichText::new("x").color(theme::TEXT_MUTED).small())
+                        .on_hover_text("Delete bookmark")
                         .clicked()
                     {
                         remove_idx = Some(i);
