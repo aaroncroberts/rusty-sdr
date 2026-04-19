@@ -90,6 +90,8 @@ pub struct SdrApp {
     bookmark_sort_by_freq: bool,
     /// Whether the floating bookmark manager window is open.
     show_bookmark_manager: bool,
+    /// Index of bookmark pending delete confirmation (two-step delete).
+    bookmark_delete_confirm: Option<usize>,
     // ── Scanner state ─────────────────────────────────────────────────────────
     /// Dwell time in seconds (local UI state before sending command).
     scan_dwell_ui: f32,
@@ -262,6 +264,7 @@ impl SdrApp {
             bookmark_cat_filter: String::new(),
             bookmark_sort_by_freq: false,
             show_bookmark_manager: false,
+            bookmark_delete_confirm: None,
             scan_dwell_ui: 2.0,
             scan_cat_ui: String::new(),
             range_scan_lo_hz: 87_500_000,

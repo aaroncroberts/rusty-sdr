@@ -278,9 +278,9 @@ mod tests {
         let mut store = AircraftStore::new();
         store.update(&ident_msg(0xAABBCC, "OLD     "));
 
-        // Fast-forward by 31 s: craft the `now` as 31 s after the entry's last_seen
+        // Fast-forward past the 5-minute expiry window.
         let ac = store.get(0xAABBCC).unwrap();
-        let past_expiry = ac.last_seen + Duration::from_secs(61);
+        let past_expiry = ac.last_seen + Duration::from_secs(301);
         store.prune_expired_at(past_expiry);
 
         assert!(store.is_empty(), "Expired aircraft should be pruned");

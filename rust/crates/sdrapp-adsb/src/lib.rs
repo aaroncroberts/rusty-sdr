@@ -238,7 +238,7 @@ impl PpmDemodulator {
 
         // Try three data-start offsets to absorb ±1-sample phase jitter.
         for &data_start in &[PREAMBLE_LEN, PREAMBLE_LEN - 1, PREAMBLE_LEN + 1] {
-            if window.len() <= data_start + LONG_MSG_BITS * SAMPLES_PER_BIT {
+            if window.len() < data_start + LONG_MSG_BITS * SAMPLES_PER_BIT {
                 continue;
             }
             let data_samples = &window[data_start..];

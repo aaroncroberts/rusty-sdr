@@ -214,9 +214,31 @@ impl SdrApp {
                 for (i, bm) in bookmarks_snapshot.iter().enumerate() {
                     let is_active = i == cursor;
                     let is_editing = self.bookmark_edit_idx == Some(i);
+                    let is_confirming_delete = self.bookmark_delete_confirm == Some(i);
 
                     if is_editing {
                         self.render_edit_form(ui, i, &mut edit_commit_idx, &mut edit_cancel);
+                    } else if is_confirming_delete {
+                        // Two-step delete confirmation row
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&bm.name).small().color(theme::TEXT_MUTED));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                if ui.small_button(RichText::new("Cancel").color(theme::TEXT_MUTED))
+                                    .clicked()
+                                {
+                                    self.bookmark_delete_confirm = None;
+                                }
+                                if ui.small_button(RichText::new("Confirm delete").color(theme::DANGER))
+                                    .clicked()
+                                {
+                                    remove_idx = Some(i);
+                                    self.bookmark_delete_confirm = None;
+                                }
+                                ui.label(RichText::new("Delete?").small().color(theme::DANGER));
+                            });
+                        });
+                        ui.add_space(1.0);
                     } else {
                         ui.horizontal(|ui| {
                             // Active dot
@@ -250,17 +272,19 @@ impl SdrApp {
                             ui.label(RichText::new(&text).color(theme::TEXT_PRIMARY).small());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
-                                if ui.small_button(RichText::new("✕").color(theme::DANGER).small())
-                                    .on_hover_text("Delete bookmark")
+                                if ui.small_button(RichText::new("Del").color(theme::DANGER).small())
+                                    .on_hover_text("Delete bookmark (requires confirmation)")
                                     .clicked()
                                 {
-                                    remove_idx = Some(i);
+                                    self.bookmark_delete_confirm = Some(i);
+                                    self.bookmark_edit_idx = None; // cancel any open edit
                                 }
                                 if ui.small_button(RichText::new("Edit").color(theme::TEXT_MUTED).small())
                                     .on_hover_text("Edit this bookmark")
                                     .clicked()
                                 {
                                     edit_start_idx = Some(i);
+                                    self.bookmark_delete_confirm = None;
                                 }
                                 ui.label(RichText::new(mode_label).color(theme::TEXT_MUTED).small());
                             });
@@ -268,13 +292,33 @@ impl SdrApp {
                         ui.add_space(1.0);
                     }
                 }
+
+                // "+ New" button at bottom of list
+                ui.add_space(4.0);
+                if ui.small_button(RichText::new("+ New").color(theme::ACCENT)).clicked() {
+                    // Open a blank edit form appended as a new entry
+                    let default_freq = { self.shared.read().center_freq_hz };
+                    self.bookmark_edit_buf = (
+                        String::new(),
+                        format!("{:.6}", default_freq as f64 / 1_000_000.0),
+                        sdrapp_core::signal_path::DemodMode::Wbfm,
+                        String::new(),
+                        12_500_u32,
+                        -50.0_f32,
+                        false,
+                        None,
+                    );
+                    // Sentinel: usize::MAX means "new entry, not editing existing"
+                    self.bookmark_edit_idx = Some(usize::MAX);
+                    self.bookmark_delete_confirm = None;
+                }
             });
 
         ui.separator();
 
         // Bottom actions
         ui.horizontal(|ui| {
-            if ui.button(RichText::new("+ Add current").color(theme::ACCENT)).clicked() {
+            if ui.button(RichText::new("Add current").color(theme::ACCENT)).clicked() {
                 self.bookmark_save_current();
             }
 
@@ -317,7 +361,7 @@ impl SdrApp {
                 let bm = &s.bookmarks[i];
                 self.bookmark_edit_buf = (
                     bm.name.clone(),
-                    bm.freq_hz.to_string(),
+                    format!("{:.6}", bm.freq_hz as f64 / 1_000_000.0),
                     bm.mode,
                     bm.category.clone(),
                     bm.nfm_bandwidth_hz.unwrap_or(12_500),
@@ -337,6 +381,7 @@ impl SdrApp {
     }
 
     /// Render the inline edit form for bookmark at index `i`.
+    /// `i == usize::MAX` means this is a new bookmark (not editing existing).
     fn render_edit_form(
         &mut self,
         ui: &mut Ui,
@@ -344,16 +389,20 @@ impl SdrApp {
         edit_commit_idx: &mut Option<usize>,
         edit_cancel: &mut bool,
     ) {
+        let is_new = i == usize::MAX;
+        let label = if is_new { "New bookmark" } else { "Edit bookmark" };
         ui.group(|ui| {
-            ui.label(RichText::new("Edit bookmark").color(theme::ACCENT).small());
+            ui.label(RichText::new(label).color(theme::ACCENT).small());
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Name").color(theme::TEXT_MUTED).small());
                 ui.text_edit_singleline(&mut self.bookmark_edit_buf.0);
             });
             ui.horizontal(|ui| {
-                let freq_valid = self.bookmark_edit_buf.1.trim().parse::<u64>().is_ok_and(|f| f > 0);
+                // Freq displayed/entered in MHz; parse as f64 and convert to Hz on save.
+                let freq_valid = self.bookmark_edit_buf.1.trim().parse::<f64>()
+                    .is_ok_and(|f| f > 0.0);
                 let freq_color = if freq_valid { theme::TEXT_MUTED } else { theme::DANGER };
-                ui.label(RichText::new("Freq (Hz)").color(freq_color).small());
+                ui.label(RichText::new("Freq (MHz)").color(freq_color).small());
                 ui.text_edit_singleline(&mut self.bookmark_edit_buf.1);
             });
             ui.horizontal(|ui| {
@@ -415,7 +464,8 @@ impl SdrApp {
                 }
             });
             ui.horizontal(|ui| {
-                let freq_valid = self.bookmark_edit_buf.1.trim().parse::<u64>().is_ok_and(|f| f > 0);
+                let freq_valid = self.bookmark_edit_buf.1.trim().parse::<f64>()
+                    .is_ok_and(|f| f > 0.0);
                 ui.add_enabled_ui(freq_valid, |ui| {
                     if ui.small_button(RichText::new("Save").color(theme::STATUS_OK)).clicked() {
                         *edit_commit_idx = Some(i);
@@ -508,8 +558,12 @@ impl SdrApp {
     }
 
     fn bookmark_commit_edit(&mut self, i: usize) {
-        let freq: u64 = self.bookmark_edit_buf.1.trim().parse().unwrap_or(0);
-        if freq > 0 {
+        // Frequency is entered in MHz; convert to Hz.
+        let freq_hz = self.bookmark_edit_buf.1.trim()
+            .parse::<f64>()
+            .map(|mhz| (mhz * 1_000_000.0).round() as u64)
+            .unwrap_or(0);
+        if freq_hz > 0 {
             let name = self.bookmark_edit_buf.0.clone();
             let mode = self.bookmark_edit_buf.2;
             let cat = self.bookmark_edit_buf.3.clone();
@@ -522,31 +576,42 @@ impl SdrApp {
             } else {
                 (None, None, None)
             };
-            let _ = self.cmd_tx.try_send(
-                BookmarkCmd::Edit(i, name.clone(), freq, mode, cat.clone(), nfm_bw_opt, squelch_opt, ctcss_opt, antenna.clone()).into(),
-            );
-            if i < self.config.bookmarks.len() {
-                let mode_str = match mode {
-                    DemodMode::Nfm => "Nfm",
-                    DemodMode::Am => "Am",
-                    DemodMode::Usb => "Usb",
-                    DemodMode::Lsb => "Lsb",
-                    DemodMode::Dsb => "Dsb",
-                    DemodMode::Cw => "Cw",
-                    _ => "Wbfm",
-                };
-                self.config.bookmarks[i] = BookmarkConfig {
-                    name,
-                    freq_hz: freq,
-                    mode: mode_str.into(),
-                    category: cat,
-                    nfm_bandwidth_hz: nfm_bw_opt,
-                    squelch_threshold_dbfs: squelch_opt,
-                    ctcss_enabled: ctcss_opt,
-                    antenna,
-                };
-                self.config_dirty = true;
+            let mode_str = match mode {
+                DemodMode::Nfm => "Nfm",
+                DemodMode::Am => "Am",
+                DemodMode::Usb => "Usb",
+                DemodMode::Lsb => "Lsb",
+                DemodMode::Dsb => "Dsb",
+                DemodMode::Cw => "Cw",
+                _ => "Wbfm",
+            };
+            let bc = BookmarkConfig {
+                name: name.clone(),
+                freq_hz,
+                mode: mode_str.into(),
+                category: cat.clone(),
+                nfm_bandwidth_hz: nfm_bw_opt,
+                squelch_threshold_dbfs: squelch_opt,
+                ctcss_enabled: ctcss_opt,
+                antenna: antenna.clone(),
+            };
+
+            if i == usize::MAX {
+                // New bookmark: append
+                let _ = self.cmd_tx.try_send(
+                    BookmarkCmd::Add(name.clone()).into(),
+                );
+                self.config.bookmarks.push(bc);
+            } else {
+                // Edit existing
+                let _ = self.cmd_tx.try_send(
+                    BookmarkCmd::Edit(i, name, freq_hz, mode, cat, nfm_bw_opt, squelch_opt, ctcss_opt, antenna).into(),
+                );
+                if i < self.config.bookmarks.len() {
+                    self.config.bookmarks[i] = bc;
+                }
             }
+            self.config_dirty = true;
         }
         self.bookmark_edit_idx = None;
     }
