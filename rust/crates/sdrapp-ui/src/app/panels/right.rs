@@ -683,7 +683,7 @@ impl SdrApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new("MIDI").color(theme::TEXT_MUTED).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mapper_label = if self.show_midi_mapper { "▼ Mapper" } else { "▶ Mapper" };
+                let mapper_label = if self.show_midi_mapper { "v Mapper" } else { "> Mapper" };
                 let btn = egui::Button::new(
                     RichText::new(mapper_label).color(theme::ACCENT).small(),
                 )

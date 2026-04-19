@@ -20,9 +20,30 @@ impl SdrApp {
         let open = ui.ctx().data_mut(|d| *d.get_persisted_mut_or_insert_with(header_id, || true));
 
         ui.horizontal(|ui| {
-            let arrow = if open { "▼" } else { "▶" };
-            let header_text = RichText::new(format!("{arrow} BOOKMARKS")).color(theme::TEXT_MUTED).small();
-            if ui.add(egui::Label::new(header_text).sense(egui::Sense::click())).clicked() {
+            // Paint a filled triangle (egui's default font lacks ▼/▶)
+            let (tri_rect, tri_resp) =
+                ui.allocate_exact_size(egui::Vec2::new(10.0, 14.0), egui::Sense::click());
+            let c = tri_rect.center();
+            let tri_color = theme::TEXT_MUTED;
+            let pts: Vec<egui::Pos2> = if open {
+                vec![
+                    egui::pos2(c.x - 4.0, c.y - 2.5),
+                    egui::pos2(c.x + 4.0, c.y - 2.5),
+                    egui::pos2(c.x,        c.y + 3.0),
+                ]
+            } else {
+                vec![
+                    egui::pos2(c.x - 2.5, c.y - 4.0),
+                    egui::pos2(c.x + 3.0, c.y),
+                    egui::pos2(c.x - 2.5, c.y + 4.0),
+                ]
+            };
+            ui.painter().add(egui::Shape::convex_polygon(pts, tri_color, egui::Stroke::NONE));
+
+            let header_text = RichText::new("BOOKMARKS").color(theme::TEXT_MUTED).small();
+            if ui.add(egui::Label::new(header_text).sense(egui::Sense::click())).clicked()
+                || tri_resp.clicked()
+            {
                 ui.ctx().data_mut(|d| {
                     let v: &mut bool = d.get_persisted_mut_or_insert_with(header_id, || true);
                     *v = !*v;
