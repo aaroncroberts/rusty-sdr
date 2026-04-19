@@ -4,7 +4,7 @@ mod controls;
 
 use egui::{RichText, Ui, Vec2};
 
-use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd, ScanCmd};
+use sdrapp_core::signal_path::{DemodMode, DisplayCmd, ReceiverCmd};
 
 use super::super::SdrApp;
 use crate::{
@@ -1138,12 +1138,9 @@ impl SdrApp {
         ui.separator();
         ui.add_space(4.0);
 
-        let strip_w = ui.available_width();
-        ui.horizontal_top(|ui| {
-            // ── Demod mode ─────────────────────────────────────────────────────
-            ui.vertical(|ui| {
-                ui.set_width(strip_w * 0.30);
-                ui.label(RichText::new("DEMOD").color(theme::TEXT_MUTED).small());
+        // ── Demod mode ─────────────────────────────────────────────────────────
+        {
+            ui.label(RichText::new("DEMOD").color(theme::TEXT_MUTED).small());
                 let current_mode = self.shared.read().demod.demod_mode;
                 ui.horizontal(|ui| {
                     for (mode, label, tip) in [
@@ -1265,184 +1262,6 @@ impl SdrApp {
                         self.config_dirty = true;
                     }
                 }
-            });
-
-            ui.separator();
-
-            // ── FM Band Scan ────────────────────────────────────────────────────
-            ui.vertical(|ui| {
-                ui.set_width(strip_w * 0.38);
-                ui.label(RichText::new("FM SCAN").color(theme::TEXT_MUTED).small());
-                let range_running = {
-                    let s = self.shared.read();
-                    s.scanner.scan_running && s.scanner.range_mode
-                };
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Lo").color(theme::TEXT_MUTED).small());
-                    let mut lo_mhz = self.range_scan_lo_hz as f64 / 1_000_000.0;
-                    if ui.add(egui::DragValue::new(&mut lo_mhz).range(70.0..=200.0).speed(0.1).suffix(" MHz")).changed() {
-                        self.range_scan_lo_hz = (lo_mhz * 1_000_000.0) as u64;
-                    }
-                    ui.label(RichText::new("Hi").color(theme::TEXT_MUTED).small());
-                    let mut hi_mhz = self.range_scan_hi_hz as f64 / 1_000_000.0;
-                    if ui.add(egui::DragValue::new(&mut hi_mhz).range(70.0..=200.0).speed(0.1).suffix(" MHz")).changed() {
-                        self.range_scan_hi_hz = (hi_mhz * 1_000_000.0) as u64;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Step").color(theme::TEXT_MUTED).small());
-                    let mut step_khz = self.range_scan_step_hz as f64 / 1_000.0;
-                    if ui.add(egui::DragValue::new(&mut step_khz).range(10.0..=500.0).speed(10.0).suffix(" kHz")).changed() {
-                        self.range_scan_step_hz = (step_khz * 1_000.0) as u64;
-                    }
-                    ui.label(RichText::new("Dwell").color(theme::TEXT_MUTED).small());
-                    ui.add(egui::DragValue::new(&mut self.range_scan_dwell).range(0.1_f32..=5.0_f32).speed(0.05).suffix(" s"));
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("SQ").color(theme::TEXT_MUTED).small());
-                    ui.add(
-                        egui::Slider::new(&mut self.range_scan_squelch, -120.0_f32..=-10.0_f32)
-                            .suffix(" dB")
-                            .show_value(true),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.range_scan_stereo_only, "")
-                        .on_hover_text("Stop only when 19 kHz stereo pilot detected (WBFM)");
-                    ui.label(RichText::new("Stereo only (pilot lock)").color(theme::TEXT_MUTED).small());
-                });
-                let is_running = self.shared.read().is_running;
-                ui.horizontal(|ui| {
-                    if range_running {
-                        let stop_btn = egui::Button::new(RichText::new("■  Stop").color(theme::DANGER).strong())
-                            .fill(theme::WIDGET_BG);
-                        if ui.add_sized(Vec2::new(80.0, 22.0), stop_btn).clicked() {
-                            let _ = self.cmd_tx.try_send(ScanCmd::Stop.into());
-                        }
-                        ui.label(RichText::new("SCANNING FM").color(theme::STATUS_OK).small().strong());
-                    } else {
-                        let scan_color = if is_running { theme::STATUS_OK } else { theme::TEXT_MUTED };
-                        let start_btn = egui::Button::new(RichText::new("▶  FM Scan").color(scan_color).strong())
-                            .fill(theme::WIDGET_BG);
-                        let tip = if is_running {
-                            format!(
-                                "Sweep {:.1}–{:.1} MHz in {:.0} kHz steps",
-                                self.range_scan_lo_hz as f64 / 1e6,
-                                self.range_scan_hi_hz as f64 / 1e6,
-                                self.range_scan_step_hz as f64 / 1e3,
-                            )
-                        } else {
-                            "Start the radio first".to_string()
-                        };
-                        let resp = ui.add_sized(Vec2::new(80.0, 22.0), start_btn).on_hover_text(tip);
-                        if resp.clicked() && is_running {
-                            let _ = self.cmd_tx.try_send(
-                                ScanCmd::StartRange {
-                                    freq_lo: self.range_scan_lo_hz,
-                                    freq_hi: self.range_scan_hi_hz,
-                                    step_hz: self.range_scan_step_hz,
-                                    dwell_secs: self.range_scan_dwell,
-                                    squelch_dbfs: self.range_scan_squelch,
-                                    mode: DemodMode::Wbfm,
-                                    stereo_only: self.range_scan_stereo_only,
-                                }
-                                .into(),
-                            );
-                        }
-                    }
-                });
-                if range_running {
-                    let (freq, signal) = {
-                        let s = self.shared.read();
-                        (s.scanner.range_freq_hz, s.fft.signal_level_dbfs)
-                    };
-                    ui.label(
-                        RichText::new(format!(
-                            "{:.3} MHz  {:.1} dBFS",
-                            freq as f64 / 1_000_000.0,
-                            signal,
-                        ))
-                        .color(theme::ACCENT_DIM)
-                        .small(),
-                    );
-                }
-            });
-
-            ui.separator();
-
-            // ── Bookmark Scanner ────────────────────────────────────────────────
-            ui.vertical(|ui| {
-                ui.label(RichText::new("SCANNER").color(theme::TEXT_MUTED).small());
-                let is_running = self.shared.read().is_running;
-                let (scan_running, scan_cursor, scan_bm_count) = {
-                    let s = self.shared.read();
-                    let cat = self.scan_cat_ui.clone();
-                    let count = s.bookmarks.iter().filter(|b| cat.is_empty() || b.category == cat).count();
-                    (s.scanner.scan_running, s.scanner.scan_cursor, count)
-                };
-                let scan_can_start = is_running && scan_bm_count > 0;
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Cat").color(theme::TEXT_MUTED).small());
-                    ui.text_edit_singleline(&mut self.scan_cat_ui)
-                        .on_hover_text("Scan only this category (empty = all bookmarks)");
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Dwell").color(theme::TEXT_MUTED).small());
-                    if ui.add(
-                        egui::Slider::new(&mut self.scan_dwell_ui, 0.5_f32..=15.0_f32)
-                            .suffix(" s")
-                            .show_value(true),
-                    ).changed() {
-                        let _ = self.cmd_tx.try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if scan_running {
-                        let stop_btn = egui::Button::new(RichText::new("■  Stop").color(theme::DANGER).strong())
-                            .fill(theme::WIDGET_BG);
-                        if ui.add_sized(Vec2::new(70.0, 22.0), stop_btn).clicked() {
-                            let _ = self.cmd_tx.try_send(ScanCmd::Stop.into());
-                        }
-                        if ui.small_button(RichText::new(">> Next").color(theme::TEXT_MUTED)).clicked() {
-                            let _ = self.cmd_tx.try_send(ScanCmd::Next.into());
-                        }
-                        ui.label(RichText::new("SCAN").color(theme::STATUS_OK).small().strong());
-                    } else {
-                        let start_color = if scan_can_start { theme::STATUS_OK } else { theme::TEXT_MUTED };
-                        let start_btn = egui::Button::new(RichText::new("▶  Scan").color(start_color).strong())
-                            .fill(theme::WIDGET_BG);
-                        let tip = if !is_running {
-                            "Start the radio first".to_string()
-                        } else if scan_bm_count == 0 {
-                            "No bookmarks to scan — add some first".to_string()
-                        } else {
-                            format!("Scan {scan_bm_count} bookmark(s)")
-                        };
-                        let start_resp = ui.add_sized(Vec2::new(70.0, 22.0), start_btn).on_hover_text(tip);
-                        if start_resp.clicked() && scan_can_start {
-                            let _ = self.cmd_tx.try_send(ScanCmd::SetDwell(self.scan_dwell_ui).into());
-                            let _ = self.cmd_tx.try_send(ScanCmd::Start(self.scan_cat_ui.clone()).into());
-                        }
-                    }
-                });
-                if scan_running {
-                    if let Some(label) = {
-                        let s = self.shared.read();
-                        s.bookmarks.get(scan_cursor).map(|b| {
-                            format!("{} — {:.3} MHz", b.name, b.freq_hz as f64 / 1_000_000.0)
-                        })
-                    } {
-                        ui.add_space(2.0);
-                        ui.label(RichText::new(label).color(theme::ACCENT_DIM).small());
-                    }
-                } else if !is_running {
-                    ui.add_space(2.0);
-                    ui.label(RichText::new("Start the radio to enable scanning").color(theme::TEXT_MUTED).small());
-                } else if scan_bm_count == 0 {
-                    ui.add_space(2.0);
-                    ui.label(RichText::new("Add bookmarks to enable scanning").color(theme::DANGER).small());
-                }
-            });
-        });
+        }
     }
 }
