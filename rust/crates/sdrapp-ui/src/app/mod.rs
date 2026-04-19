@@ -722,7 +722,13 @@ impl eframe::App for SdrApp {
                     .with_inner_size([900.0, 560.0])
                     .with_min_inner_size([600.0, 400.0]),
                 move |ctx, _class| {
-                    let aircraft: Vec<_> = store_arc.lock().aircraft().into_iter().cloned().collect();
+                    // Exclude Mode-S-only aircraft (DF11/DF5/DF21 transponder replies with
+                    // no ADS-B data).  They remain in the store so that a later DF17/18
+                    // frame can immediately enrich them, but showing bare ICAO addresses
+                    // with no position or callsign just clutters the list.
+                    let aircraft: Vec<_> = store_arc.lock().aircraft().into_iter()
+                        .filter(|a| !a.mode_s_only)
+                        .cloned().collect();
                     let mut map = map_arc.lock();
                     let mut open = true;
                     map.show(ctx, &mut open, &aircraft, home_lat, home_lon);
