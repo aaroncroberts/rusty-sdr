@@ -163,6 +163,15 @@ pub struct SdrApp {
     /// Antenna port ("A"/"B"/"C") saved before entering ADS-B mode so we can restore on exit.
     /// None = ADS-B mode did not change the antenna.
     adsb_prev_antenna: Option<String>,
+    /// Whether audio is muted. Independent of the volume knob position so the
+    /// knob value is preserved across mute/unmute cycles.
+    pub muted: bool,
+    /// Whether ADS-B mode triggered the mute (so we can restore it on ADS-B exit).
+    adsb_did_mute: bool,
+    /// True once we've sent the initial SetVolume to sync signal path with config.
+    /// The signal path hardcodes volume=0.8 on startup; we must sync it on the first
+    /// active frame to match whatever is in config.
+    volume_synced: bool,
     /// When true, the ADS-B decoder should be started as soon as sample_rate_sps >= 2 Msps.
     /// Set after sending SetDecimationFactor(1) while waiting for the device to apply it.
     adsb_start_pending: bool,
@@ -285,6 +294,9 @@ impl SdrApp {
             adsb_decoder: None,
             adsb_prev_decimation: None,
             adsb_prev_antenna: None,
+            muted: false,
+            adsb_did_mute: false,
+            volume_synced: false,
             adsb_start_pending: false,
         }
     }
@@ -350,6 +362,21 @@ impl eframe::App for SdrApp {
             let saved_mode = parse_config_demod_mode(&self.config.ui.demod_mode.clone());
             let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(saved_mode).into());
             self.auto_start_pending = false;
+        }
+
+        // ── Startup volume sync ───────────────────────────────────────────────
+        // The signal path hardcodes Volume::new(0.8). Sync config volume on the
+        // first frame so a stale config value (e.g. 0.0 from an old session) doesn't
+        // leave audio stuck at 0.8 or at the wrong level.
+        if !self.volume_synced {
+            // Clamp: if config somehow saved 0.0, restore a sensible default.
+            if self.config.ui.volume < 0.01 {
+                self.config.ui.volume = 0.8;
+                self.config_dirty = true;
+            }
+            // Send the real volume (never 0.0); mute state is a separate gate.
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetVolume(self.config.ui.volume).into());
+            self.volume_synced = true;
         }
 
         // Sync MIDI Learn bindings: if the MIDI dispatcher thread learned a new CC,

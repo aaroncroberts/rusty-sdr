@@ -48,6 +48,10 @@ pub enum HardwareCommand {
 pub enum ReceiverCmd {
     SetFrequency(u64),
     SetVolume(f32),
+    /// Mute or unmute audio output without changing the stored volume level.
+    /// When muted, audio frames are zeroed after volume scaling so the user's
+    /// volume knob position is preserved across mute/unmute cycles.
+    SetMuted(bool),
     SetDemodMode(DemodMode),
     /// Set NFM squelch threshold in dBFS (ignored outside NFM mode).
     SetSquelchThreshold(f32),

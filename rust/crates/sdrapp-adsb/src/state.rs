@@ -1,4 +1,4 @@
-//! Aircraft state store with 30-second expiry.
+//! Aircraft state store with 60-second expiry.
 //!
 //! Maintains a `HashMap<u32, AircraftState>` keyed by ICAO address.
 //! Call [`AircraftStore::update`] with decoded messages, then
@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use crate::parser::{AdsbDecoded, AdsbMessage};
 use crate::cpr::{decode_global, CprFrame};
 
-/// Expiry window for aircraft entries.
-pub const EXPIRY: Duration = Duration::from_secs(30);
+/// Expiry window for aircraft entries.  60 s gives aircraft time to pass
+/// through brief signal shadows without disappearing from the map.
+pub const EXPIRY: Duration = Duration::from_secs(60);
 
 /// CPR frame window: pair must arrive within this interval to be decoded.
 const CPR_WINDOW: Duration = Duration::from_secs(10);
@@ -134,7 +135,7 @@ impl AircraftStore {
         }
     }
 
-    /// Remove aircraft not heard from in the last 30 seconds.
+    /// Remove aircraft not heard from in the last 60 seconds.
     pub fn prune_expired(&mut self) {
         self.prune_expired_at(Instant::now());
     }
@@ -250,7 +251,7 @@ mod tests {
         assert!(ac.lat.is_none(), "Should not have position from single frame");
     }
 
-    /// Prune removes entries older than 30 s.
+    /// Prune removes entries older than 60 s.
     #[test]
     fn prune_expired_removes_old_entries() {
         let mut store = AircraftStore::new();
@@ -258,7 +259,7 @@ mod tests {
 
         // Fast-forward by 31 s: craft the `now` as 31 s after the entry's last_seen
         let ac = store.get(0xAABBCC).unwrap();
-        let past_expiry = ac.last_seen + Duration::from_secs(31);
+        let past_expiry = ac.last_seen + Duration::from_secs(61);
         store.prune_expired_at(past_expiry);
 
         assert!(store.is_empty(), "Expired aircraft should be pruned");

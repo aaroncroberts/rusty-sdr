@@ -122,8 +122,27 @@ impl SdrApp {
             }
             if resp.changed() {
                 self.config.ui.volume = vol;
+                // Always send the real volume; signal path applies it independently
+                // of mute state so the knob position is preserved across mute cycles.
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetVolume(vol).into());
                 self.config_dirty = true;
+            }
+
+            // Mute toggle button
+            let mute_label = if self.muted { "Unmute" } else { "Mute" };
+            let mute_color = if self.muted { theme::AMBER } else { theme::TEXT_MUTED };
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(mute_label).small().color(mute_color))
+                        .fill(theme::WIDGET_BG)
+                        .stroke(egui::Stroke::new(1.0, if self.muted { theme::AMBER } else { theme::BORDER })),
+                )
+                .on_hover_text(if self.muted { "Unmute audio" } else { "Mute audio" })
+                .clicked()
+            {
+                self.muted = !self.muted;
+                self.adsb_did_mute = false; // manual toggle clears ADS-B mute ownership
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(self.muted).into());
             }
         });
         if vol_bind {
@@ -146,7 +165,7 @@ impl SdrApp {
         // VU meter (stereo bars)
         // Peak level decays each frame; in real wiring this reads from AudioSink
         let level = self.vu_peak * self.config.ui.volume;
-        self.draw_vu_meter(ui, level, level * 0.92); // slight L/R difference for visual interest
+        self.draw_vu_meter(ui, level, level * 0.92, self.muted);
 
         // ── ADS-B Flight Tracker ──────────────────────────────────────────────
         ui.add_space(8.0);
@@ -165,7 +184,7 @@ impl SdrApp {
                 ui.label(RichText::new("ADS-B").color(theme::TEXT_MUTED).small());
                 if decoder_running && count > 0 {
                     ui.label(
-                        RichText::new(format!("✈ {count}"))
+                        RichText::new(format!("{count} ac"))
                             .color(theme::STATUS_OK)
                             .small()
                             .strong(),
@@ -177,7 +196,7 @@ impl SdrApp {
                     //   • starts the decoder (if not already running)
                     //   • opens the map window
                     // When already running, just toggles the map window.
-                    let map_lbl = if self.show_adsb_map { "▼ Map" } else { "✈ Map" };
+                    let map_lbl = if self.show_adsb_map { "^ Map" } else { "Map" };
                     let map_color = if decoder_running { theme::STATUS_OK } else { theme::ACCENT };
                     let map_btn = egui::Button::new(
                         RichText::new(map_lbl).color(map_color).small(),
@@ -202,6 +221,14 @@ impl SdrApp {
                                 self.config_dirty = true;
                                 let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(1).into());
                                 tracing::info!("ADS-B entry: switching to Antenna B");
+                            }
+
+                            // Mute audio while ADS-B decoder is running.
+                            if !self.muted {
+                                self.muted = true;
+                                self.adsb_did_mute = true;
+                                let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
+                                tracing::info!("ADS-B entry: muting audio");
                             }
 
                             let sr = self.shared.read().sample_rate_sps;
@@ -234,7 +261,7 @@ impl SdrApp {
                     // ■ Stop button (shown when running or pending start)
                     if decoder_running || self.adsb_start_pending {
                         let stop_btn = egui::Button::new(
-                            RichText::new("■ Stop").color(theme::AMBER).small(),
+                            RichText::new("Stop").color(theme::AMBER).small(),
                         )
                         .fill(theme::WIDGET_BG)
                         .stroke(Stroke::new(1.0, theme::BORDER));
@@ -250,6 +277,13 @@ impl SdrApp {
                                 self.config_dirty = true;
                                 let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port).into());
                                 tracing::info!(antenna = port, "ADS-B exit: restoring previous antenna");
+                            }
+                            // Unmute if ADS-B was the one that muted
+                            if self.adsb_did_mute {
+                                self.muted = false;
+                                self.adsb_did_mute = false;
+                                let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(false).into());
+                                tracing::info!("ADS-B exit: unmuting audio");
                             }
                             // Restore previous decimation if we changed it
                             if let Some(prev) = self.adsb_prev_decimation.take() {
@@ -285,7 +319,7 @@ impl SdrApp {
             let effective_sr = self.shared.read().sample_rate_sps;
             if self.adsb_start_pending {
                 ui.label(
-                    RichText::new("  ⟳ Reconfiguring hardware for ADS-B…")
+                    RichText::new("  Reconfiguring hardware for ADS-B...")
                         .color(theme::AMBER)
                         .small(),
                 );
@@ -295,9 +329,9 @@ impl SdrApp {
                     .map(|d| d.frames_decoded())
                     .unwrap_or(0);
                 let status = if count > 0 {
-                    format!("  ● LIVE  {count} aircraft  {frames} frames")
+                    format!("  LIVE  {count} aircraft  {frames} frames")
                 } else {
-                    format!("  ● LIVE  listening…  {frames} frames")
+                    format!("  LIVE  listening...  {frames} frames")
                 };
                 ui.label(RichText::new(status).color(theme::STATUS_OK).small());
                 // Warn if somehow started at wrong rate (shouldn't happen after the
@@ -306,7 +340,7 @@ impl SdrApp {
                 if decoder_sr < 2_000_000 {
                     ui.label(
                         RichText::new(format!(
-                            "  ⚠ {:.0} kHz effective — no frames possible",
+                            "  ! {:.0} kHz effective - no frames possible",
                             decoder_sr as f32 / 1_000.0,
                         ))
                         .color(theme::AMBER)
@@ -316,19 +350,19 @@ impl SdrApp {
             } else if effective_sr < 2_000_000 {
                 // Rate too low — ✈ Map will auto-reconfigure hardware to 2 Msps.
                 ui.label(
-                    RichText::new("  ✈ Map will auto-configure hardware for ADS-B")
+                    RichText::new("  Map will auto-configure hardware for ADS-B")
                         .color(theme::TEXT_MUTED)
                         .small(),
                 );
             } else if count > 0 {
                 ui.label(
-                    RichText::new(format!("  ○ {count} aircraft cached"))
+                    RichText::new(format!("  {count} aircraft cached"))
                         .color(theme::TEXT_MUTED)
                         .small(),
                 );
             } else {
                 ui.label(
-                    RichText::new("  Press ✈ Map to tune and start")
+                    RichText::new("  Press Map to tune and start")
                         .color(theme::TEXT_DISABLED)
                         .small(),
                 );
@@ -782,7 +816,7 @@ impl SdrApp {
         }
     }
 
-    pub(in crate::app) fn draw_vu_meter(&mut self, ui: &mut Ui, left: f32, right: f32) {
+    pub(in crate::app) fn draw_vu_meter(&mut self, ui: &mut Ui, left: f32, right: f32, muted: bool) {
         let bar_w = ui.available_width() / 2.0 - 4.0;
         let bar_h = 8.0;
 
@@ -792,21 +826,28 @@ impl SdrApp {
                     ui.allocate_exact_size(Vec2::new(bar_w, bar_h), egui::Sense::hover());
 
                 let painter = ui.painter();
+
                 // Background track
                 painter.rect_filled(rect, 2.0, theme::WIDGET_BG);
 
-                // Fill bar
-                let fill_w = rect.width() * level.clamp(0.0, 1.0);
-                if fill_w > 0.5 {
-                    let fill_rect = egui::Rect::from_min_size(rect.min, Vec2::new(fill_w, bar_h));
-                    let color = if level > 0.9 {
-                        theme::VU_HIGH
-                    } else if level > 0.6 {
-                        theme::VU_MID
-                    } else {
-                        theme::VU_LOW
-                    };
-                    painter.rect_filled(fill_rect, 2.0, color);
+                if muted {
+                    // Muted: full-width amber bar so the indicator is obvious.
+                    let mute_color = Color32::from_rgba_premultiplied(0xC0, 0x80, 0x00, 0x88);
+                    painter.rect_filled(rect, 2.0, mute_color);
+                } else {
+                    // Active: level-proportional bar with green/yellow/red color zones.
+                    let fill_w = rect.width() * level.clamp(0.0, 1.0);
+                    if fill_w > 0.5 {
+                        let fill_rect = egui::Rect::from_min_size(rect.min, Vec2::new(fill_w, bar_h));
+                        let color = if level > 0.9 {
+                            theme::VU_HIGH
+                        } else if level > 0.6 {
+                            theme::VU_MID
+                        } else {
+                            theme::VU_LOW
+                        };
+                        painter.rect_filled(fill_rect, 2.0, color);
+                    }
                 }
             }
         });

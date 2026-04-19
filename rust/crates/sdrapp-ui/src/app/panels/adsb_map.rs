@@ -6,14 +6,26 @@
 //! The panel is displayed as a `egui::Window`.  Call
 //! [`AdsbMapWindow::show`] each frame when `open == true`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::time::Instant;
 
+use crossbeam_channel::{Receiver, Sender};
 use egui::{
-    Color32, FontId, Frame, Grid, Key, Margin, Painter, Pos2, Rect, Response,
-    RichText, Rounding, Sense, Stroke, Vec2,
+    Color32, ColorImage, FontId, Frame, Grid, Key, Margin, Painter, Pos2, Rect, Response,
+    RichText, Rounding, Sense, Stroke, TextureHandle, TextureOptions, Vec2,
 };
 use sdrapp_adsb::state::AircraftState;
+
+// ── OSM tile types ─────────────────────────────────────────────────────────────
+
+/// (zoom_level, tile_x, tile_y)
+type TileKey = (u8, i32, i32);
+
+struct TileFetchResult {
+    key: TileKey,
+    image: Option<ColorImage>,
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +104,57 @@ pub(crate) fn merc_scale(lat_deg: f64, zoom_ppd: f32) -> f32 {
     zoom_ppd / rad as f32
 }
 
+// ── OSM tile helpers ───────────────────────────────────────────────────────────
+
+/// Convert zoom_ppd (pixels/degree longitude) to an OSM tile zoom level.
+/// Formula: `2^z = zoom_ppd * 360 / 256`, clamped to [0, 12].
+fn osm_zoom(zoom_ppd: f32) -> u8 {
+    let z = (zoom_ppd * 360.0 / 256.0).log2().round() as i32;
+    z.clamp(0, 12) as u8
+}
+
+/// Return the NW corner (lat, lon) of the OSM tile at (z, x, y).
+fn tile_nw(z: u8, x: i32, y: i32) -> (f64, f64) {
+    let n = 2.0f64.powi(z as i32);
+    let lon = x as f64 / n * 360.0 - 180.0;
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).sinh().atan().to_degrees();
+    (lat, lon)
+}
+
+/// Convert a (lat, lon) to the OSM tile (x, y) at zoom level z.
+fn lat_lon_to_tile_xy(lat: f64, lon: f64, z: u8) -> (i32, i32) {
+    let n = 2.0f64.powi(z as i32);
+    let x = ((lon + 180.0) / 360.0 * n).floor() as i32;
+    let lat_rad = lat.clamp(-85.05, 85.05).to_radians();
+    let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
+        .floor() as i32;
+    (x, y)
+}
+
+/// Spawn a background thread to fetch one OSM tile and send the result back.
+fn fetch_tile_async(tx: Sender<TileFetchResult>, z: u8, x: i32, y: i32) {
+    std::thread::spawn(move || {
+        let url = format!("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+        let color_image = (|| -> Option<ColorImage> {
+            let resp = ureq::get(&url)
+                .set("User-Agent", "sdrapp ADS-B map/1.0 (desktop SDR application)")
+                .call()
+                .ok()?;
+            let mut bytes = Vec::with_capacity(32_768);
+            resp.into_reader().read_to_end(&mut bytes).ok()?;
+            let img = image::load_from_memory(&bytes).ok()?;
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            let pixels = rgba
+                .pixels()
+                .map(|p| Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+                .collect();
+            Some(ColorImage { size: [w as usize, h as usize], pixels })
+        })();
+        let _ = tx.send(TileFetchResult { key: (z, x, y), image: color_image });
+    });
+}
+
 // ── Position trail storage ────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -136,21 +199,37 @@ pub struct AdsbMapWindow {
     trails: HashMap<u32, AircraftTrail>,
     /// Drag start state: (screen position at drag start, center_lat, center_lon).
     drag_start: Option<(Pos2, f64, f64)>,
+    /// When true, OSM tiles are tinted dark so aircraft stand out better.
+    map_dim: bool,
     /// Set to true when the user clicks "Set Home" (📍); caller clears it and persists.
     pub set_home_pending: bool,
     /// Tracks whether the OS viewport window is open. Set to false when the OS window
     /// close button is pressed; caller resets to true when it re-opens the window.
     pub viewport_open: bool,
+
+    // ── OSM tile cache ────────────────────────────────────────────────────────
+    /// Loaded tile textures keyed by (z, x, y).
+    tile_cache: HashMap<TileKey, TextureHandle>,
+    /// Tiles that have been requested but not yet received.
+    pending_tiles: HashSet<TileKey>,
+    /// Sender end of the tile-fetch result channel (cloned into worker threads).
+    tile_tx: Sender<TileFetchResult>,
+    /// Receiver end; drained each frame in the render loop.
+    tile_rx: Receiver<TileFetchResult>,
+    /// OSM zoom level used for the most recent tile set. When this changes, the
+    /// cache and pending set are flushed so stale tiles don't accumulate.
+    last_tile_z: u8,
 }
 
 impl AdsbMapWindow {
     /// Create a new map centered over Cleveland OH.
     pub fn new() -> Self {
-        Self::with_viewport(41.5, -81.7, 12.0)
+        Self::with_viewport(41.5, -81.7, 100.0)
     }
 
     /// Create a map with a specific initial viewport (restored from config).
     pub fn with_viewport(center_lat: f64, center_lon: f64, zoom_ppd: f32) -> Self {
+        let (tile_tx, tile_rx) = crossbeam_channel::unbounded();
         Self {
             center_lat,
             center_lon,
@@ -158,8 +237,14 @@ impl AdsbMapWindow {
             selected_icao: None,
             trails: HashMap::new(),
             drag_start: None,
+            map_dim: true,
             set_home_pending: false,
             viewport_open: true,
+            tile_cache: HashMap::new(),
+            pending_tiles: HashSet::new(),
+            tile_tx,
+            tile_rx,
+            last_tile_z: 255, // force first-frame flush
         }
     }
 
@@ -223,6 +308,10 @@ impl AdsbMapWindow {
 
                 // ── Toolbar ───────────────────────────────────────────────────
                 ui.horizontal(|ui| {
+                    // Compact button spacing for the toolbar
+                    ui.spacing_mut().button_padding = Vec2::new(4.0, 1.0);
+                    ui.spacing_mut().item_spacing.x = 3.0;
+
                     ui.label(
                         RichText::new(format!("  {} aircraft", aircraft.len()))
                             .color(Color32::from_rgb(0x8A, 0x9A, 0xB0))
@@ -235,24 +324,154 @@ impl AdsbMapWindow {
                     if ui.small_button("-").on_hover_text("Zoom out").clicked() {
                         self.zoom_ppd = (self.zoom_ppd / 1.5).max(MIN_ZOOM);
                     }
-                    if ui.small_button("Home").on_hover_text("Reset to home location").clicked() {
+                    if ui.small_button("Home").on_hover_text("Reset to saved home location").clicked() {
                         self.center_lat = home_lat;
                         self.center_lon = home_lon;
-                        self.zoom_ppd = 12.0;
+                        self.zoom_ppd = 100.0;
                     }
-                    if ui.small_button("Pin").on_hover_text("Set current view as home").clicked() {
+                    if ui.small_button("Pin").on_hover_text("Save current view as home").clicked() {
                         self.set_home_pending = true;
                     }
+                    // Auto-center: fly to centroid of all aircraft with known positions.
+                    // Useful for finding your location from received traffic.
+                    let has_positions = aircraft.iter().any(|a| a.lat.is_some() && a.lon.is_some());
+                    let center_btn = egui::Button::new(
+                        RichText::new("Center").small()
+                            .color(if has_positions {
+                                Color32::from_rgb(0x4E, 0xC9, 0xE0)
+                            } else {
+                                Color32::from_rgb(0x4A, 0x5A, 0x6A)
+                            }),
+                    )
+                    .frame(false);
+                    if ui
+                        .add(center_btn)
+                        .on_hover_text("Center map on received aircraft")
+                        .clicked()
+                        && has_positions
+                    {
+                        let (sum_lat, sum_lon, count) = aircraft.iter()
+                            .filter_map(|a| a.lat.zip(a.lon))
+                            .fold((0.0f64, 0.0f64, 0u32), |(slat, slon, n), (lat, lon)| {
+                                (slat + lat, slon + lon, n + 1)
+                            });
+                        if count > 0 {
+                            self.center_lat = sum_lat / count as f64;
+                            self.center_lon = sum_lon / count as f64;
+                        }
+                    }
+                    // Dim toggle
+                    let dim_label = if self.map_dim { "Dim: On" } else { "Dim: Off" };
+                    let dim_color = if self.map_dim {
+                        Color32::from_rgb(0x4E, 0xC9, 0xE0)
+                    } else {
+                        Color32::from_rgb(0x6A, 0x7A, 0x8A)
+                    };
+                    if ui
+                        .add(egui::Button::new(RichText::new(dim_label).small().color(dim_color)).frame(false))
+                        .on_hover_text("Toggle map brightness (dim makes aircraft easier to see)")
+                        .clicked()
+                    {
+                        self.map_dim = !self.map_dim;
+                    }
                     ui.separator();
-                    // Altitude legend
-                    ui.label(RichText::new("●").color(Color32::from_rgb(0x73, 0xC9, 0x91)).small());
-                    ui.label(RichText::new("Low").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
-                    ui.label(RichText::new("●").color(Color32::from_rgb(0xE8, 0xC5, 0x4B)).small());
-                    ui.label(RichText::new("Mid").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
-                    ui.label(RichText::new("●").color(Color32::from_rgb(0xFF, 0x55, 0x55)).small());
-                    ui.label(RichText::new("High").color(Color32::from_rgb(0x8A, 0x9A, 0xB0)).small());
+                    // Altitude legend — draw small colored circles using the painter
+                    // (Unicode ● is not in egui's default font, renders as blank square)
+                    let muted_label = Color32::from_rgb(0x8A, 0x9A, 0xB0);
+                    for (color, label) in [
+                        (Color32::from_rgb(0x73, 0xC9, 0x91), "Low"),
+                        (Color32::from_rgb(0xE8, 0xC5, 0x4B), "Mid"),
+                        (Color32::from_rgb(0xFF, 0x55, 0x55), "High"),
+                    ] {
+                        let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(dot_rect.center(), 4.0, color);
+                        ui.label(RichText::new(label).color(muted_label).small());
+                    }
                 });
                 ui.separator();
+
+                // ── Aircraft list side panel (left) ──────────────────────────
+                // Shows all decoded aircraft even if they have no position yet.
+                // Click to select + pan to aircraft.
+                let mut pan_to: Option<(f64, f64)> = None;
+                egui::SidePanel::left("adsb_list_panel")
+                    .exact_width(170.0)
+                    .resizable(false)
+                    .frame(
+                        Frame::default()
+                            .fill(Color32::from_rgb(0x0A, 0x0E, 0x16))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(0x1A, 0x22, 0x30)))
+                            .inner_margin(Margin::same(6.0)),
+                    )
+                    .show_inside(ui, |ui| {
+                        let muted = Color32::from_rgb(0x4A, 0x5A, 0x6A);
+                        ui.label(RichText::new("AIRCRAFT").color(muted).small());
+                        ui.add_space(2.0);
+
+                        // Sort: aircraft with positions first, then by altitude desc
+                        let mut sorted: Vec<&AircraftState> = aircraft.iter().collect();
+                        sorted.sort_by(|a, b| {
+                            let a_pos = a.lat.is_some() as u8;
+                            let b_pos = b.lat.is_some() as u8;
+                            b_pos.cmp(&a_pos)
+                                .then(b.altitude_ft.unwrap_or(0).cmp(&a.altitude_ft.unwrap_or(0)))
+                        });
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for ac in &sorted {
+                                let is_sel = self.selected_icao == Some(ac.icao);
+                                let has_pos = ac.lat.is_some();
+                                let row_color = if is_sel {
+                                    Color32::from_rgb(0x1A, 0x2A, 0x3A)
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+
+                                let callsign = ac.callsign.as_deref()
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or("");
+                                let icao_str = format!("{:06X}", ac.icao);
+                                let primary = if callsign.is_empty() { &icao_str } else { callsign };
+
+                                let pos_dot = if has_pos { "+" } else { "." };
+                                let alt_str = ac.altitude_ft
+                                    .map(|a| format!(" {}ft", a / 100 * 100))
+                                    .unwrap_or_default();
+                                let row_text = format!("{pos_dot} {primary}{alt_str}");
+
+                                let label_color = if has_pos {
+                                    altitude_color(ac.altitude_ft)
+                                } else {
+                                    muted
+                                };
+
+                                let resp = ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&row_text)
+                                            .small()
+                                            .color(label_color)
+                                            .background_color(row_color),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                if resp.clicked() {
+                                    self.selected_icao = Some(ac.icao);
+                                    if let (Some(lat), Some(lon)) = (ac.lat, ac.lon) {
+                                        pan_to = Some((lat, lon));
+                                    }
+                                }
+                                resp.on_hover_text(format!(
+                                    "{icao_str}{}",
+                                    if callsign.is_empty() { String::new() } else { format!(" · {callsign}") }
+                                ));
+                            }
+                        });
+                    });
+                if let Some((lat, lon)) = pan_to {
+                    self.center_lat = lat;
+                    self.center_lon = lon;
+                }
 
                 // ── Detail side panel (pre-clone to avoid borrow conflict) ───
                 let selected_ac = self.selected_icao
@@ -293,6 +512,98 @@ impl AdsbMapWindow {
         clicked
     }
 
+    /// Drain the tile fetch channel and upload newly arrived textures to GPU.
+    fn drain_tile_results(&mut self, ctx: &egui::Context) {
+        while let Ok(result) = self.tile_rx.try_recv() {
+            self.pending_tiles.remove(&result.key);
+            if let Some(color_image) = result.image {
+                let (z, x, y) = result.key;
+                let tex = ctx.load_texture(
+                    format!("osm_tile_{z}_{x}_{y}"),
+                    color_image,
+                    TextureOptions::LINEAR,
+                );
+                self.tile_cache.insert(result.key, tex);
+            }
+        }
+    }
+
+    /// Draw OSM tiles for the current viewport, requesting any that are missing.
+    fn draw_tiles(&mut self, painter: &Painter, rect: Rect) {
+        let z = osm_zoom(self.zoom_ppd);
+
+        // When zoom level changes, flush stale tiles so memory doesn't grow unboundedly.
+        if z != self.last_tile_z {
+            self.tile_cache.clear();
+            self.pending_tiles.clear();
+            self.last_tile_z = z;
+        }
+
+        let n = 2i32.pow(z as u32);
+
+        // Visible lon range in degrees
+        let half_w_deg = rect.width() as f64 / self.zoom_ppd as f64 * 0.6;
+        let half_h_deg = rect.height() as f64
+            / merc_scale(self.center_lat, self.zoom_ppd) as f64
+            * 0.6;
+
+        let (x_min, y_min) = lat_lon_to_tile_xy(
+            (self.center_lat + half_h_deg).min(85.0),
+            self.center_lon - half_w_deg,
+            z,
+        );
+        let (x_max, y_max) = lat_lon_to_tile_xy(
+            (self.center_lat - half_h_deg).max(-85.0),
+            self.center_lon + half_w_deg,
+            z,
+        );
+
+        // Safety: never try to render more than 9×9 tiles per frame.
+        let tile_w = (x_max - x_min + 1).min(9).max(0);
+        let tile_h = (y_max - y_min + 1).min(9).max(0);
+        if tile_w * tile_h > 81 {
+            return;
+        }
+
+        for ty in y_min..=y_min + tile_h - 1 {
+            if ty < 0 || ty >= n {
+                continue;
+            }
+            for tx in x_min..=x_min + tile_w - 1 {
+                // Wrap longitude tiles
+                let tx_w = ((tx % n) + n) % n;
+                let key = (z, tx_w, ty);
+
+                // Compute screen rect: project NW and SE corners of this tile.
+                let (nw_lat, nw_lon) = tile_nw(z, tx_w, ty);
+                let (se_lat, se_lon) = tile_nw(z, tx_w + 1, ty + 1);
+                let nw = geo_to_screen(
+                    rect, nw_lat, nw_lon, self.center_lat, self.center_lon, self.zoom_ppd,
+                );
+                let se = geo_to_screen(
+                    rect, se_lat, se_lon, self.center_lat, self.center_lon, self.zoom_ppd,
+                );
+                let tile_rect = Rect::from_min_max(nw, se);
+                if !rect.intersects(tile_rect) {
+                    continue;
+                }
+
+                if let Some(tex) = self.tile_cache.get(&key) {
+                    let uv = egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                    let tint = if self.map_dim {
+                        Color32::from_rgb(110, 120, 130) // dim + slight blue-grey tint
+                    } else {
+                        Color32::WHITE
+                    };
+                    painter.image(tex.id(), tile_rect, uv, tint);
+                } else if !self.pending_tiles.contains(&key) {
+                    self.pending_tiles.insert(key);
+                    fetch_tile_async(self.tile_tx.clone(), z, tx_w, ty);
+                }
+            }
+        }
+    }
+
     /// Render the map background, graticule, aircraft, trails.
     /// Returns selected ICAO if clicked.
     fn render_map(
@@ -306,6 +617,10 @@ impl AdsbMapWindow {
 
         // ── Background ────────────────────────────────────────────────────────
         painter.rect_filled(rect, Rounding::ZERO, Color32::from_rgb(0x0D, 0x11, 0x17));
+
+        // ── Drain tile fetch results + draw OSM tiles ─────────────────────────
+        self.drain_tile_results(&response.ctx);
+        self.draw_tiles(painter, rect);
 
         // ── Drag to pan ───────────────────────────────────────────────────────
         if response.drag_started() {
@@ -375,13 +690,19 @@ impl AdsbMapWindow {
                 );
             }
 
-            // Aircraft triangle
+            // Aircraft triangle — dark halo first so it's visible over map tiles
             let heading = ac.heading_deg.unwrap_or(0.0);
+            let halo_pts = aircraft_triangle(screen, heading, ICON_R + 2.5);
+            painter.add(egui::Shape::convex_polygon(
+                halo_pts.to_vec(),
+                Color32::from_rgba_premultiplied(0, 0, 0, 160),
+                Stroke::NONE,
+            ));
             let pts = aircraft_triangle(screen, heading, ICON_R);
             painter.add(egui::Shape::convex_polygon(
                 pts.to_vec(),
                 color,
-                Stroke::new(0.8, color.linear_multiply(1.4)),
+                Stroke::new(1.2, Color32::WHITE.linear_multiply(0.9)),
             ));
 
             // Heading vector
@@ -410,22 +731,43 @@ impl AdsbMapWindow {
             } else {
                 label
             };
+            // Label background pill so text is readable over any map tile color
+            let label_pos = screen + Vec2::new(ICON_R + 4.0, -5.0);
+            let alt_pos = screen + Vec2::new(ICON_R + 4.0, 6.0);
+            let bg = Color32::from_rgba_premultiplied(0, 0, 0, 140);
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    label_pos + Vec2::new(-2.0, -7.0),
+                    label_pos + Vec2::new((label.len() as f32 * 6.5).max(30.0), 7.0),
+                ),
+                egui::Rounding::same(2.0),
+                bg,
+            );
             painter.text(
-                screen + Vec2::new(ICON_R + 3.0, -6.0),
+                label_pos,
                 egui::Align2::LEFT_CENTER,
                 &label,
                 FontId::proportional(10.0),
-                Color32::from_rgb(0xC8, 0xD8, 0xE8),
+                Color32::WHITE,
             );
 
             // Altitude label
             if let Some(alt) = ac.altitude_ft {
+                let alt_str = format!("{}ft", alt / 100 * 100);
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        alt_pos + Vec2::new(-2.0, -6.0),
+                        alt_pos + Vec2::new((alt_str.len() as f32 * 6.0).max(28.0), 6.0),
+                    ),
+                    egui::Rounding::same(2.0),
+                    bg,
+                );
                 painter.text(
-                    screen + Vec2::new(ICON_R + 3.0, 5.0),
+                    alt_pos,
                     egui::Align2::LEFT_CENTER,
-                    format!("{}ft", alt / 100 * 100),
+                    alt_str,
                     FontId::proportional(9.0),
-                    Color32::from_rgb(0x6A, 0x8A, 0xA0),
+                    Color32::from_rgb(0xA0, 0xD0, 0xF0),
                 );
             }
 
@@ -939,10 +1281,10 @@ mod tests {
 
     #[test]
     fn with_viewport_stores_and_returns_correct_values() {
-        let map = AdsbMapWindow::with_viewport(41.5, -81.7, 12.0);
+        let map = AdsbMapWindow::with_viewport(41.5, -81.7, 75.0);
         assert!((map.center_lat() - 41.5).abs() < 1e-9);
         assert!((map.center_lon() - -81.7).abs() < 1e-9);
-        assert!((map.zoom_ppd() - 12.0).abs() < 1e-4);
+        assert!((map.zoom_ppd() - 75.0).abs() < 1e-4);
     }
 
     #[test]
@@ -950,7 +1292,7 @@ mod tests {
         let map = AdsbMapWindow::new();
         assert!((map.center_lat() - 41.5).abs() < 1e-9);
         assert!((map.center_lon() - -81.7).abs() < 1e-9);
-        assert!((map.zoom_ppd() - 12.0).abs() < 1e-4);
+        assert!((map.zoom_ppd() - 100.0).abs() < 1e-4);
     }
 
     // ── AircraftTrail::push ───────────────────────────────────────────────────

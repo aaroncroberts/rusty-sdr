@@ -183,6 +183,7 @@ impl SignalPath {
             let mut current_fft_size: usize = FFT_SIZE;
             let mut current_fft_window = crate::dsp::FftWindow::Hann;
             let mut vol = Volume::new(0.8);
+            let mut muted = false;
             let mut demod: Demod = make_demod(DemodMode::Wbfm, sr, demod_sr, narrow_demod_sr, 12_500);
             let mut squelch = Squelch::new(48_000, -50.0);
             let mut rds = RdsDecoder::new(demod_sr);
@@ -277,6 +278,9 @@ impl SignalPath {
                             ReceiverCmd::SetVolume(v) => {
                                 vol.set(v);
                                 shared_clone.write().demod.volume = v;
+                            }
+                            ReceiverCmd::SetMuted(m) => {
+                                muted = m;
                             }
                             ReceiverCmd::SetDemodMode(mode) => {
                                 demod = make_demod(mode, sr, demod_sr, narrow_demod_sr, nfm_bw_hz);
@@ -1069,9 +1073,17 @@ impl SignalPath {
                 // vol.apply() avoids the intermediate Vec that vol.process() created;
                 // extend_from_slice is cheaper than into_iter().map().
                 vol.apply(&mut stereo);
-                for f in &mut stereo {
-                    f.left = soft_limit(f.left);
-                    f.right = soft_limit(f.right);
+                if muted {
+                    // Gate after volume so the stored volume level is never modified.
+                    for f in &mut stereo {
+                        f.left = 0.0;
+                        f.right = 0.0;
+                    }
+                } else {
+                    for f in &mut stereo {
+                        f.left = soft_limit(f.left);
+                        f.right = soft_limit(f.right);
+                    }
                 }
                 audio_accumulator.extend_from_slice(&stereo);
 

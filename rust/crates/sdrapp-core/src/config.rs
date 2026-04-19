@@ -294,7 +294,7 @@ fn default_adsb_center_lon() -> f64 {
     -81.7 // Cleveland OH
 }
 fn default_adsb_zoom() -> f32 {
-    12.0 // regional view (~200 mi radius)
+    100.0 // ~300 nm view — right for ADS-B range
 }
 fn default_home_lat() -> f64 {
     41.5  // Cleveland OH — change in config to your location
@@ -361,7 +361,7 @@ impl Default for UiConfig {
             show_adsb_map: false,
             adsb_map_lat: 41.5,
             adsb_map_lon: -81.7,
-            adsb_map_zoom: 12.0,
+            adsb_map_zoom: 100.0,
             home_lat: 41.5,   // Cleveland OH — edit in config.json to your location
             home_lon: -81.7,  // Cleveland OH
         }
@@ -651,7 +651,7 @@ mod tests {
         assert!(!cfg.show_adsb_map);
         assert!((cfg.adsb_map_lat - 41.5).abs() < 1e-6);   // default_adsb_center_lat → Cleveland OH
         assert!((cfg.adsb_map_lon - -81.7).abs() < 1e-6);  // default_adsb_center_lon → Cleveland OH
-        assert!((cfg.adsb_map_zoom - 12.0).abs() < 1e-4);  // default_adsb_zoom
+        assert!((cfg.adsb_map_zoom - 100.0).abs() < 1e-4);  // default_adsb_zoom
     }
 
     #[test]

@@ -86,13 +86,7 @@ static ALL_HINTS: &[HintDef] = &[
                 && (c.span_hz * 2) < 150_000
         },
     },
-    // P3 — Volume muted
-    HintDef {
-        priority: 3,
-        message: "Volume is muted",
-        action: Some(("Unmute", HintAction::SetVolume(0.5))),
-        condition: |c| c.is_running && c.volume < 0.01,
-    },
+    // P3 — (volume muted hint removed — dedicated Mute button handles this)
     // P4 — Very weak signal
     HintDef {
         priority: 4,
