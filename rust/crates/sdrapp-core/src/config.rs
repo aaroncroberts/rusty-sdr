@@ -53,33 +53,11 @@ fn default_bookmarks() -> Vec<BookmarkConfig> {
             .with_nfm_settings(25_000, -60.0, false)
             .with_category("Weather"),
         // ── Shortwave / ML-31 — Antenna C ─────────────────────────────────────
-        // Time & frequency standards
-        BookmarkConfig::new("WWV 5 MHz (time signals)", 5_000_000, "Am")
-            .with_antenna("C").with_category(sw),
         BookmarkConfig::new("WWV 10 MHz (time signals)", 10_000_000, "Am")
-            .with_antenna("C").with_category(sw),
-        BookmarkConfig::new("WWV 15 MHz (time signals)", 15_000_000, "Am")
-            .with_antenna("C").with_category(sw),
-        BookmarkConfig::new("CHU Canada 7.850 MHz", 7_850_000, "Am")
-            .with_antenna("C").with_category(sw),
-        // International broadcasters
-        BookmarkConfig::new("BBC World Service 5.875 MHz", 5_875_000, "Am")
             .with_antenna("C").with_category(sw),
         BookmarkConfig::new("BBC World Service 9.410 MHz", 9_410_000, "Am")
             .with_antenna("C").with_category(sw),
-        BookmarkConfig::new("VOA 9.500 MHz", 9_500_000, "Am")
-            .with_antenna("C").with_category(sw),
-        BookmarkConfig::new("Radio France Int. 15.300 MHz", 15_300_000, "Am")
-            .with_antenna("C").with_category(sw),
-        // Amateur HF
         BookmarkConfig::new("Ham 40m USB (7.200 MHz)", 7_200_000, "Usb")
-            .with_antenna("C").with_category(sw),
-        BookmarkConfig::new("Ham 20m USB (14.225 MHz)", 14_225_000, "Usb")
-            .with_antenna("C").with_category(sw),
-        // Maritime / aviation weather
-        BookmarkConfig::new("VOLMET Shannon 5.505 MHz", 5_505_000, "Usb")
-            .with_antenna("C").with_category(sw),
-        BookmarkConfig::new("Maritime CW 8.364 kHz", 8_364_000, "Cw")
             .with_antenna("C").with_category(sw),
     ]
 }
@@ -544,24 +522,43 @@ impl AppConfig {
         cfg
     }
 
-    /// Merge any missing default bookmark categories into the loaded config.
+    /// Merge / prune bookmark presets on load.
     ///
-    /// Called once after loading from disk.  Only adds bookmarks; never removes or
-    /// modifies existing ones.  Currently ensures the "Shortwave / ML-31" preset
-    /// set is present so users with an existing config get the shortwave bookmarks
-    /// added automatically on the first launch after this feature ships.
+    /// Removes the 9 excess Shortwave / ML-31 presets that were shipped in an
+    /// earlier version, and ensures the current curated 3-entry set is present.
     fn migrate_bookmarks(&mut self) {
         const SW_CAT: &str = "Shortwave / ML-31";
-        let has_sw = self.bookmarks.iter()
-            .any(|b| b.category == SW_CAT);
-        if !has_sw {
-            let sw_bookmarks: Vec<BookmarkConfig> = default_bookmarks()
-                .into_iter()
-                .filter(|b| b.category == SW_CAT)
-                .collect();
+
+        // Names that were over-shipped and should be removed.
+        const EXCESS: &[&str] = &[
+            "WWV 5 MHz (time signals)",
+            "WWV 15 MHz (time signals)",
+            "CHU Canada 7.850 MHz",
+            "BBC World Service 5.875 MHz",
+            "VOA 9.500 MHz",
+            "Radio France Int. 15.300 MHz",
+            "Ham 20m USB (14.225 MHz)",
+            "VOLMET Shannon 5.505 MHz",
+            "Maritime CW 8.364 kHz",
+        ];
+        let before = self.bookmarks.len();
+        self.bookmarks
+            .retain(|b| !(b.category == SW_CAT && EXCESS.contains(&b.name.as_str())));
+        let removed = before - self.bookmarks.len();
+        if removed > 0 {
+            tracing::info!(removed, "pruned excess Shortwave / ML-31 preset bookmarks");
+        }
+
+        // Add the curated 3-entry set if any are missing.
+        let sw_bookmarks: Vec<BookmarkConfig> = default_bookmarks()
+            .into_iter()
+            .filter(|b| b.category == SW_CAT)
+            .filter(|b| !self.bookmarks.iter().any(|e| e.name == b.name))
+            .collect();
+        if !sw_bookmarks.is_empty() {
             tracing::info!(
                 count = sw_bookmarks.len(),
-                "migrating: adding Shortwave / ML-31 preset bookmarks"
+                "adding curated Shortwave / ML-31 bookmarks"
             );
             self.bookmarks.extend(sw_bookmarks);
         }
