@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
 use egui::{
@@ -133,79 +133,6 @@ fn fetch_flight_info_async(
         }
 
         let _ = tx.send(FlightInfoResult { icao, info: Some(info) });
-    });
-}
-
-// ── OpenSky Network live overlay ──────────────────────────────────────────────
-
-/// How often to poll OpenSky (free tier: 1 req / 10 s; we use 15 s to be safe).
-const OPENSKY_POLL_INTERVAL: Duration = Duration::from_secs(15);
-
-/// ~3° lat/lon padding on each side of home for the bounding box (~200 nm).
-const OPENSKY_BOX_DEG: f64 = 4.0;
-
-/// One aircraft state vector from the OpenSky REST API.
-#[derive(Debug, Clone)]
-pub struct OpenSkyAircraft {
-    pub icao: u32,
-    pub callsign: Option<String>,
-    pub lat: f64,
-    pub lon: f64,
-    pub alt_ft: Option<i32>,
-    pub speed_kt: Option<f32>,
-    pub heading_deg: Option<f32>,
-    pub on_ground: bool,
-}
-
-struct OpenSkyResult(Vec<OpenSkyAircraft>);
-
-fn fetch_opensky_async(tx: crossbeam_channel::Sender<OpenSkyResult>, home_lat: f64, home_lon: f64) {
-    std::thread::spawn(move || {
-        let lamin = home_lat - OPENSKY_BOX_DEG;
-        let lamax = home_lat + OPENSKY_BOX_DEG;
-        let lomin = home_lon - OPENSKY_BOX_DEG;
-        let lomax = home_lon + OPENSKY_BOX_DEG;
-        let url = format!(
-            "https://opensky-network.org/api/states/all?lamin={lamin:.2}&lomin={lomin:.2}&lamax={lamax:.2}&lomax={lomax:.2}"
-        );
-        let result = (|| -> Option<Vec<OpenSkyAircraft>> {
-            let resp = ureq::get(&url)
-                .set("User-Agent", "sdrapp ADS-B map/1.0 (desktop SDR application)")
-                .timeout(std::time::Duration::from_secs(8))
-                .call()
-                .ok()?;
-            let body = resp.into_string().ok()?;
-            let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-            let states = json["states"].as_array()?;
-            let mut aircraft = Vec::with_capacity(states.len());
-            for s in states {
-                let arr = s.as_array()?;
-                // Field indices: [0]=icao24, [1]=callsign, [5]=lon, [6]=lat,
-                // [7]=baro_alt(m), [8]=on_ground, [9]=velocity(m/s), [10]=true_track
-                let icao_str = arr.get(0)?.as_str()?;
-                let icao = u32::from_str_radix(icao_str, 16).ok()?;
-                let lat = arr.get(6)?.as_f64()?;
-                let lon = arr.get(5)?.as_f64()?;
-                let callsign = arr.get(1)
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                let alt_ft = arr.get(7)
-                    .and_then(|v| v.as_f64())
-                    .map(|m| (m * 3.28084) as i32);
-                let speed_kt = arr.get(9)
-                    .and_then(|v| v.as_f64())
-                    .map(|ms| (ms * 1.94384) as f32);
-                let heading_deg = arr.get(10)
-                    .and_then(|v| v.as_f64())
-                    .map(|d| d as f32);
-                let on_ground = arr.get(8).and_then(|v| v.as_bool()).unwrap_or(false);
-                aircraft.push(OpenSkyAircraft { icao, callsign, lat, lon, alt_ft, speed_kt, heading_deg, on_ground });
-            }
-            Some(aircraft)
-        })();
-        let _ = tx.send(OpenSkyResult(result.unwrap_or_default()));
     });
 }
 
@@ -452,15 +379,6 @@ pub struct AdsbMapWindow {
     /// so in-flight GPU commands can finish before wgpu destroys the textures.
     evicted_tiles: Vec<TextureHandle>,
 
-    // ── OpenSky live overlay ──────────────────────────────────────────────────
-    /// Live aircraft state vectors from OpenSky (network-sourced, not local decode).
-    opensky_aircraft: HashMap<u32, OpenSkyAircraft>,
-    /// When the last OpenSky poll completed.
-    opensky_last_poll: Option<Instant>,
-    /// Whether a poll is in flight.
-    opensky_fetching: bool,
-    opensky_tx: crossbeam_channel::Sender<OpenSkyResult>,
-    opensky_rx: crossbeam_channel::Receiver<OpenSkyResult>,
 }
 
 impl AdsbMapWindow {
@@ -473,7 +391,6 @@ impl AdsbMapWindow {
     pub fn with_viewport(center_lat: f64, center_lon: f64, zoom_ppd: f32) -> Self {
         let (tile_tx, tile_rx) = crossbeam_channel::unbounded();
         let (fi_tx, fi_rx) = crossbeam_channel::unbounded::<FlightInfoResult>();
-        let (osk_tx, osk_rx) = crossbeam_channel::unbounded::<OpenSkyResult>();
         Self {
             center_lat,
             center_lon,
@@ -503,11 +420,6 @@ impl AdsbMapWindow {
             flight_info_tx: fi_tx,
             flight_info_rx: fi_rx,
             prev_selected_icao: None,
-            opensky_aircraft: HashMap::new(),
-            opensky_last_poll: None,
-            opensky_fetching: false,
-            opensky_tx: osk_tx,
-            opensky_rx: osk_rx,
         }
     }
 
@@ -554,32 +466,14 @@ impl AdsbMapWindow {
             self.flight_info_cache.insert(result.icao, state);
         }
 
-        // ── Drain OpenSky results + trigger next poll ─────────────────────────
-        while let Ok(OpenSkyResult(list)) = self.opensky_rx.try_recv() {
-            self.opensky_fetching = false;
-            self.opensky_last_poll = Some(Instant::now());
-            self.opensky_aircraft = list.into_iter().map(|a| (a.icao, a)).collect();
-        }
-        if !self.opensky_fetching {
-            let should_poll = self.opensky_last_poll
-                .map(|t| t.elapsed() >= OPENSKY_POLL_INTERVAL)
-                .unwrap_or(true);
-            if should_poll {
-                self.opensky_fetching = true;
-                fetch_opensky_async(self.opensky_tx.clone(), home_lat, home_lon);
-            }
-        }
-
         // ── Trigger lookup when selection changes ─────────────────────────────
         if self.selected_icao != self.prev_selected_icao {
             self.prev_selected_icao = self.selected_icao;
             if let Some(icao) = self.selected_icao {
                 if !self.flight_info_cache.contains_key(&icao) {
-                    // Use callsign from local decode, falling back to OpenSky.
                     let callsign = aircraft.iter()
                         .find(|a| a.icao == icao)
-                        .and_then(|a| a.callsign.clone())
-                        .or_else(|| self.opensky_aircraft.get(&icao).and_then(|a| a.callsign.clone()));
+                        .and_then(|a| a.callsign.clone());
                     self.flight_info_cache.insert(icao, FlightLookupState::Fetching);
                     fetch_flight_info_async(self.flight_info_tx.clone(), icao, callsign);
                 }
@@ -824,15 +718,6 @@ impl AdsbMapWindow {
                 // ── Detail side panel (pre-clone to avoid borrow conflict) ───
                 let selected_ac = self.selected_icao
                     .and_then(|icao| aircraft.iter().find(|a| a.icao == icao).cloned());
-                // Clone OpenSky data for the case where selection has no local decode.
-                let selected_opensky: Option<OpenSkyAircraft> = self.selected_icao
-                    .and_then(|icao| {
-                        if selected_ac.is_none() {
-                            self.opensky_aircraft.get(&icao).cloned()
-                        } else {
-                            None
-                        }
-                    });
                 let selected_flight_info = self.selected_icao
                     .and_then(|icao| self.flight_info_cache.get(&icao));
 
@@ -850,22 +735,6 @@ impl AdsbMapWindow {
                         .show_inside(ui, |ui| {
                             close_detail = show_aircraft_detail(
                                 ui, ac, selected_flight_info,
-                                &mut self.flight_info_expanded,
-                            );
-                        });
-                } else if let Some(ref osk) = selected_opensky {
-                    egui::SidePanel::right("adsb_detail_panel")
-                        .exact_width(DETAIL_WIDTH)
-                        .resizable(false)
-                        .frame(
-                            Frame::default()
-                                .fill(Color32::from_rgb(0x0D, 0x11, 0x1C))
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(0x22, 0x2A, 0x38)))
-                                .inner_margin(Margin::same(10.0)),
-                        )
-                        .show_inside(ui, |ui| {
-                            close_detail = show_opensky_detail(
-                                ui, osk, selected_flight_info,
                                 &mut self.flight_info_expanded,
                             );
                         });
@@ -948,23 +817,6 @@ impl AdsbMapWindow {
                                 );
                             }
 
-                            // OpenSky overlay count (always visible when data present)
-                            let osk_count = self.opensky_aircraft.values()
-                                .filter(|a| !a.on_ground).count();
-                            if osk_count > 0 {
-                                ui.add_space(4.0);
-                                ui.label(RichText::new("·").small().color(muted));
-                                ui.label(
-                                    RichText::new(format!("NET {osk_count}"))
-                                        .small()
-                                        .color(Color32::from_rgb(0x60, 0xB8, 0xCC)),
-                                )
-                                .on_hover_text("Aircraft visible via OpenSky Network (hollow circles)");
-                            } else if self.opensky_fetching {
-                                ui.add_space(4.0);
-                                ui.label(RichText::new("·").small().color(muted));
-                                ui.spinner();
-                            }
                         });
                     });
 
@@ -1261,73 +1113,6 @@ impl AdsbMapWindow {
                 if (cp - screen).length() < ICON_R * 1.4 {
                     self.selected_icao = Some(ac.icao);
                     clicked_icao = Some(ac.icao);
-                }
-            }
-        }
-
-        // ── OpenSky overlay (aircraft not decoded locally) ────────────────────
-        // Drawn as hollow circles so they're visually distinct from local
-        // triangles.  Aircraft already visible via local ADS-B decode are
-        // skipped — local data is more accurate and already on screen.
-        {
-            let local_icaos: std::collections::HashSet<u32> =
-                aircraft.iter().map(|a| a.icao).collect();
-            // Collect to avoid borrowing self while iterating self.opensky_aircraft.
-            let osk_list: Vec<(u32, f64, f64, Option<i32>, Option<f32>, Option<String>)> =
-                self.opensky_aircraft.values()
-                    .filter(|a| !local_icaos.contains(&a.icao) && !a.on_ground)
-                    .map(|a| (a.icao, a.lat, a.lon, a.alt_ft, a.heading_deg, a.callsign.clone()))
-                    .collect();
-
-            for (icao, lat, lon, alt_ft, heading_deg, callsign) in &osk_list {
-                let screen = geo_to_screen(rect, *lat, *lon, self.center_lat, self.center_lon, self.zoom_ppd);
-                if !rect.expand(ICON_R * 2.0).contains(screen) { continue; }
-
-                let is_selected = self.selected_icao == Some(*icao);
-                let color = altitude_color(*alt_ft).linear_multiply(0.75);
-
-                if is_selected {
-                    painter.circle_stroke(screen, ICON_R + 4.0, Stroke::new(1.5, Color32::from_rgb(0x4E, 0xC9, 0xE0)));
-                }
-
-                // Dark halo for contrast over tiles
-                painter.circle_filled(screen, ICON_R + 2.0, Color32::from_rgba_premultiplied(0, 0, 0, 100));
-                // Hollow circle = network-sourced (not locally received)
-                painter.circle_stroke(screen, ICON_R, Stroke::new(1.5, color));
-
-                // Heading vector
-                if let Some(hdg) = heading_deg {
-                    let hdg_rad = (*hdg as f64).to_radians();
-                    let tip = screen + Vec2::new(
-                        (hdg_rad.sin() * 20.0) as f32,
-                        (-hdg_rad.cos() * 20.0) as f32,
-                    );
-                    painter.line_segment([screen, tip], Stroke::new(1.0, color.linear_multiply(0.6)));
-                }
-
-                // Label
-                let label = callsign.as_deref().unwrap_or("").trim().to_string();
-                let label = if label.is_empty() { format!("{:06X}", icao) } else { label };
-                let label_pos = screen + Vec2::new(ICON_R + 4.0, -5.0);
-                let bg = Color32::from_rgba_premultiplied(0, 0, 0, 110);
-                painter.rect_filled(
-                    egui::Rect::from_min_max(
-                        label_pos + Vec2::new(-2.0, -7.0),
-                        label_pos + Vec2::new((label.len() as f32 * 6.5).max(30.0), 7.0),
-                    ),
-                    egui::Rounding::same(2.0),
-                    bg,
-                );
-                // Slightly cyan-tinted text to distinguish from local (white) labels
-                painter.text(label_pos, egui::Align2::LEFT_CENTER, &label,
-                    FontId::proportional(10.0), Color32::from_rgb(0xA0, 0xD8, 0xD8));
-
-                // Click hit-test
-                if let Some(cp) = click_pos {
-                    if (cp - screen).length() < ICON_R * 1.4 {
-                        self.selected_icao = Some(*icao);
-                        clicked_icao = Some(*icao);
-                    }
                 }
             }
         }
@@ -1764,179 +1549,6 @@ fn show_aircraft_detail(
         .on_hover_text("Deselect aircraft (or press Escape)")
         .clicked();
 
-    ui.add_space(2.0);
-    ui.label(RichText::new("Click map to change selection").size(9.0).color(muted));
-
-    close_clicked
-}
-
-// ── OpenSky-only detail panel ─────────────────────────────────────────────────
-
-/// Detail panel for aircraft visible via OpenSky but not locally decoded.
-/// Returns `true` when the user clicks Deselect.
-fn show_opensky_detail(
-    ui: &mut egui::Ui,
-    osk: &OpenSkyAircraft,
-    flight: Option<&FlightLookupState>,
-    flight_expanded: &mut bool,
-) -> bool {
-    let muted     = Color32::from_rgb(0x5A, 0x6A, 0x7A);
-    let value_color = Color32::from_rgb(0xD8, 0xE8, 0xF0);
-    let accent    = Color32::from_rgb(0x4E, 0xC9, 0xE0);
-    let net_badge = Color32::from_rgb(0x20, 0x70, 0x90); // teal = network source
-
-    let icao_str = format!("{:06X}", osk.icao);
-    ui.horizontal(|ui| {
-        let icao_resp = ui.add(
-            egui::Label::new(RichText::new(&icao_str).monospace().size(18.0).color(accent))
-                .sense(Sense::click()),
-        );
-        if icao_resp.clicked() { ui.ctx().copy_text(icao_str.clone()); }
-        icao_resp.on_hover_text("Click to copy ICAO address");
-
-        ui.label(
-            RichText::new("NET").small()
-                .color(Color32::WHITE)
-                .background_color(net_badge),
-        )
-        .on_hover_text("Position sourced from OpenSky Network (not locally received)");
-    });
-
-    let callsign = osk.callsign.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("—");
-    ui.label(RichText::new(callsign).size(15.0).color(Color32::WHITE));
-
-    ui.add_space(6.0);
-    ui.separator();
-    ui.add_space(4.0);
-
-    Grid::new("osk_detail_grid")
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            ui.label(RichText::new("ALT").small().color(muted));
-            let alt_text = osk.alt_ft.map(format_altitude).unwrap_or_else(|| "—".into());
-            ui.label(RichText::new(alt_text).small().color(if osk.alt_ft.is_some() { value_color } else { muted }));
-            ui.end_row();
-
-            ui.label(RichText::new("SPD").small().color(muted));
-            let spd_text = osk.speed_kt.map(format_speed).unwrap_or_else(|| "—".into());
-            ui.label(RichText::new(spd_text).small().color(if osk.speed_kt.is_some() { value_color } else { muted }));
-            ui.end_row();
-
-            ui.label(RichText::new("HDG").small().color(muted));
-            let hdg_text = osk.heading_deg
-                .map(|h| format!("{h:.0}°  {}", heading_compass(h)))
-                .unwrap_or_else(|| "—".into());
-            ui.label(RichText::new(hdg_text).small().color(if osk.heading_deg.is_some() { value_color } else { muted }));
-            ui.end_row();
-
-            ui.label(RichText::new("POS").small().color(muted));
-            ui.label(RichText::new(format_position(osk.lat, osk.lon)).small().color(value_color));
-            ui.end_row();
-
-            ui.label(RichText::new("GND").small().color(muted));
-            let gnd_text = if osk.on_ground { "On ground" } else { "Airborne" };
-            let gnd_color = if osk.on_ground { Color32::from_rgb(0xE8, 0xC5, 0x4B) } else { value_color };
-            ui.label(RichText::new(gnd_text).small().color(gnd_color));
-            ui.end_row();
-        });
-
-    ui.add_space(6.0);
-    ui.separator();
-    ui.add_space(4.0);
-
-    // Flight data section (same collapsible pattern as local panel)
-    ui.horizontal(|ui| {
-        let expand_icon_rect = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover()).0;
-        let c = expand_icon_rect.center();
-        let tri_pts: Vec<egui::Pos2> = if *flight_expanded {
-            vec![egui::pos2(c.x - 4.0, c.y - 2.5), egui::pos2(c.x + 4.0, c.y - 2.5), egui::pos2(c.x, c.y + 3.0)]
-        } else {
-            vec![egui::pos2(c.x - 2.5, c.y - 4.0), egui::pos2(c.x + 3.0, c.y), egui::pos2(c.x - 2.5, c.y + 4.0)]
-        };
-        ui.painter().add(egui::Shape::convex_polygon(tri_pts, muted, egui::Stroke::NONE));
-        let hdr = ui.add(egui::Label::new(RichText::new("FLIGHT DATA").small().color(muted)).sense(Sense::click()));
-        if hdr.clicked() { *flight_expanded = !*flight_expanded; }
-        match flight {
-            None | Some(FlightLookupState::Fetching) => { ui.spinner(); }
-            Some(FlightLookupState::Failed) => { ui.label(RichText::new("—").small().color(muted)); }
-            Some(FlightLookupState::Ready(_)) => {
-                let (dot_r, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                ui.painter().circle_filled(dot_r.center(), 3.0, Color32::from_rgb(0x73, 0xC9, 0x91));
-            }
-        }
-    });
-
-    if *flight_expanded {
-        ui.add_space(4.0);
-        match flight {
-            None | Some(FlightLookupState::Fetching) => {
-                ui.label(RichText::new("  Looking up…").small().color(muted));
-            }
-            Some(FlightLookupState::Failed) => {
-                ui.label(RichText::new("  No data available").small().color(muted));
-            }
-            Some(FlightLookupState::Ready(info)) => {
-                if let Some(ref op) = info.operator {
-                    ui.add_space(2.0);
-                    ui.label(RichText::new(op).color(Color32::WHITE).strong());
-                }
-                let has_route = info.origin.is_some() || info.destination.is_some();
-                if has_route {
-                    let origin = info.origin.as_deref().unwrap_or("???");
-                    let dest   = info.destination.as_deref().unwrap_or("???");
-                    ui.label(RichText::new(format!("{origin}  →  {dest}")).strong().color(accent));
-                }
-                let reg = info.registration.as_deref();
-                let type_display = info.aircraft_desc.as_deref().or(info.aircraft_type.as_deref());
-                if reg.is_some() || type_display.is_some() {
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        if let Some(r) = reg {
-                            ui.label(RichText::new(r).small().strong().color(accent));
-                        }
-                        if let (Some(_), Some(t)) = (reg, type_display) {
-                            ui.label(RichText::new("·").small().color(muted));
-                            ui.label(RichText::new(t).small().color(value_color));
-                        } else if let Some(t) = type_display {
-                            ui.label(RichText::new(t).small().color(value_color));
-                        }
-                    });
-                }
-                if info.operator.is_none() && !has_route && reg.is_none() {
-                    ui.label(RichText::new("No data available").small().color(muted));
-                }
-            }
-        }
-        ui.add_space(4.0);
-    }
-
-    ui.separator();
-    ui.add_space(4.0);
-
-    let icao_hex = icao_str.to_lowercase();
-    let fa_url    = format!("https://flightaware.com/live/modes/{icao_hex}/redirect");
-    let adsbx_url = format!("https://globe.adsbexchange.com/?icao={icao_hex}");
-    let ps_url    = format!("https://www.planespotters.net/hex/{}", icao_str.to_uppercase());
-    let btn_fill = Color32::from_rgb(0x16, 0x20, 0x2E);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().button_padding = egui::Vec2::new(6.0, 3.0);
-        if ui.add(egui::Button::new(RichText::new("↗ FlightAware").small().color(accent)).fill(btn_fill))
-            .on_hover_text(&fa_url).clicked() { let _ = open::that(&fa_url); }
-        if ui.add(egui::Button::new(RichText::new("↗ ADS-B Exch.").small().color(accent)).fill(btn_fill))
-            .on_hover_text(&adsbx_url).clicked() { let _ = open::that(&adsbx_url); }
-        if ui.add(egui::Button::new(RichText::new("↗ Planespotters").small().color(accent)).fill(btn_fill))
-            .on_hover_text(&ps_url).clicked() { let _ = open::that(&ps_url); }
-    });
-
-    ui.add_space(6.0);
-    ui.separator();
-    ui.add_space(4.0);
-
-    let close_clicked = ui
-        .add(egui::Button::new(RichText::new("✕  Deselect").small().color(muted)).frame(false))
-        .on_hover_text("Deselect aircraft (or press Escape)")
-        .clicked();
     ui.add_space(2.0);
     ui.label(RichText::new("Click map to change selection").size(9.0).color(muted));
 
