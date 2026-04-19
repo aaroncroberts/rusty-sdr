@@ -734,10 +734,6 @@ impl SdrApp {
             }
         }
 
-        // ── MIDI Controller ───────────────────────────────────────────────────
-        ui.separator();
-        ui.add_space(2.0);
-        self.midi_section(ui);
     }
 
     /// MIDI controller status + mapper toggle.

@@ -213,6 +213,12 @@ impl SdrApp {
         ui.separator();
         ui.add_space(6.0);
 
+        // ── MIDI Controller ───────────────────────────────────────────────────
+        self.midi_section(ui);
+        ui.add_space(2.0);
+        ui.separator();
+        ui.add_space(4.0);
+
         // ── Bookmarks ─────────────────────────────────────────────────────────
         self.bookmarks_section(ui);
 
