@@ -1040,7 +1040,15 @@ impl SdrApp {
                 sr,
                 freq_hz,
             ));
-            tracing::info!(sample_rate_sps = sr, freq_hz, "Orbcomm decoder started");
+            // Mute audio while the decoder is running (no useful audio on 137 MHz).
+            if !self.muted {
+                self.muted = true;
+                self.orbcomm_did_mute = true;
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
+                tracing::info!("Orbcomm decoder started: muting audio");
+            } else {
+                tracing::info!(sample_rate_sps = sr, freq_hz, "Orbcomm decoder started");
+            }
         } else {
             tracing::warn!("Orbcomm decoder: no IQ broadcast sender available");
         }
@@ -1051,6 +1059,13 @@ impl SdrApp {
         if let Some(mut d) = self.orbcomm_decoder.take() {
             d.stop();
             tracing::info!("Orbcomm decoder stopped");
+        }
+        // Unmute only if Orbcomm was the one that muted.
+        if self.orbcomm_did_mute {
+            self.muted = false;
+            self.orbcomm_did_mute = false;
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(false).into());
+            tracing::info!("Orbcomm stop: unmuting audio");
         }
     }
 

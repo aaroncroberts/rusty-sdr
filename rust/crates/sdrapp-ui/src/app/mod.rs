@@ -167,6 +167,9 @@ pub struct SdrApp {
     /// Antenna port ("A"/"B"/"C") saved before entering ADS-B mode so we can restore on exit.
     /// None = ADS-B mode did not change the antenna.
     adsb_prev_antenna: Option<String>,
+    /// Set when the Orbcomm decoder muted audio, cleared on stop so we only
+    /// unmute if Orbcomm was the one that muted.
+    orbcomm_did_mute: bool,
     /// Whether audio is muted. Independent of the volume knob position so the
     /// knob value is preserved across mute/unmute cycles.
     pub muted: bool,
@@ -318,6 +321,7 @@ impl SdrApp {
             adsb_prev_antenna: None,
             muted: false,
             adsb_did_mute: false,
+            orbcomm_did_mute: false,
             volume_synced: false,
             adsb_start_pending: false,
             orbcomm_decoder: None,
