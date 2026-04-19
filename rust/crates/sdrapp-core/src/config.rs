@@ -43,13 +43,44 @@ pub struct AppConfig {
 }
 
 fn default_bookmarks() -> Vec<BookmarkConfig> {
+    let sw = "Shortwave / ML-31";
     vec![
+        // ── General / Antenna A ────────────────────────────────────────────────
         BookmarkConfig::new("BBC Radio 4 — 93.5 MHz", 93_500_000, "Wbfm"),
         BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm"),
         // NOAA Weather Radio KEC93 – Cleveland/NE Ohio (162.550 MHz, NFM 25 kHz)
         BookmarkConfig::new("NOAA Weather — KEC93", 162_550_000, "Nfm")
             .with_nfm_settings(25_000, -60.0, false)
             .with_category("Weather"),
+        // ── Shortwave / ML-31 — Antenna C ─────────────────────────────────────
+        // Time & frequency standards
+        BookmarkConfig::new("WWV 5 MHz (time signals)", 5_000_000, "Am")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("WWV 10 MHz (time signals)", 10_000_000, "Am")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("WWV 15 MHz (time signals)", 15_000_000, "Am")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("CHU Canada 7.850 MHz", 7_850_000, "Am")
+            .with_antenna("C").with_category(sw),
+        // International broadcasters
+        BookmarkConfig::new("BBC World Service 5.875 MHz", 5_875_000, "Am")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("BBC World Service 9.410 MHz", 9_410_000, "Am")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("VOA 9.500 MHz", 9_500_000, "Am")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("Radio France Int. 15.300 MHz", 15_300_000, "Am")
+            .with_antenna("C").with_category(sw),
+        // Amateur HF
+        BookmarkConfig::new("Ham 40m USB (7.200 MHz)", 7_200_000, "Usb")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("Ham 20m USB (14.225 MHz)", 14_225_000, "Usb")
+            .with_antenna("C").with_category(sw),
+        // Maritime / aviation weather
+        BookmarkConfig::new("VOLMET Shannon 5.505 MHz", 5_505_000, "Usb")
+            .with_antenna("C").with_category(sw),
+        BookmarkConfig::new("Maritime CW 8.364 kHz", 8_364_000, "Cw")
+            .with_antenna("C").with_category(sw),
     ]
 }
 

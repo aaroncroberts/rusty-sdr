@@ -81,6 +81,9 @@ pub struct SdrApp {
     /// Temporary edit buffer: (name, freq_str, mode, category, nfm_bw_hz, squelch_dbfs, ctcss)
     /// Temporary edit buffer: (name, freq_str, mode, category, nfm_bw_hz, squelch_dbfs, ctcss, antenna)
     bookmark_edit_buf: (String, String, sdrapp_core::signal_path::DemodMode, String, u32, f32, bool, Option<String>),
+    /// Antenna port saved before the last bookmark-with-antenna was recalled.
+    /// Restored when the user tunes away (next recall, manual tune, or band preset).
+    bookmark_prev_antenna: Option<String>,
     /// Category filter for bookmark list (empty = show all).
     bookmark_cat_filter: String,
     /// Sort bookmarks by frequency (false = insertion order).
@@ -244,6 +247,7 @@ impl SdrApp {
                 false,
                 None,
             ),
+            bookmark_prev_antenna: None,
             bookmark_cat_filter: String::new(),
             bookmark_sort_by_freq: false,
             scan_dwell_ui: 2.0,
@@ -311,12 +315,28 @@ impl SdrApp {
     /// This 4-line pattern is the single correct way to tune from the UI — use
     /// it everywhere instead of duplicating the three state writes inline.
     pub(in crate::app) fn apply_tune(&mut self, freq: u64) {
+        // Restore bookmark antenna override if the user is manually tuning away.
+        self.restore_bookmark_antenna();
         let _ = self
             .cmd_tx
             .try_send(ReceiverCmd::SetFrequency(freq).into());
         self.config.ui.frequency_hz = freq;
         self.frequency_widget = FrequencyWidget::new(freq);
         self.config_dirty = true;
+    }
+
+    /// If a bookmark antenna override is active, restore the previous antenna port.
+    /// Called on any manual tune or band preset selection.
+    pub(in crate::app) fn restore_bookmark_antenna(&mut self) {
+        if let Some(prev) = self.bookmark_prev_antenna.take() {
+            let port: u8 = match prev.as_str() { "B" => 1, "C" => 2, _ => 0 };
+            self.config.source.antenna = prev;
+            self.config_dirty = true;
+            let _ = self.cmd_tx.try_send(
+                sdrapp_core::signal_path::HardwareCommand::SetAntenna(port).into(),
+            );
+            tracing::info!(antenna = port, "bookmark antenna override cleared — previous antenna restored");
+        }
     }
 }
 

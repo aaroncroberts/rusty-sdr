@@ -4,7 +4,7 @@ use egui::{RichText, Ui};
 
 use sdrapp_core::{
     config::BookmarkConfig,
-    signal_path::{BookmarkCmd, DemodMode, ReceiverCmd},
+    signal_path::{BookmarkCmd, DemodMode, HardwareCommand, ReceiverCmd},
 };
 
 use super::super::SdrApp;
@@ -194,6 +194,24 @@ impl SdrApp {
                             }
                         });
                     }
+                    // Antenna port override selector
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Antenna").color(theme::TEXT_MUTED).small());
+                        for (val, label) in [
+                            (None::<&str>, "—"),
+                            (Some("A"), "A"),
+                            (Some("B"), "B"),
+                            (Some("C"), "C"),
+                        ] {
+                            let cur = self.bookmark_edit_buf.7.as_deref();
+                            let sel = cur == val;
+                            let txt = RichText::new(label).small();
+                            let txt = if sel { txt.color(theme::ACCENT).strong() } else { txt.color(theme::TEXT_MUTED) };
+                            if ui.selectable_label(sel, txt).clicked() {
+                                self.bookmark_edit_buf.7 = val.map(|s| s.to_string());
+                            }
+                        }
+                    });
                     ui.horizontal(|ui| {
                         let freq_valid = self
                             .bookmark_edit_buf
@@ -279,12 +297,29 @@ impl SdrApp {
 
         // Apply bookmark actions
         if let Some(i) = recall_idx {
-            let (bm_freq, bm_mode, bm_nfm_bw, bm_squelch, bm_ctcss) = {
+            let (bm_freq, bm_mode, bm_nfm_bw, bm_squelch, bm_ctcss, bm_antenna) = {
                 let mut s = self.shared.write();
                 s.bookmark_cursor = i;
                 let bm = &s.bookmarks[i];
-                (bm.freq_hz, bm.mode, bm.nfm_bandwidth_hz, bm.squelch_threshold_dbfs, bm.ctcss_enabled)
+                (bm.freq_hz, bm.mode, bm.nfm_bandwidth_hz, bm.squelch_threshold_dbfs, bm.ctcss_enabled, bm.antenna.clone())
             };
+            // Antenna override: switch port if the bookmark specifies one.
+            // If it doesn't, restore any previously-saved antenna (tuning away from a SW bookmark).
+            if let Some(ref ant) = bm_antenna {
+                let port: u8 = match ant.as_str() { "B" => 1, "C" => 2, _ => 0 };
+                if self.config.source.antenna != *ant {
+                    self.bookmark_prev_antenna = Some(self.config.source.antenna.clone());
+                    self.config.source.antenna = ant.clone();
+                    self.config_dirty = true;
+                    let _ = self.cmd_tx.try_send(
+                        HardwareCommand::SetAntenna(port).into(),
+                    );
+                    tracing::info!(antenna = port, bookmark = i, "bookmark antenna override applied");
+                }
+            } else {
+                // No antenna override on this bookmark — restore previous if we set one.
+                self.restore_bookmark_antenna();
+            }
             let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(bm_freq).into());
             let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(bm_mode).into());
             if bm_mode == DemodMode::Nfm {

@@ -411,6 +411,8 @@ impl SdrApp {
         );
 
         if let Some((hz, span, mode)) = tuned {
+            // Band preset = user is tuning away from any bookmark antenna override
+            self.restore_bookmark_antenna();
             let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(hz).into());
             let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
             self.config.ui.frequency_hz = hz;
