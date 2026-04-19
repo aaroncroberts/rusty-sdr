@@ -1619,6 +1619,28 @@ fn show_aircraft_detail(
             };
             ui.label(RichText::new(format_age(age)).small().color(age_color));
             ui.end_row();
+
+            // Squawk (Mode A identity code) — shown when received via DF5/21.
+            if let Some(sq) = ac.squawk {
+                ui.label(RichText::new("SQK").small().color(muted));
+                let sq_str = format!("{sq:04}");
+                let (sq_color, sq_bg) = match sq {
+                    7500 => (Color32::WHITE, Color32::from_rgba_premultiplied(180, 20, 20, 200)),
+                    7600 => (Color32::WHITE, Color32::from_rgba_premultiplied(180, 100, 0, 200)),
+                    7700 => (Color32::WHITE, Color32::from_rgba_premultiplied(180, 20, 20, 200)),
+                    _    => (value_color, Color32::TRANSPARENT),
+                };
+                let sq_label = RichText::new(&sq_str).small().color(sq_color)
+                    .background_color(sq_bg);
+                let tip = match sq {
+                    7500 => " HIJACK",
+                    7600 => " RADIO FAILURE",
+                    7700 => " EMERGENCY",
+                    _    => "",
+                };
+                ui.label(sq_label).on_hover_text(format!("{sq_str}{tip}"));
+                ui.end_row();
+            }
         });
 
     ui.add_space(6.0);

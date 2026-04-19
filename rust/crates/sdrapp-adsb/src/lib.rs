@@ -13,7 +13,7 @@ pub mod parser;
 pub mod state;
 
 pub use cpr::{decode_global, CprFrame};
-pub use parser::{parse_df17, AdsbDecoded, AdsbMessage};
+pub use parser::{parse_df17, parse_short_frame, AdsbDecoded, AdsbMessage, ShortFrameDecoded, decode_squawk};
 pub use state::{AircraftState, AircraftStore};
 
 // ── Constants ─────────────────────────────────────────────────────────────────

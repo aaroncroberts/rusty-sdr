@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::parser::{AdsbDecoded, AdsbMessage};
+use crate::ShortFrameDecoded;
 use crate::cpr::{decode_global, decode_local, CprFrame};
 
 /// Expiry window for aircraft entries.  5 min keeps aircraft visible long
@@ -41,6 +42,12 @@ pub struct AircraftState {
     pub heading_deg: Option<f32>,
     /// Vertical rate in feet per minute.
     pub vert_rate_fpm: Option<i32>,
+    /// Squawk code (Mode A identity), if received via DF5/DF21.
+    pub squawk: Option<u16>,
+    /// `true` when this aircraft has been seen via Mode-S short frames
+    /// (DF5/11/21) but has never sent a DF17/18 ADS-B extended squitter.
+    /// Such aircraft are tracked by ICAO only — no callsign or position.
+    pub mode_s_only: bool,
     /// Wall-clock time of the most-recent message from this aircraft.
     pub last_seen: Instant,
     // Pending CPR even/odd frames for position decoding.
@@ -66,6 +73,8 @@ impl AircraftState {
             speed_kt: None,
             heading_deg: None,
             vert_rate_fpm: None,
+            squawk: None,
+            mode_s_only: false,
             last_seen: Instant::now(),
             pending_even: None,
             pending_odd: None,
@@ -102,11 +111,31 @@ impl AircraftStore {
         self.home_lon = Some(lon);
     }
 
+    /// Apply a decoded short-frame (DF5/DF11/DF21) to the store.
+    ///
+    /// Creates a new entry if the ICAO is unknown.  Updates squawk if present.
+    /// If the aircraft later sends a DF17/18 frame, [`update`] will clear the
+    /// `mode_s_only` flag automatically.
+    pub fn update_short(&mut self, msg: &ShortFrameDecoded) {
+        let now = Instant::now();
+        let entry = self.map.entry(msg.icao).or_insert_with(|| AircraftState::new(msg.icao));
+        entry.last_seen = now;
+        if let Some(sq) = msg.squawk {
+            entry.squawk = Some(sq);
+        }
+        // Only set mode_s_only if this aircraft has never been seen via ADS-B.
+        if entry.callsign.is_none() && entry.lat.is_none() {
+            entry.mode_s_only = true;
+        }
+    }
+
     /// Apply a decoded ADS-B message to the store.
     pub fn update(&mut self, msg: &AdsbDecoded) {
         let now = Instant::now();
         let entry = self.map.entry(msg.icao).or_insert_with(|| AircraftState::new(msg.icao));
         entry.last_seen = now;
+        // Receiving a DF17/18 frame proves this is an ADS-B aircraft.
+        entry.mode_s_only = false;
 
         match &msg.message {
             AdsbMessage::Identification { callsign } => {

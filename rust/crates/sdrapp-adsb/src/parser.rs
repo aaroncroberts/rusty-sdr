@@ -5,7 +5,7 @@
 //! geometry (CPR position decoding lives in `cpr.rs`; the caller stores
 //! even/odd pairs and calls into that).
 
-use crate::RawFrame;
+use crate::{crc24, RawFrame};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -103,6 +103,95 @@ pub fn parse_df17(frame: &RawFrame) -> Option<AdsbDecoded> {
     };
 
     Some(AdsbDecoded { icao, message })
+}
+
+// ── Short-frame parser (DF5 / DF11 / DF21) ────────────────────────────────────
+
+/// Decoded data from a short (56-bit) Mode S frame.
+#[derive(Debug, Clone)]
+pub struct ShortFrameDecoded {
+    /// 24-bit ICAO aircraft address.
+    pub icao: u32,
+    /// Squawk (Mode A identity code), if extracted from DF5 or DF21.
+    pub squawk: Option<u16>,
+    /// `true` when ICAO was recovered via PI-XOR (not in the clear).
+    /// Useful for tagging aircraft that are Mode-S only (no ADS-B out).
+    pub icao_recovered: bool,
+}
+
+/// Parse a short (56-bit) Mode S frame for ICAO address and squawk.
+///
+/// Handled downlink formats:
+/// - **DF11** (All-Call Reply): ICAO is in bytes 1–3; only accepted when CRC=0
+///   (PI=0, broadcast mode). CRC≠0 means the reply was directed at a specific
+///   interrogator — ICAO recovery is not reliable without knowing the site key.
+/// - **DF5** (Surveillance Identity Reply) and **DF21** (Comm-B Identity Reply):
+///   ICAO is recovered as `CRC24(bytes[0..4]) XOR PI(bytes[4..7])`.
+///   Squawk (Mode A identity code) is extracted from the 13-bit ID field.
+///
+/// Returns `None` for all other DFs or if the recovered ICAO is zero (anonymous
+/// interrogation — no useful aircraft identity to record).
+pub fn parse_short_frame(frame: &RawFrame) -> Option<ShortFrameDecoded> {
+    if frame.bits != 56 {
+        return None;
+    }
+    let bytes = frame.bytes(); // 7 bytes
+
+    match frame.df() {
+        11 => {
+            // DF11 All-Call Reply: ICAO in bytes 1-3 directly.
+            // Only trust the frame when CRC passes (PI=0 broadcast reply).
+            if !frame.crc_ok {
+                return None;
+            }
+            let icao = ((bytes[1] as u32) << 16) | ((bytes[2] as u32) << 8) | (bytes[3] as u32);
+            if icao == 0 { return None; }
+            Some(ShortFrameDecoded { icao, squawk: None, icao_recovered: false })
+        }
+        5 | 21 => {
+            // DF5 / DF21: ICAO = CRC24(bytes[0..4]) XOR PI(bytes[4..7]).
+            let [p0, p1, p2] = crc24(&bytes[..4]);
+            let computed = ((p0 as u32) << 16) | ((p1 as u32) << 8) | (p2 as u32);
+            let pi = ((bytes[4] as u32) << 16) | ((bytes[5] as u32) << 8) | (bytes[6] as u32);
+            let icao = computed ^ pi;
+            if icao == 0 { return None; }
+
+            // ID field: bits 20-32 (1-indexed), = lower 5 bits of byte[2] + all of byte[3].
+            let id_raw = ((bytes[2] as u16 & 0x1F) << 8) | (bytes[3] as u16);
+            let squawk = decode_squawk(id_raw);
+
+            Some(ShortFrameDecoded { icao, squawk: Some(squawk), icao_recovered: true })
+        }
+        _ => None,
+    }
+}
+
+/// Decode a 13-bit Mode A identity code to a 4-digit squawk (0000–7777 octal).
+///
+/// Bit layout (MSB→LSB): C1 A1 B1 D1 C2 A2 B2 D2 C4 A4 B4 [M] [Q/SPI]
+///
+/// Squawk = (C×1000 + A×100 + B×10 + D) where each digit is 0–7.
+pub fn decode_squawk(id: u16) -> u16 {
+    let c1 = (id >> 12) & 1;
+    let a1 = (id >> 11) & 1;
+    let b1 = (id >> 10) & 1;
+    let d1 = (id >>  9) & 1;
+    let c2 = (id >>  8) & 1;
+    let a2 = (id >>  7) & 1;
+    let b2 = (id >>  6) & 1;
+    let d2 = (id >>  5) & 1;
+    let c4 = (id >>  4) & 1;
+    let a4 = (id >>  3) & 1;
+    let b4 = (id >>  2) & 1;
+    let d4 = (id >>  1) & 1; // M bit, usually 0
+
+    let digit_c = c1 * 4 + c2 * 2 + c4;
+    let digit_a = a1 * 4 + a2 * 2 + a4;
+    let digit_b = b1 * 4 + b2 * 2 + b4;
+    let digit_d = d1 * 4 + d2 * 2 + d4;
+
+    // Squawk display: C A B D (thousands, hundreds, tens, units).
+    digit_c * 1000 + digit_a * 100 + digit_b * 10 + digit_d
 }
 
 // ── Identification (TC 1–4) ───────────────────────────────────────────────────
@@ -643,5 +732,138 @@ mod tests {
     fn parse_velocity_unknown_subtype_returns_other() {
         let me = [(19u8 << 3) | 5, 0, 0, 0, 0, 0, 0];
         assert!(matches!(parse_airborne_velocity(&me), AdsbMessage::Other { .. }));
+    }
+
+    // ── decode_squawk ─────────────────────────────────────────────────────────
+
+    /// All-zeros identity → squawk 0000.
+    #[test]
+    fn decode_squawk_all_zeros() {
+        assert_eq!(decode_squawk(0b0_0000_0000_0000), 0);
+    }
+
+    /// Emergency 7700: C=7(111), A=7(111), B=0(000), D=0(000).
+    /// Bit layout MSB→LSB: C1 A1 B1 D1 C2 A2 B2 D2 C4 A4 B4 M Q
+    ///   C1=1,A1=1,B1=0,D1=0, C2=1,A2=1,B2=0,D2=0, C4=1,A4=1,B4=0,M=0
+    #[test]
+    fn decode_squawk_7700() {
+        // C7: C1=1,C2=1,C4=1; A7: A1=1,A2=1,A4=1; B0,D0 all 0
+        let id: u16 = (1 << 12) | (1 << 11)         // C1, A1
+                    | (0 << 10) | (0 <<  9)          // B1, D1
+                    | (1 <<  8) | (1 <<  7)          // C2, A2
+                    | (0 <<  6) | (0 <<  5)          // B2, D2
+                    | (1 <<  4) | (1 <<  3)          // C4, A4
+                    | (0 <<  2) | (0 <<  1);         // B4, M
+        assert_eq!(decode_squawk(id), 7700);
+    }
+
+    /// Squawk 1200 (VFR): C=1, A=2, B=0, D=0.
+    #[test]
+    fn decode_squawk_1200() {
+        // C=1: C1=0,C2=0,C4=1; A=2: A1=0,A2=1,A4=0; B=0,D=0 all zero.
+        let id: u16 = (0 << 12) | (0 << 11)         // C1, A1
+                    | (0 << 10) | (0 <<  9)          // B1, D1
+                    | (0 <<  8) | (1 <<  7)          // C2, A2
+                    | (0 <<  6) | (0 <<  5)          // B2, D2
+                    | (1 <<  4) | (0 <<  3)          // C4, A4
+                    | (0 <<  2) | (0 <<  1);         // B4, M
+        assert_eq!(decode_squawk(id), 1200);
+    }
+
+    // ── parse_short_frame ─────────────────────────────────────────────────────
+
+    /// DF11 with CRC=0 yields ICAO from bytes 1-3.
+    #[test]
+    fn parse_short_frame_df11_crc_ok() {
+        // Build a DF11 frame: (11<<3)=0x58 as first byte, then ICAO, then PI=CRC.
+        // DF11: first byte = (11<<3) | CA(3 bits) = 0x58 | 0 = 0x58
+        let icao: u32 = 0xABCDEF;
+        let mut bytes = [0u8; 7];
+        bytes[0] = 0x58; // DF=11, CA=0
+        bytes[1] = ((icao >> 16) & 0xFF) as u8;
+        bytes[2] = ((icao >>  8) & 0xFF) as u8;
+        bytes[3] = ( icao        & 0xFF) as u8;
+        // PI = CRC(bytes[0..4]) XOR ICAO — but for PI=0 (broadcast), PI = CRC(bytes[0..4]).
+        // Actually for CRC=0 on the whole frame, we need CRC(bytes[0..7])=[0,0,0].
+        // Set PI = CRC(bytes[0..4]) so that CRC(whole frame) = 0.
+        let [p0, p1, p2] = crc24(&bytes[..4]);
+        bytes[4] = p0; bytes[5] = p1; bytes[6] = p2;
+        assert_eq!(crc24(&bytes), [0, 0, 0]);
+
+        let frame = RawFrame { bits: 56, data: { let mut d = [0u8; 14]; d[..7].copy_from_slice(&bytes); d }, crc_ok: true };
+        let result = parse_short_frame(&frame).expect("DF11 with CRC=0 should decode");
+        assert_eq!(result.icao, icao);
+        assert!(result.squawk.is_none());
+        assert!(!result.icao_recovered);
+    }
+
+    /// DF11 with CRC≠0 is rejected (directed reply — can't recover ICAO reliably).
+    #[test]
+    fn parse_short_frame_df11_bad_crc_rejected() {
+        let frame = RawFrame {
+            bits: 56,
+            data: [0x58, 0x11, 0x22, 0x33, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0],
+            crc_ok: false,
+        };
+        assert!(parse_short_frame(&frame).is_none());
+    }
+
+    /// DF5 squawk extraction and ICAO recovery.
+    ///
+    /// Build a DF5 frame with known ICAO and squawk=7700, verify both come out.
+    #[test]
+    fn parse_short_frame_df5_squawk_and_icao() {
+        let icao: u32 = 0x4840D6; // KLM1023's ICAO
+        // Squawk 7700: C7 A7 B0 D0
+        // C1=1,A1=1,B1=0,D1=0,C2=1,A2=1,B2=0,D2=0,C4=1,A4=1,B4=0,M=0
+        let id_raw: u16 = (1<<12)|(1<<11)|(0<<10)|(0<<9)|(1<<8)|(1<<7)|(0<<6)|(0<<5)|(1<<4)|(1<<3)|(0<<2)|(0<<1);
+        assert_eq!(decode_squawk(id_raw), 7700);
+
+        // Build DF5 frame bytes:
+        // byte[0]: DF=5 (0b00101XXX) with FS=0 → 0x28
+        // byte[1]: DR=0, UM high 3 bits = 0 → 0x00
+        // byte[2]: UM low 3 bits = 0, then ID[12:8] = upper 5 bits of id_raw
+        //          id_raw = 0b1_1000_1100_1100 → upper 5 bits = 0b11000 = 24
+        //          → byte[2] = 0b000_11000 = 0x18
+        // byte[3]: ID[7:0] = lower 8 bits of id_raw = 0b1100_1100 = 0xCC
+        let mut bytes = [0u8; 7];
+        bytes[0] = 0x28; // DF=5, FS=0
+        bytes[1] = 0x00;
+        bytes[2] = ((id_raw >> 8) & 0x1F) as u8;
+        bytes[3] = (id_raw & 0xFF) as u8;
+        // PI = CRC24(bytes[0..4]) XOR icao
+        let [p0, p1, p2] = crc24(&bytes[..4]);
+        let crc_val = ((p0 as u32) << 16) | ((p1 as u32) << 8) | (p2 as u32);
+        let pi = crc_val ^ icao;
+        bytes[4] = ((pi >> 16) & 0xFF) as u8;
+        bytes[5] = ((pi >>  8) & 0xFF) as u8;
+        bytes[6] = ( pi        & 0xFF) as u8;
+
+        let mut data = [0u8; 14];
+        data[..7].copy_from_slice(&bytes);
+        let frame = RawFrame { bits: 56, data, crc_ok: false };
+
+        let result = parse_short_frame(&frame).expect("DF5 should decode");
+        assert_eq!(result.icao, icao, "ICAO recovery failed");
+        assert_eq!(result.squawk, Some(7700), "Squawk should be 7700");
+        assert!(result.icao_recovered, "icao_recovered should be true for DF5");
+    }
+
+    /// Non-DF5/11/21 frame returns None.
+    #[test]
+    fn parse_short_frame_other_df_returns_none() {
+        let frame = RawFrame {
+            bits: 56,
+            data: [0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // DF=0
+            crc_ok: true,
+        };
+        assert!(parse_short_frame(&frame).is_none());
+    }
+
+    /// 112-bit long frame returns None (not a short frame).
+    #[test]
+    fn parse_short_frame_long_frame_returns_none() {
+        let frame = RawFrame { bits: 112, data: [0x28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], crc_ok: true };
+        assert!(parse_short_frame(&frame).is_none());
     }
 }

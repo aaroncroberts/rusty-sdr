@@ -21,7 +21,7 @@ use tokio::sync::broadcast;
 
 use sdrapp_core::sample::IqSample;
 use sdrapp_adsb::{
-    parser::parse_df17,
+    parser::{parse_df17, parse_short_frame},
     state::AircraftStore,
     PpmDemodulator,
 };
@@ -199,6 +199,9 @@ fn decode_loop(
                         if let Some(decoded) = parse_df17(frame) {
                             locked.update(&decoded);
                             frame_count.fetch_add(1, Ordering::Relaxed);
+                        } else if let Some(short) = parse_short_frame(frame) {
+                            // DF5/11/21: extract squawk and passive ICAO tracking.
+                            locked.update_short(&short);
                         }
                     }
                 }
