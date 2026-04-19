@@ -26,8 +26,12 @@ pub struct FlightInfo {
     pub registration: Option<String>,
     /// ICAO aircraft type code (e.g. "B738", "A320").
     pub aircraft_type: Option<String>,
+    /// Human-readable aircraft description (e.g. "BOEING 737-800").
+    pub aircraft_desc: Option<String>,
     /// Operator / airline (e.g. "United Airlines").
     pub operator: Option<String>,
+    /// Flight / callsign from API lookup (e.g. "DAL1234").
+    pub callsign_api: Option<String>,
     /// ICAO departure airport (e.g. "KORD").
     pub origin: Option<String>,
     /// ICAO arrival airport (e.g. "KJFK").
@@ -71,8 +75,19 @@ fn fetch_flight_info_async(
                             .filter(|s| !s.is_empty()).map(str::to_string);
                         info.aircraft_type = ac["t"].as_str()
                             .filter(|s| !s.is_empty()).map(str::to_string);
+                        // Human-readable description (e.g. "AIRBUS A-321") —
+                        // prefer this over the raw ICAO type code for display.
+                        info.aircraft_desc = ac["desc"].as_str()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| titlecase(s));
                         info.operator = ac["ownOp"].as_str()
                             .filter(|s| !s.is_empty()).map(str::to_string);
+                        // Callsign / flight number from live feed (may be more
+                        // up-to-date than what the aircraft has broadcast so far).
+                        info.callsign_api = ac["flight"].as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
                     }
                 }
             }
@@ -497,18 +512,6 @@ impl AdsbMapWindow {
                     let muted    = Color32::from_rgb(0x8A, 0x9A, 0xB0);
                     let accent   = Color32::from_rgb(0x4E, 0xC9, 0xE0);
 
-                    // ── Status dot + label ────────────────────────────────────
-                    let (dot_color, status_text) = if self.adsb_start_pending {
-                        (Color32::from_rgb(0xC0, 0x80, 0x00), "Configuring…")
-                    } else if self.decoder_running {
-                        (Color32::from_rgb(0x73, 0xC9, 0x91), "LIVE")
-                    } else {
-                        (Color32::from_rgb(0x6A, 0x7A, 0x8A), "Stopped")
-                    };
-                    let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
-                    ui.painter().circle_filled(dot_rect.center(), 5.0, dot_color);
-                    ui.label(RichText::new(status_text).color(dot_color));
-
                     // ── Start / Stop ──────────────────────────────────────────
                     if self.decoder_running || self.adsb_start_pending {
                         if ui
@@ -752,13 +755,26 @@ impl AdsbMapWindow {
                     .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
                             let muted = Color32::from_rgb(0x5A, 0x6A, 0x7A);
+
+                            // Status dot + label always visible in the bar
+                            let (dot_color, status_text) = if self.adsb_start_pending {
+                                (Color32::from_rgb(0xC0, 0x80, 0x00), "Configuring")
+                            } else if self.decoder_running {
+                                (Color32::from_rgb(0x73, 0xC9, 0x91), "Live")
+                            } else {
+                                (Color32::from_rgb(0x6A, 0x7A, 0x8A), "Stopped")
+                            };
+                            let (dot_r, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(dot_r.center(), 4.0, dot_color);
+                            ui.label(RichText::new(status_text).small().color(dot_color));
+                            ui.label(RichText::new("·").small().color(muted));
+
                             if self.decoder_running {
                                 let ac_count = aircraft.len();
                                 let fr = self.frame_count;
                                 let ok = self.crc_ok_count;
                                 let pr = self.preamble_count;
 
-                                // Aircraft count chip
                                 ui.label(
                                     RichText::new(format!("{ac_count} aircraft"))
                                         .small()
@@ -766,23 +782,21 @@ impl AdsbMapWindow {
                                 );
                                 ui.label(RichText::new("·").small().color(muted));
 
-                                // Signal quality indicator
                                 let (signal_text, signal_color) = if fr > 0 {
                                     (format!("{fr} DF17 frames"), Color32::from_rgb(0x73, 0xC9, 0x91))
                                 } else if ok > 0 {
-                                    (format!("{ok} Mode S frames  (no ADS-B)"), Color32::from_rgb(0xE8, 0xC5, 0x4B))
+                                    (format!("{ok} Mode S  (no ADS-B)"), Color32::from_rgb(0xE8, 0xC5, 0x4B))
                                 } else if pr > 0 {
-                                    (format!("{pr} preambles  (bad CRC — check frequency/rate)"), Color32::from_rgb(0xC0, 0x80, 0x00))
+                                    (format!("{pr} preambles  (bad CRC)"), Color32::from_rgb(0xC0, 0x80, 0x00))
                                 } else {
-                                    ("No signal detected".to_string(), Color32::from_rgb(0x8A, 0x4A, 0x4A))
+                                    ("No signal".to_string(), Color32::from_rgb(0x8A, 0x4A, 0x4A))
                                 };
                                 ui.label(RichText::new(signal_text).small().color(signal_color));
 
-                                // Sample rate warning pill
                                 if !self.sample_rate_ok {
                                     ui.add_space(4.0);
                                     ui.label(
-                                        RichText::new("⚠ 2 Msps required")
+                                        RichText::new("2 Msps required")
                                             .small()
                                             .color(Color32::from_rgb(0xFF, 0xC0, 0x40))
                                             .background_color(Color32::from_rgba_premultiplied(60, 40, 0, 120)),
@@ -790,13 +804,13 @@ impl AdsbMapWindow {
                                 }
                             } else if self.adsb_start_pending {
                                 ui.label(
-                                    RichText::new("Configuring hardware for ADS-B (2 Msps, 1090 MHz)…")
+                                    RichText::new("Configuring hardware (2 Msps, 1090 MHz)…")
                                         .small()
                                         .color(Color32::from_rgb(0xC0, 0x80, 0x00)),
                                 );
                             } else {
                                 ui.label(
-                                    RichText::new("ADS-B decoder stopped  ·  press Start to begin receiving")
+                                    RichText::new("Press Start to begin receiving")
                                         .small()
                                         .color(muted),
                                 );
@@ -1314,8 +1328,14 @@ fn show_aircraft_detail(
         }
     });
 
-    // ── Callsign ─────────────────────────────────────────────────────────────
-    let callsign = ac.callsign.as_deref().map(str::trim).unwrap_or("—");
+    // ── Callsign (ADS-B broadcast or API fallback) ────────────────────────────
+    let adsb_cs = ac.callsign.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let api_cs = if let Some(FlightLookupState::Ready(ref info)) = flight {
+        info.callsign_api.as_deref()
+    } else {
+        None
+    };
+    let callsign = adsb_cs.or(api_cs).unwrap_or("—");
     let cs_color = if stale { muted } else { Color32::WHITE };
     ui.label(RichText::new(callsign).size(15.0).color(cs_color));
 
@@ -1429,38 +1449,46 @@ fn show_aircraft_detail(
                 ui.label(RichText::new("  No data available").small().color(muted));
             }
             Some(FlightLookupState::Ready(info)) => {
-                // Route banner: KORD → KJFK
+                // ── Operator (most important — show prominently) ──────────────
+                if let Some(ref op) = info.operator {
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(op).color(Color32::WHITE).strong());
+                }
+
+                // ── Route banner: KORD → KJFK ─────────────────────────────────
                 let has_route = info.origin.is_some() || info.destination.is_some();
                 if has_route {
                     let origin = info.origin.as_deref().unwrap_or("???");
                     let dest   = info.destination.as_deref().unwrap_or("???");
                     ui.label(
-                        RichText::new(format!("  {origin}  →  {dest}"))
+                        RichText::new(format!("{origin}  →  {dest}"))
                             .strong()
-                            .color(Color32::WHITE),
+                            .color(accent),
                     );
-                    ui.add_space(2.0);
                 }
 
-                // Registration + type on one row, operator below
-                let reg = info.registration.as_deref().unwrap_or("—");
-                let typ = info.aircraft_type.as_deref().unwrap_or("—");
-                ui.horizontal(|ui| {
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(reg).small().strong().color(accent));
-                    ui.label(RichText::new("·").small().color(muted));
-                    ui.label(RichText::new(typ).small().color(value_color));
-                });
-
-                if let Some(ref op) = info.operator {
+                // ── Registration + readable aircraft type ──────────────────────
+                // Prefer human-readable desc ("Airbus A-321") over raw code ("A21N").
+                let reg = info.registration.as_deref();
+                let type_display = info.aircraft_desc.as_deref()
+                    .or(info.aircraft_type.as_deref());
+                if reg.is_some() || type_display.is_some() {
+                    ui.add_space(2.0);
                     ui.horizontal(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(RichText::new(op).small().color(value_color));
+                        if let Some(r) = reg {
+                            ui.label(RichText::new(r).small().strong().color(accent));
+                        }
+                        if let (Some(_), Some(t)) = (reg, type_display) {
+                            ui.label(RichText::new("·").small().color(muted));
+                            ui.label(RichText::new(t).small().color(value_color));
+                        } else if let Some(t) = type_display {
+                            ui.label(RichText::new(t).small().color(value_color));
+                        }
                     });
                 }
 
-                if !has_route && info.registration.is_none() && info.operator.is_none() {
-                    ui.label(RichText::new("  No route data").small().color(muted));
+                if info.operator.is_none() && !has_route && reg.is_none() {
+                    ui.label(RichText::new("No data available").small().color(muted));
                 }
             }
         }
@@ -1543,6 +1571,24 @@ pub(crate) fn format_age(secs: f32) -> String {
     } else {
         format!("{:.0} min ago", secs / 60.0)
     }
+}
+
+/// Convert an ALL-CAPS string to Title Case (e.g. "AIRBUS A-321" → "Airbus A-321").
+fn titlecase(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut cap_next = true;
+    for c in s.chars() {
+        if c == ' ' || c == '-' {
+            result.push(c);
+            cap_next = true;
+        } else if cap_next {
+            result.extend(c.to_uppercase());
+            cap_next = false;
+        } else {
+            result.extend(c.to_lowercase());
+        }
+    }
+    result
 }
 
 /// Cardinal compass label for a heading in degrees.
