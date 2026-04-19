@@ -177,6 +177,8 @@ pub struct SatMapWindow {
     pub viewport_open: bool,
     /// NORAD IDs of satellites that decoded a frame this frame (flash effect).
     pub flash_norad_ids: Vec<u32>,
+    /// Set by the "Tune 137.500 MHz" button; consumed by main app each frame.
+    pub tune_requested: bool,
 }
 
 impl SatMapWindow {
@@ -202,6 +204,7 @@ impl SatMapWindow {
             tle_fetch_started: false,
             viewport_open: true,
             flash_norad_ids: Vec::new(),
+            tune_requested: false,
         }
     }
 
@@ -568,6 +571,24 @@ impl SatMapWindow {
                     }
                 }
             }
+        }
+
+        // ── Tune button ───────────────────────────────────────────────────────
+        sidebar_ui.add_space(6.0);
+        sidebar_ui.separator();
+        sidebar_ui.add_space(4.0);
+        let tune_btn = egui::Button::new(
+            RichText::new("📻  Tune 137.500 MHz")
+                .small()
+                .color(Color32::from_rgb(0x4E, 0xC9, 0xE0)),
+        )
+        .fill(Color32::from_rgb(0x0E, 0x1A, 0x2A));
+        if sidebar_ui
+            .add(tune_btn)
+            .on_hover_text("Tune radio to 137.500 MHz and start Orbcomm decoder")
+            .clicked()
+        {
+            self.tune_requested = true;
         }
     }
 

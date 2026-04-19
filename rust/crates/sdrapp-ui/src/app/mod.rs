@@ -750,8 +750,8 @@ impl eframe::App for SdrApp {
             let map_arc = std::sync::Arc::clone(&self.sat_map);
             let home_lat = self.config.ui.home_lat;
             let home_lon = self.config.ui.home_lon;
-            // Forward decoded NORAD IDs for flash effect.
-            {
+            // Forward decoded NORAD IDs for flash effect + consume tune request.
+            let sat_tune_requested = {
                 let mut map = self.sat_map.lock();
                 for entry in &self.orbcomm_log {
                     if let sdrapp_orbcomm::parser::PacketType::SatelliteTelemetry { sat_id, .. } =
@@ -762,6 +762,14 @@ impl eframe::App for SdrApp {
                         }
                     }
                 }
+                std::mem::take(&mut map.tune_requested)
+            };
+            // "Tune 137.500 MHz" button: start hardware if needed, then tune + start decoder.
+            if sat_tune_requested {
+                if !self.shared.read().is_running {
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
+                }
+                self.apply_tune(137_500_000);
             }
             ctx.show_viewport_deferred(
                 egui::ViewportId::from_hash_of("sat_map"),
