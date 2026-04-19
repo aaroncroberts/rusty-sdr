@@ -90,8 +90,9 @@ pub fn detect_preamble(samples: &[f32]) -> bool {
     let low_mean: f32 =
         PREAMBLE_LOW.iter().map(|&i| samples[i]).sum::<f32>() / PREAMBLE_LOW.len() as f32;
 
-    // Mean ratio: 1.8× threshold (dump1090 uses ~1.8–2.0).
-    if high_mean <= low_mean * 1.8 {
+    // Mean ratio: √2 threshold (~1.414) — matches dump1090/readsb weak-signal behaviour.
+    // The original 1.8× was too strict and caused most real frames to be missed.
+    if high_mean <= low_mean * 1.414 {
         return false;
     }
 
@@ -208,7 +209,14 @@ impl PpmDemodulator {
         while pos + min_needed <= self.buf.len() {
             match self.try_decode_at(pos) {
                 Some(frame) => {
-                    let advance = PREAMBLE_LEN + frame.bits * SAMPLES_PER_BIT;
+                    // CRC-ok: skip the full frame so we don't re-examine consumed data.
+                    // CRC-fail: only skip past the preamble — the data region may contain
+                    // a real frame that overlaps with the noise hit we just processed.
+                    let advance = if frame.crc_ok {
+                        PREAMBLE_LEN + frame.bits * SAMPLES_PER_BIT
+                    } else {
+                        PREAMBLE_LEN
+                    };
                     frames.push(frame);
                     pos += advance;
                 }

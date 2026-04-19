@@ -929,6 +929,12 @@ impl SdrApp {
         self.frequency_widget = FrequencyWidget::new(1_090_000_000);
         self.config_dirty = true;
         if let Some(tx) = self.adsb_iq_tx.as_ref() {
+            // Seed the store with our home position so local CPR decode works on
+            // the very first received position frame (no even+odd pair needed).
+            self.adsb_store.lock().set_home_position(
+                self.config.ui.home_lat,
+                self.config.ui.home_lon,
+            );
             let iq_rx = tx.subscribe();
             self.adsb_decoder = Some(crate::adsb_decoder::AdsbDecoder::start(
                 iq_rx,

@@ -78,11 +78,26 @@ impl AircraftState {
 #[derive(Debug, Default)]
 pub struct AircraftStore {
     map: HashMap<u32, AircraftState>,
+    /// Observer home position — used for single-frame local CPR bootstrap.
+    /// When set, any airborne position frame produces a position immediately
+    /// (no need to wait for an even+odd pair) for aircraft within ~300 nm.
+    home_lat: Option<f64>,
+    home_lon: Option<f64>,
 }
 
 impl AircraftStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the observer home position for single-frame CPR bootstrap.
+    ///
+    /// Call this once on startup with the configured home lat/lon.
+    /// Any subsequent airborne position frame will immediately produce a
+    /// decoded lat/lon using local CPR (accurate within ~300 nm of home).
+    pub fn set_home_position(&mut self, lat: f64, lon: f64) {
+        self.home_lat = Some(lat);
+        self.home_lon = Some(lon);
     }
 
     /// Apply a decoded ADS-B message to the store.
@@ -125,25 +140,28 @@ impl AircraftStore {
                     entry.lat = Some(lat);
                     entry.lon = Some(lon);
                 } else {
-                    // No fix yet — try global decode from the pending even+odd pair.
-                    let position = match (entry.pending_even, entry.pending_odd) {
+                    // No fix yet — first try global decode from the pending even+odd pair.
+                    let global_pos = match (entry.pending_even, entry.pending_odd) {
                         (Some((even, t_even)), Some((odd, t_odd))) => {
-                            let age = if t_even > t_odd {
-                                t_even - t_odd
-                            } else {
-                                t_odd - t_even
-                            };
-                            if age <= CPR_WINDOW {
-                                decode_global(even, odd)
-                            } else {
-                                None
-                            }
+                            let age = if t_even > t_odd { t_even - t_odd } else { t_odd - t_even };
+                            if age <= CPR_WINDOW { decode_global(even, odd) } else { None }
                         }
                         _ => None,
                     };
-                    if let Some((lat, lon)) = position {
+
+                    if let Some((lat, lon)) = global_pos {
                         entry.lat = Some(lat);
                         entry.lon = Some(lon);
+                    } else if let (Some(hlat), Some(hlon)) = (self.home_lat, self.home_lon) {
+                        // Bootstrap from home position: decode this single frame locally.
+                        // Accept the result if it falls within ~350 nm of home (5° lat / 8° lon).
+                        // This gives an immediate position on first contact without waiting
+                        // for an even+odd pair — identical to dump1090 --lat/--lon behaviour.
+                        let (lat, lon) = decode_local(frame, hlat, hlon);
+                        if (lat - hlat).abs() < 5.0 && (lon - hlon).abs() < 8.0 {
+                            entry.lat = Some(lat);
+                            entry.lon = Some(lon);
+                        }
                     }
                 }
             }
@@ -263,13 +281,40 @@ mod tests {
         assert!((lon - 3.9194).abs() < 0.01, "lon={lon:.4}");
     }
 
-    /// Single CPR frame (no pair yet) → no position.
+    /// Single CPR frame (no pair yet) → no position when home is not set.
     #[test]
-    fn store_single_cpr_no_position() {
+    fn store_single_cpr_no_position_without_home() {
         let mut store = AircraftStore::new();
         store.update(&pos_msg(0x111111, false, 93000, 51372, 38000)); // even only
         let ac = store.get(0x111111).unwrap();
-        assert!(ac.lat.is_none(), "Should not have position from single frame");
+        assert!(ac.lat.is_none(), "Should not have position from single frame without home");
+    }
+
+    /// Single CPR frame with home position set → immediate local CPR decode.
+    ///
+    /// Uses the known Netherlands test vector (lat 52.26°, lon 3.92°) and seeds
+    /// home at (52.0, 4.0) — within 25 nm so the 5°/8° validation box accepts it.
+    #[test]
+    fn store_single_cpr_with_home_gives_position() {
+        let mut store = AircraftStore::new();
+        store.set_home_position(52.0, 4.0); // close to the test vector
+        store.update(&pos_msg(0x40621D, false, 93000, 51372, 38000)); // even only
+        let ac = store.get(0x40621D).unwrap();
+        let lat = ac.lat.expect("Home-seeded local CPR should give position on first frame");
+        let lon = ac.lon.expect("Home-seeded local CPR should give longitude");
+        assert!((lat - 52.2572).abs() < 0.05, "lat={lat:.4}");
+        assert!((lon - 3.9194).abs() < 0.05, "lon={lon:.4}");
+    }
+
+    /// Aircraft far from home (outside 5°/8° box) does not get a bogus position.
+    #[test]
+    fn store_single_cpr_far_from_home_no_bogus_position() {
+        let mut store = AircraftStore::new();
+        store.set_home_position(41.5, -81.7); // Cleveland OH — far from Netherlands
+        store.update(&pos_msg(0x40621D, false, 93000, 51372, 38000)); // Netherlands aircraft
+        let ac = store.get(0x40621D).unwrap();
+        // Local CPR from Cleveland for a Netherlands aircraft is >100° off — must be rejected.
+        assert!(ac.lat.is_none(), "Far-away aircraft should not get bogus local CPR position");
     }
 
     /// Prune removes entries older than 60 s.

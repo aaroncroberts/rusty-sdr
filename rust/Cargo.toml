@@ -11,6 +11,7 @@ members = [
     "crates/sdrapp-ui",
     "crates/sdrapp-adsb",
     "crates/sdrapp-orbcomm",
+    "crates/sdrapp-tle",
     ".",
 ]
 
