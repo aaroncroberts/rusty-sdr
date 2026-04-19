@@ -192,6 +192,11 @@ impl AdsbMapWindow {
             *open = false;
         }
 
+        // Aircraft positions update continuously — request a repaint every frame.
+        // Without this, deferred viewports only repaint on OS events (mouse move, etc.)
+        // which means the map would appear static between interactions.
+        ctx.request_repaint();
+
         let mut clicked = None;
 
         egui::CentralPanel::default()

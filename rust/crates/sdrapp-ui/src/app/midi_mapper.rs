@@ -47,6 +47,9 @@ pub struct MidiMapperWindow {
     import_path: String,
     /// One-frame status message for export/import feedback.
     io_status: Option<(String, bool)>, // (message, is_error)
+    /// Tracks whether the OS viewport window is open. Set to false when the OS window
+    /// close button is pressed; caller resets to true when it re-opens the window.
+    pub viewport_open: bool,
 }
 
 impl MidiMapperWindow {
@@ -65,10 +68,12 @@ impl MidiMapperWindow {
             export_path: default_path.clone(),
             import_path: default_path,
             io_status: None,
+            viewport_open: true,
         }
     }
 
-    /// Draw the window.  `open` is toggled when the user closes the window via its ✕ button.
+    /// Draw the MIDI mapper as the full content of its deferred OS viewport.
+    /// `open` is set to false when the OS window close button is pressed.
     /// `midi_bindings` is the list of `(page, key_name, action_name)` from the live config.
     pub fn show(
         &mut self,
@@ -77,14 +82,21 @@ impl MidiMapperWindow {
         shared: &Arc<RwLock<SharedState>>,
         midi_bindings: &[(usize, String, String)],
     ) {
-        let window_title = format!("MIDI Mapper — {}", self.layout.name());
+        // Handle OS window close button.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            *open = false;
+        }
 
-        egui::Window::new(window_title)
-            .open(open)
-            .resizable(true)
-            .constrain(false)
-            .min_width(self.min_canvas_w + 24.0)
-            .min_height(120.0)
+        // The pulse animation oscillates at ~3 Hz — request repaints at 20 fps
+        // so the animation stays smooth without hammering the CPU.
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::theme::PANEL_BG)
+                    .inner_margin(egui::Margin::same(12.0)),
+            )
             .show(ctx, |ui| {
                 self.show_contents(ui, shared, midi_bindings);
             });

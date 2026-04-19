@@ -138,7 +138,7 @@ pub struct SdrApp {
     /// Whether the ? keyboard shortcut overlay is open.
     show_shortcut_overlay: bool,
     /// MIDI mapper floating window (nanoKONTROL2 diagram).
-    midi_mapper: MidiMapperWindow,
+    midi_mapper: std::sync::Arc<parking_lot::Mutex<MidiMapperWindow>>,
     /// Whether the MIDI mapper window is open.
     show_midi_mapper: bool,
     /// Operators Handbook floating window.
@@ -270,7 +270,7 @@ impl SdrApp {
             last_freq_bucket: 0,
             last_waterfall_freq: freq,
             show_shortcut_overlay: false,
-            midi_mapper: MidiMapperWindow::new_nanokontrol2(),
+            midi_mapper: std::sync::Arc::new(parking_lot::Mutex::new(MidiMapperWindow::new_nanokontrol2())),
             show_midi_mapper: false,
             handbook: std::sync::Arc::new(parking_lot::Mutex::new(
                 HandbookWindow::with_state(handbook_section, handbook_page),
@@ -502,9 +502,34 @@ impl eframe::App for SdrApp {
         }
 
         // ── MIDI Mapper window ────────────────────────────────────────────────
+        // Process pending state from last frame (before show_viewport_deferred)
+        {
+            let mut mapper = self.midi_mapper.lock();
+            if !mapper.viewport_open {
+                self.show_midi_mapper = false;
+                mapper.viewport_open = true; // reset for next open
+            }
+        }
         if self.show_midi_mapper {
-            self.midi_mapper
-                .show(ctx, &mut self.show_midi_mapper, &self.shared, &self.midi_bindings);
+            let mapper_arc = std::sync::Arc::clone(&self.midi_mapper);
+            let shared_arc = std::sync::Arc::clone(&self.shared);
+            let bindings = self.midi_bindings.clone();
+            ctx.show_viewport_deferred(
+                egui::ViewportId::from_hash_of("midi_mapper"),
+                egui::ViewportBuilder::default()
+                    .with_title("MIDI Mapper — Korg nanoKONTROL2")
+                    .with_inner_size([800.0, 340.0])
+                    .with_min_inner_size([640.0, 240.0]),
+                move |ctx, _class| {
+                    let mut mapper = mapper_arc.lock();
+                    let mut open = true;
+                    mapper.show(ctx, &mut open, &shared_arc, &bindings);
+                    if !open {
+                        mapper.viewport_open = false;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                },
+            );
         }
 
         // ── ADS-B Aircraft Map window ─────────────────────────────────────────
