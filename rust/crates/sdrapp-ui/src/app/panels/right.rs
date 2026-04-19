@@ -1010,6 +1010,38 @@ impl SdrApp {
         }
     }
 
+    // ── Orbcomm decoder start / stop ─────────────────────────────────────────
+
+    /// Start the Orbcomm decoder on the current IQ broadcast stream.
+    ///
+    /// Idempotent — does nothing if a decoder is already running.
+    pub(in crate::app) fn orbcomm_start_decoder(&mut self) {
+        if self.orbcomm_decoder.as_ref().map(|d| d.is_running()).unwrap_or(false) {
+            return;
+        }
+        if let Some(tx) = self.adsb_iq_tx.as_ref() {
+            let sr = self.shared.read().sample_rate_sps;
+            let freq_hz = self.shared.read().center_freq_hz;
+            let iq_rx = tx.subscribe();
+            self.orbcomm_decoder = Some(crate::orbcomm_decoder::OrbcommDecoder::start(
+                iq_rx,
+                sr,
+                freq_hz,
+            ));
+            tracing::info!(sample_rate_sps = sr, freq_hz, "Orbcomm decoder started");
+        } else {
+            tracing::warn!("Orbcomm decoder: no IQ broadcast sender available");
+        }
+    }
+
+    /// Stop the Orbcomm decoder if running.
+    pub(in crate::app) fn orbcomm_stop_decoder(&mut self) {
+        if let Some(mut d) = self.orbcomm_decoder.take() {
+            d.stop();
+            tracing::info!("Orbcomm decoder stopped");
+        }
+    }
+
     pub(in crate::app) fn draw_vu_meter(&mut self, ui: &mut Ui, left: f32, right: f32, muted: bool, running: bool) {
         let bar_w = ui.available_width() / 2.0 - 4.0;
         let bar_h = 8.0;

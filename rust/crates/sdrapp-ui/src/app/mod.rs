@@ -179,6 +179,13 @@ pub struct SdrApp {
     /// When true, the ADS-B decoder should be started as soon as sample_rate_sps >= 2 Msps.
     /// Set after sending SetDecimationFactor(1) while waiting for the device to apply it.
     adsb_start_pending: bool,
+
+    // ── Orbcomm decoder ───────────────────────────────────────────────────────
+    /// Running Orbcomm decoder thread (Some = running, None = stopped).
+    orbcomm_decoder: Option<crate::orbcomm_decoder::OrbcommDecoder>,
+    /// Pass log: decoded Orbcomm frames with receive timestamps, newest last.
+    /// Capped at [`MAX_ORBCOMM_LOG`] entries.
+    pub orbcomm_log: Vec<crate::orbcomm_decoder::OrbcommLogEntry>,
 }
 
 impl SdrApp {
@@ -304,8 +311,18 @@ impl SdrApp {
             adsb_did_mute: false,
             volume_synced: false,
             adsb_start_pending: false,
+            orbcomm_decoder: None,
+            orbcomm_log: Vec::new(),
         }
     }
+}
+
+/// Maximum Orbcomm pass-log entries kept in memory.
+pub(crate) const MAX_ORBCOMM_LOG: usize = 1_000;
+
+/// True when `freq_hz` falls in the Orbcomm downlink band (137.0–138.0 MHz).
+pub(crate) fn is_orbcomm_freq(freq_hz: u64) -> bool {
+    freq_hz >= 137_000_000 && freq_hz <= 138_000_000
 }
 
 // ── eframe::App ───────────────────────────────────────────────────────────────
@@ -341,6 +358,13 @@ impl SdrApp {
         self.config.ui.frequency_hz = freq;
         self.frequency_widget = FrequencyWidget::new(freq);
         self.config_dirty = true;
+
+        // Auto-start/stop Orbcomm decoder when entering/leaving the 137 MHz band.
+        if is_orbcomm_freq(freq) {
+            self.orbcomm_start_decoder();
+        } else {
+            self.orbcomm_stop_decoder();
+        }
     }
 
     /// If a bookmark antenna override is active, restore the previous antenna port.
@@ -360,6 +384,17 @@ impl SdrApp {
 
 impl eframe::App for SdrApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ── Drain Orbcomm decoded packets ─────────────────────────────────────
+        if let Some(ref decoder) = self.orbcomm_decoder {
+            for entry in decoder.packet_rx().try_iter() {
+                self.orbcomm_log.push(entry);
+            }
+            if self.orbcomm_log.len() > MAX_ORBCOMM_LOG {
+                let excess = self.orbcomm_log.len() - MAX_ORBCOMM_LOG;
+                self.orbcomm_log.drain(..excess);
+            }
+        }
+
         // ── --auto-start: fire Start on the very first rendered frame ─────────
         if self.auto_start_pending {
             tracing::info!("--auto-start: sending Start command");
