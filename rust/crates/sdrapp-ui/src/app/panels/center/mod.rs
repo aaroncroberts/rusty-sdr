@@ -1136,123 +1136,95 @@ impl SdrApp {
     fn center_bottom_strip(&mut self, ui: &mut Ui) {
         ui.add_space(4.0);
         ui.separator();
-        ui.add_space(4.0);
+        ui.add_space(6.0);
 
-        // ── Demod mode ─────────────────────────────────────────────────────────
-        {
+        // ── Demod mode selector ────────────────────────────────────────────────
+        // All seven modes in a single row with fixed-size buttons so they have a
+        // proper click target and visual weight rather than tiny inline text.
+        let current_mode = self.shared.read().demod.demod_mode;
+
+        // Button size: wide enough for 4-char labels, tall enough to click easily.
+        const BTN: Vec2 = Vec2::new(50.0, 26.0);
+
+        ui.horizontal(|ui| {
             ui.label(RichText::new("DEMOD").color(theme::TEXT_MUTED).small());
-                let current_mode = self.shared.read().demod.demod_mode;
-                ui.horizontal(|ui| {
-                    for (mode, label, tip) in [
-                        (DemodMode::Wbfm, "WBFM", "Wideband FM — FM broadcast (88–108 MHz)"),
-                        (DemodMode::Nfm, "NFM", "Narrow FM — voice comms (aviation, marine, amateur)"),
-                        (DemodMode::Am, "AM", "Amplitude Modulation — AM broadcast, shortwave, aviation voice"),
-                    ] {
-                        let sel = current_mode == mode;
-                        let txt = RichText::new(label).small();
-                        let txt = if sel { txt.color(theme::ACCENT).strong() } else { txt.color(theme::TEXT_MUTED) };
-                        if ui.selectable_label(sel, txt).on_hover_text(tip).clicked() && !sel {
-                            let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
-                            self.config.ui.demod_mode = format!("{mode:?}");
-                            self.config_dirty = true;
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    for (mode, label, tip) in [
-                        (DemodMode::Usb, "USB", "Upper Sideband SSB — HF amateur and maritime voice"),
-                        (DemodMode::Lsb, "LSB", "Lower Sideband SSB — HF amateur voice below 10 MHz"),
-                        (DemodMode::Dsb, "DSB", "Double Sideband — both sidebands, suppressed carrier"),
-                        (DemodMode::Cw, "CW", "CW / Morse code — narrow 400–900 Hz bandpass"),
-                    ] {
-                        let sel = current_mode == mode;
-                        let txt = RichText::new(label).small();
-                        let txt = if sel { txt.color(theme::ACCENT).strong() } else { txt.color(theme::TEXT_MUTED) };
-                        if ui.selectable_label(sel, txt).on_hover_text(tip).clicked() && !sel {
-                            let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
-                            self.config.ui.demod_mode = format!("{mode:?}");
-                            self.config_dirty = true;
-                        }
-                    }
-                });
+            ui.separator();
+            for (mode, label, tip) in [
+                (DemodMode::Wbfm, "WBFM", "Wideband FM — FM broadcast (88-108 MHz)"),
+                (DemodMode::Nfm,  "NFM",  "Narrow FM — voice comms (aviation, marine, amateur)"),
+                (DemodMode::Am,   "AM",   "Amplitude Modulation — AM broadcast, shortwave, aviation"),
+                (DemodMode::Usb,  "USB",  "Upper Sideband SSB — HF amateur and maritime voice"),
+                (DemodMode::Lsb,  "LSB",  "Lower Sideband SSB — HF amateur voice below 10 MHz"),
+                (DemodMode::Dsb,  "DSB",  "Double Sideband — both sidebands, suppressed carrier"),
+                (DemodMode::Cw,   "CW",   "CW / Morse code — narrow 400-900 Hz bandpass"),
+            ] {
+                let sel = current_mode == mode;
+                let txt = if sel {
+                    RichText::new(label).color(theme::ACCENT).strong()
+                } else {
+                    RichText::new(label).color(theme::TEXT_MUTED)
+                };
+                if ui
+                    .add_sized(BTN, egui::SelectableLabel::new(sel, txt))
+                    .on_hover_text(tip)
+                    .clicked()
+                    && !sel
+                {
+                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(mode).into());
+                    self.config.ui.demod_mode = format!("{mode:?}");
+                    self.config_dirty = true;
+                }
+            }
+        });
 
-                // NFM sub-controls (inline, compact)
-                if current_mode == DemodMode::Nfm {
-                    let nfm_bw = self.shared.read().demod.nfm_bandwidth_hz;
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("BW").color(theme::TEXT_MUTED).small());
-                        for (bw, label) in [(12_500u32, "12.5k"), (25_000u32, "25k")] {
-                            let sel = nfm_bw == bw;
-                            let txt = RichText::new(label).small();
-                            let txt = if sel { txt.color(theme::ACCENT).strong() } else { txt.color(theme::TEXT_MUTED) };
-                            if ui.selectable_label(sel, txt)
-                                .on_hover_text("NFM channel bandwidth")
-                                .clicked() && !sel
-                            {
-                                let _ = self.cmd_tx.try_send(ReceiverCmd::SetNfmBandwidth(bw).into());
-                                self.config.ui.nfm_bandwidth_hz = bw;
-                                self.config_dirty = true;
-                            }
-                        }
-                    });
-                    let mut sq_threshold = self.shared.read().demod.squelch_threshold;
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("SQ").color(theme::TEXT_MUTED).small());
-                        if ui.add(
-                            egui::Slider::new(&mut sq_threshold, -120.0_f32..=0.0_f32)
-                                .suffix(" dB")
-                                .show_value(true),
-                        ).changed() {
-                            let _ = self.cmd_tx.try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
-                            self.config.ui.squelch_threshold_dbfs = sq_threshold;
+        ui.add_space(6.0);
+
+        // ── Mode-specific controls ─────────────────────────────────────────────
+        match current_mode {
+            DemodMode::Nfm => {
+                let nfm_bw = self.shared.read().demod.nfm_bandwidth_hz;
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("BW").color(theme::TEXT_MUTED).small());
+                    for (bw, label) in [(12_500u32, "12.5k"), (25_000u32, "25k")] {
+                        let sel = nfm_bw == bw;
+                        let txt = if sel {
+                            RichText::new(label).color(theme::ACCENT).strong().small()
+                        } else {
+                            RichText::new(label).color(theme::TEXT_MUTED).small()
+                        };
+                        if ui
+                            .add_sized([44.0, 22.0], egui::SelectableLabel::new(sel, txt))
+                            .on_hover_text("NFM channel bandwidth")
+                            .clicked()
+                            && !sel
+                        {
+                            let _ = self.cmd_tx.try_send(ReceiverCmd::SetNfmBandwidth(bw).into());
+                            self.config.ui.nfm_bandwidth_hz = bw;
                             self.config_dirty = true;
                         }
-                    });
-                    let (sig_level, sq_thr) = {
-                        let s = self.shared.read();
-                        (s.demod.nfm_signal_level_dbfs, s.demod.squelch_threshold)
-                    };
-                    let bar_color = if sig_level >= sq_thr { theme::STATUS_OK } else { theme::TEXT_MUTED };
-                    let fill = ((sig_level + 120.0) / 120.0).clamp(0.0, 1.0);
-                    let thresh_frac = ((sq_thr + 120.0) / 120.0).clamp(0.0, 1.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("SIG").color(theme::TEXT_MUTED).small());
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::Vec2::new(ui.available_width(), 8.0),
-                            egui::Sense::hover(),
-                        );
-                        if ui.is_rect_visible(rect) {
-                            let p = ui.painter_at(rect);
-                            p.rect_filled(rect, 2.0, theme::WIDGET_BG);
-                            p.rect_filled(
-                                egui::Rect::from_min_max(
-                                    rect.left_top(),
-                                    egui::pos2(rect.left() + rect.width() * fill, rect.bottom()),
-                                ),
-                                2.0,
-                                bar_color,
-                            );
-                            let tx = rect.left() + rect.width() * thresh_frac;
-                            p.line_segment(
-                                [egui::pos2(tx, rect.top()), egui::pos2(tx, rect.bottom())],
-                                egui::Stroke::new(1.5, theme::DANGER),
-                            );
-                        }
-                    });
-                    ui.label(egui::RichText::new(format!("{sig_level:.0} dBFS")).color(bar_color).small());
+                    }
+
+                    ui.separator();
+
                     let (ctcss_enabled, ctcss_detected) = {
                         let s = self.shared.read();
                         (s.demod.ctcss_squelch_enabled, s.demod.ctcss_tone_detected)
                     };
                     let ctcss_label = if ctcss_enabled && ctcss_detected {
-                        "CTCSS on"
+                        "CTCSS: tone"
                     } else if ctcss_enabled {
-                        "CTCSS (no tone)"
+                        "CTCSS: no tone"
                     } else {
-                        "CTCSS off"
+                        "CTCSS: off"
                     };
                     let ctcss_color = if ctcss_enabled { theme::ACCENT } else { theme::TEXT_MUTED };
-                    if ui.small_button(RichText::new(ctcss_label).color(ctcss_color))
+                    if ui
+                        .add_sized(
+                            [88.0, 22.0],
+                            egui::Button::new(
+                                RichText::new(ctcss_label).color(ctcss_color).small(),
+                            ),
+                        )
                         .on_hover_text("CTCSS tone squelch: mutes audio when no sub-audible tone detected")
                         .clicked()
                     {
@@ -1261,7 +1233,115 @@ impl SdrApp {
                         self.config.ui.ctcss_enabled = new_en;
                         self.config_dirty = true;
                     }
-                }
+                });
+
+                ui.add_space(4.0);
+
+                // Squelch slider
+                let mut sq_threshold = self.shared.read().demod.squelch_threshold;
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("SQ").color(theme::TEXT_MUTED).small());
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut sq_threshold, -120.0_f32..=0.0_f32)
+                                .suffix(" dB")
+                                .show_value(true),
+                        )
+                        .changed()
+                    {
+                        let _ = self
+                            .cmd_tx
+                            .try_send(ReceiverCmd::SetSquelchThreshold(sq_threshold).into());
+                        self.config.ui.squelch_threshold_dbfs = sq_threshold;
+                        self.config_dirty = true;
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                // NFM signal level bar with squelch threshold marker
+                let (sig_level, sq_thr) = {
+                    let s = self.shared.read();
+                    (s.demod.nfm_signal_level_dbfs, s.demod.squelch_threshold)
+                };
+                let bar_color = if sig_level >= sq_thr { theme::STATUS_OK } else { theme::TEXT_MUTED };
+                let fill = ((sig_level + 120.0) / 120.0).clamp(0.0, 1.0);
+                let thresh_frac = ((sq_thr + 120.0) / 120.0).clamp(0.0, 1.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("SIG").color(theme::TEXT_MUTED).small());
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::new(ui.available_width() - 64.0, 10.0),
+                        egui::Sense::hover(),
+                    );
+                    if ui.is_rect_visible(rect) {
+                        let p = ui.painter_at(rect);
+                        p.rect_filled(rect, 2.0, theme::WIDGET_BG);
+                        p.rect_filled(
+                            egui::Rect::from_min_max(
+                                rect.left_top(),
+                                egui::pos2(rect.left() + rect.width() * fill, rect.bottom()),
+                            ),
+                            2.0,
+                            bar_color,
+                        );
+                        let tx = rect.left() + rect.width() * thresh_frac;
+                        p.line_segment(
+                            [egui::pos2(tx, rect.top()), egui::pos2(tx, rect.bottom())],
+                            egui::Stroke::new(1.5, theme::DANGER),
+                        );
+                    }
+                    ui.label(
+                        RichText::new(format!("{sig_level:.0} dBFS"))
+                            .color(bar_color)
+                            .small()
+                            .monospace(),
+                    );
+                });
+            }
+            DemodMode::Wbfm => {
+                ui.label(
+                    RichText::new("88-108 MHz broadcast FM  |  200 kHz bandwidth")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            }
+            DemodMode::Am => {
+                ui.label(
+                    RichText::new("AM — shortwave / MW broadcast / aviation voice  |  10 kHz bandwidth")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            }
+            DemodMode::Usb => {
+                ui.label(
+                    RichText::new("USB — upper sideband  |  HF amateur, maritime, aeronautical")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            }
+            DemodMode::Lsb => {
+                ui.label(
+                    RichText::new("LSB — lower sideband  |  HF amateur below 10 MHz")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            }
+            DemodMode::Dsb => {
+                ui.label(
+                    RichText::new("DSB — double sideband, suppressed carrier")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            }
+            DemodMode::Cw => {
+                ui.label(
+                    RichText::new("CW — Morse code  |  narrow 400-900 Hz bandpass")
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            }
         }
+
+        ui.add_space(4.0);
     }
 }
