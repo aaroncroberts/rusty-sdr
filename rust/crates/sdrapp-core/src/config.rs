@@ -43,7 +43,8 @@ pub struct AppConfig {
 }
 
 fn default_bookmarks() -> Vec<BookmarkConfig> {
-    let sw = "Shortwave / ML-31";
+    let sw  = "Shortwave / ML-31";
+    let sat = "Satellite";
     vec![
         // ── General / Antenna A ────────────────────────────────────────────────
         BookmarkConfig::new("BBC Radio 4 — 93.5 MHz", 93_500_000, "Wbfm"),
@@ -52,6 +53,32 @@ fn default_bookmarks() -> Vec<BookmarkConfig> {
         BookmarkConfig::new("NOAA Weather — KEC93", 162_550_000, "Nfm")
             .with_nfm_settings(25_000, -60.0, false)
             .with_category("Weather"),
+        // ── Satellite — Antenna A (Rattlesnake M6 or similar VHF/UHF) ─────────
+        // ISS voice + APRS downlink: 145.825 MHz NFM.
+        // ISS transmits voice when crew or ARISS school contacts are active;
+        // the same frequency carries an AX.25 APRS packet digipeater.
+        // Best passes are 5–10 min windows — use an ISS tracking app for timing.
+        BookmarkConfig::new("ISS Voice / APRS 145.825 MHz", 145_825_000, "Nfm")
+            .with_nfm_settings(25_000, -80.0, false)
+            .with_category(sat),
+        // Orbcomm LEO data satellites: 137–138 MHz downlink.
+        // Audible as rapid BPSK warble bursts during passes (~20 sec per burst).
+        // 137.62125 MHz is the highest-activity downlink channel.
+        BookmarkConfig::new("Orbcomm 137.500 MHz", 137_500_000, "Nfm")
+            .with_nfm_settings(25_000, -80.0, false)
+            .with_category(sat),
+        BookmarkConfig::new("Orbcomm 137.525 MHz", 137_525_000, "Nfm")
+            .with_nfm_settings(25_000, -80.0, false)
+            .with_category(sat),
+        BookmarkConfig::new("Orbcomm 137.621 MHz", 137_621_250, "Nfm")
+            .with_nfm_settings(25_000, -80.0, false)
+            .with_category(sat),
+        // GOES-16/17 weather satellite: 1694.1 MHz LRIT/EMWIN downlink.
+        // Requires L-band LNA + dish or GOES-specific patch antenna.
+        // Tune here to confirm signal presence; decode with goestools or XRIT.
+        BookmarkConfig::new("GOES-16/17 LRIT 1694.1 MHz", 1_694_100_000, "Nfm")
+            .with_nfm_settings(25_000, -100.0, false)
+            .with_category(sat),
         // ── Shortwave / ML-31 — Antenna C ─────────────────────────────────────
         // NIST time signals (WWV Fort Collins CO): 2.5, 5, 10, 15, 20 MHz AM
         BookmarkConfig::new("WWV 5 MHz (time signals)", 5_000_000, "Am")
@@ -686,5 +713,55 @@ mod tests {
         // Deserializing again must still work cleanly
         let restored: BookmarkConfig = serde_json::from_str(&json).unwrap();
         assert!(restored.antenna.is_none());
+    }
+
+    // ── Satellite bookmark presets ────────────────────────────────────────────
+
+    #[test]
+    fn default_bookmarks_include_iss() {
+        let bms = default_bookmarks();
+        let iss = bms.iter().find(|b| b.freq_hz == 145_825_000)
+            .expect("ISS 145.825 MHz bookmark must exist");
+        assert_eq!(iss.mode, "Nfm");
+        assert_eq!(iss.category, "Satellite");
+        // No antenna override — uses default port (Antenna A / Rattlesnake M6)
+        assert!(iss.antenna.is_none());
+        assert_eq!(iss.nfm_bandwidth_hz, Some(25_000));
+    }
+
+    #[test]
+    fn default_bookmarks_include_orbcomm_frequencies() {
+        let bms = default_bookmarks();
+        let orbcomm_freqs = [137_500_000u64, 137_525_000, 137_621_250];
+        for freq in orbcomm_freqs {
+            let bm = bms.iter().find(|b| b.freq_hz == freq)
+                .unwrap_or_else(|| panic!("Orbcomm bookmark at {freq} Hz must exist"));
+            assert_eq!(bm.mode, "Nfm", "Orbcomm {freq} must be NFM");
+            assert_eq!(bm.category, "Satellite");
+            assert_eq!(bm.nfm_bandwidth_hz, Some(25_000));
+        }
+    }
+
+    #[test]
+    fn default_bookmarks_include_goes_lrit() {
+        let bms = default_bookmarks();
+        let goes = bms.iter().find(|b| b.freq_hz == 1_694_100_000)
+            .expect("GOES LRIT 1694.1 MHz bookmark must exist");
+        assert_eq!(goes.mode, "Nfm");
+        assert_eq!(goes.category, "Satellite");
+    }
+
+    #[test]
+    fn satellite_bookmarks_round_trip_json() {
+        // Confirm satellite bookmarks survive a serde round-trip (no data loss).
+        let bms = default_bookmarks();
+        for bm in bms.iter().filter(|b| b.category == "Satellite") {
+            let json = serde_json::to_string(bm).unwrap();
+            let restored: BookmarkConfig = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.freq_hz, bm.freq_hz);
+            assert_eq!(restored.mode, bm.mode);
+            assert_eq!(restored.category, bm.category);
+            assert_eq!(restored.nfm_bandwidth_hz, bm.nfm_bandwidth_hz);
+        }
     }
 }
