@@ -335,6 +335,9 @@ pub struct AdsbMapWindow {
     /// Set when the user clicks Stop in the map toolbar; main app consumes & clears.
     pub stop_requested: bool,
 
+    /// Whether the FLIGHT DATA section in the detail panel is expanded.
+    flight_info_expanded: bool,
+
     // ── Flight info lookup cache ──────────────────────────────────────────────
     /// Per-ICAO enriched data fetched from adsb.lol + OpenSky.
     flight_info_cache: HashMap<u32, FlightLookupState>,
@@ -396,6 +399,7 @@ impl AdsbMapWindow {
             tile_rx,
             last_tile_z: 255, // force first-frame flush
             evicted_tiles: Vec::new(),
+            flight_info_expanded: true,
             flight_info_cache: HashMap::new(),
             flight_info_tx: fi_tx,
             flight_info_rx: fi_rx,
@@ -504,24 +508,6 @@ impl AdsbMapWindow {
                     let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
                     ui.painter().circle_filled(dot_rect.center(), 5.0, dot_color);
                     ui.label(RichText::new(status_text).color(dot_color));
-
-                    // Diagnostic text when running (small, doesn't expand the row height)
-                    if self.decoder_running {
-                        let ac = aircraft.len();
-                        let fr = self.frame_count;
-                        let ok = self.crc_ok_count;
-                        let pr = self.preamble_count;
-                        let (diag, diag_color) = if fr > 0 {
-                            (format!("· {ac} ac  {fr} fr"), Color32::from_rgb(0x8A, 0x9A, 0xB0))
-                        } else if ok > 0 {
-                            (format!("· {ac} ac  {ok} Mode S"), Color32::from_rgb(0x6A, 0x8A, 0x6A))
-                        } else if pr > 0 {
-                            (format!("· {ac} ac  {pr} preambles"), Color32::from_rgb(0xC0, 0x80, 0x00))
-                        } else {
-                            (format!("· {ac} ac  no signal"), Color32::from_rgb(0x8A, 0x4A, 0x4A))
-                        };
-                        ui.label(RichText::new(diag).color(diag_color).small());
-                    }
 
                     // ── Start / Stop ──────────────────────────────────────────
                     if self.decoder_running || self.adsb_start_pending {
@@ -641,20 +627,33 @@ impl AdsbMapWindow {
                         ui.label(RichText::new("AIRCRAFT").color(muted).small());
                         ui.add_space(2.0);
 
-                        // Sort: aircraft with positions first, then by altitude desc
+                        // Sort: live + positioned first, then stale, then no-position
                         let mut sorted: Vec<&AircraftState> = aircraft.iter().collect();
                         sorted.sort_by(|a, b| {
-                            let a_pos = a.lat.is_some() as u8;
-                            let b_pos = b.lat.is_some() as u8;
-                            b_pos.cmp(&a_pos)
+                            let stale_a = a.is_stale() as u8;
+                            let stale_b = b.is_stale() as u8;
+                            let pos_a = a.lat.is_some() as u8;
+                            let pos_b = b.lat.is_some() as u8;
+                            stale_a.cmp(&stale_b)
+                                .then(pos_b.cmp(&pos_a))
                                 .then(b.altitude_ft.unwrap_or(0).cmp(&a.altitude_ft.unwrap_or(0)))
                         });
 
                         egui::ScrollArea::vertical().show(ui, |ui| {
+                            let mut prev_stale = false;
                             for ac in &sorted {
                                 let is_sel = self.selected_icao == Some(ac.icao);
                                 let has_pos = ac.lat.is_some();
-                                let row_color = if is_sel {
+                                let stale = ac.is_stale();
+
+                                // Divider between live and stale groups
+                                if stale && !prev_stale && !sorted.iter().all(|a| a.is_stale()) {
+                                    ui.add_space(2.0);
+                                    ui.label(RichText::new("── lost signal ──").size(8.0).color(Color32::from_rgb(0x30, 0x3A, 0x48)));
+                                }
+                                prev_stale = stale;
+
+                                let row_bg = if is_sel {
                                     Color32::from_rgb(0x1A, 0x2A, 0x3A)
                                 } else {
                                     Color32::TRANSPARENT
@@ -667,13 +666,16 @@ impl AdsbMapWindow {
                                 let icao_str = format!("{:06X}", ac.icao);
                                 let primary = if callsign.is_empty() { &icao_str } else { callsign };
 
-                                let pos_dot = if has_pos { "+" } else { "." };
+                                // ✈ for positioned live, ○ for no-pos, ◌ for stale
+                                let icon = if stale { "◌" } else if has_pos { "✈" } else { "○" };
                                 let alt_str = ac.altitude_ft
                                     .map(|a| format!(" {}ft", a / 100 * 100))
                                     .unwrap_or_default();
-                                let row_text = format!("{pos_dot} {primary}{alt_str}");
+                                let row_text = format!("{icon} {primary}{alt_str}");
 
-                                let label_color = if has_pos {
+                                let label_color = if stale {
+                                    Color32::from_rgb(0x38, 0x48, 0x58)
+                                } else if has_pos {
                                     altitude_color(ac.altitude_ft)
                                 } else {
                                     muted
@@ -684,7 +686,7 @@ impl AdsbMapWindow {
                                         RichText::new(&row_text)
                                             .small()
                                             .color(label_color)
-                                            .background_color(row_color),
+                                            .background_color(row_bg),
                                     )
                                     .sense(egui::Sense::click()),
                                 );
@@ -694,10 +696,13 @@ impl AdsbMapWindow {
                                         pan_to = Some((lat, lon));
                                     }
                                 }
-                                resp.on_hover_text(format!(
-                                    "{icao_str}{}",
-                                    if callsign.is_empty() { String::new() } else { format!(" · {callsign}") }
-                                ));
+                                let age = ac.last_seen.elapsed().as_secs();
+                                let hover = format!(
+                                    "{icao_str}{}{}",
+                                    if callsign.is_empty() { String::new() } else { format!(" · {callsign}") },
+                                    if stale { format!("  (lost {}s ago)", age) } else { String::new() }
+                                );
+                                resp.on_hover_text(hover);
                             }
                         });
                     });
@@ -724,12 +729,80 @@ impl AdsbMapWindow {
                                 .inner_margin(Margin::same(10.0)),
                         )
                         .show_inside(ui, |ui| {
-                            close_detail = show_aircraft_detail(ui, ac, selected_flight_info);
+                            close_detail = show_aircraft_detail(
+                                ui, ac, selected_flight_info,
+                                &mut self.flight_info_expanded,
+                            );
                         });
                 }
                 if close_detail {
                     self.selected_icao = None;
                 }
+
+                // ── Bottom status bar ─────────────────────────────────────────
+                // Diagnostic counters live here so the toolbar stays uncluttered.
+                egui::TopBottomPanel::bottom("adsb_status_bar")
+                    .exact_height(20.0)
+                    .frame(
+                        Frame::none()
+                            .fill(Color32::from_rgb(0x08, 0x0C, 0x12))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(0x1A, 0x22, 0x30)))
+                            .inner_margin(Margin { left: 8.0, right: 8.0, top: 2.0, bottom: 2.0 }),
+                    )
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let muted = Color32::from_rgb(0x5A, 0x6A, 0x7A);
+                            if self.decoder_running {
+                                let ac_count = aircraft.len();
+                                let fr = self.frame_count;
+                                let ok = self.crc_ok_count;
+                                let pr = self.preamble_count;
+
+                                // Aircraft count chip
+                                ui.label(
+                                    RichText::new(format!("{ac_count} aircraft"))
+                                        .small()
+                                        .color(Color32::from_rgb(0x8A, 0x9A, 0xB0)),
+                                );
+                                ui.label(RichText::new("·").small().color(muted));
+
+                                // Signal quality indicator
+                                let (signal_text, signal_color) = if fr > 0 {
+                                    (format!("{fr} DF17 frames"), Color32::from_rgb(0x73, 0xC9, 0x91))
+                                } else if ok > 0 {
+                                    (format!("{ok} Mode S frames  (no ADS-B)"), Color32::from_rgb(0xE8, 0xC5, 0x4B))
+                                } else if pr > 0 {
+                                    (format!("{pr} preambles  (bad CRC — check frequency/rate)"), Color32::from_rgb(0xC0, 0x80, 0x00))
+                                } else {
+                                    ("No signal detected".to_string(), Color32::from_rgb(0x8A, 0x4A, 0x4A))
+                                };
+                                ui.label(RichText::new(signal_text).small().color(signal_color));
+
+                                // Sample rate warning pill
+                                if !self.sample_rate_ok {
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        RichText::new("⚠ 2 Msps required")
+                                            .small()
+                                            .color(Color32::from_rgb(0xFF, 0xC0, 0x40))
+                                            .background_color(Color32::from_rgba_premultiplied(60, 40, 0, 120)),
+                                    );
+                                }
+                            } else if self.adsb_start_pending {
+                                ui.label(
+                                    RichText::new("Configuring hardware for ADS-B (2 Msps, 1090 MHz)…")
+                                        .small()
+                                        .color(Color32::from_rgb(0xC0, 0x80, 0x00)),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new("ADS-B decoder stopped  ·  press Start to begin receiving")
+                                        .small()
+                                        .color(muted),
+                                );
+                            }
+                        });
+                    });
 
                 // ── Map canvas (takes all remaining space) ────────────────────
                 let available = ui.available_size();
@@ -918,45 +991,53 @@ impl AdsbMapWindow {
                 continue; // off-screen
             }
 
-            let color = altitude_color(ac.altitude_ft);
+            let stale = ac.is_stale();
+            let dim = if stale { 0.25 } else { 1.0 };
+            let base_color = altitude_color(ac.altitude_ft);
+            let color = base_color.linear_multiply(dim);
             let is_selected = self.selected_icao == Some(ac.icao);
 
             // Selection ring
             if is_selected {
-                painter.circle_stroke(
-                    screen,
-                    ICON_R + 4.0,
-                    Stroke::new(1.5, Color32::from_rgb(0x4E, 0xC9, 0xE0)),
-                );
+                let ring_color = if stale {
+                    Color32::from_rgb(0x40, 0x50, 0x60)
+                } else {
+                    Color32::from_rgb(0x4E, 0xC9, 0xE0)
+                };
+                painter.circle_stroke(screen, ICON_R + 4.0, Stroke::new(1.5, ring_color));
             }
 
             // Aircraft triangle — dark halo first so it's visible over map tiles
             let heading = ac.heading_deg.unwrap_or(0.0);
-            let halo_pts = aircraft_triangle(screen, heading, ICON_R + 2.5);
+            let icon_r = if stale { ICON_R * 0.75 } else { ICON_R };
+            let halo_pts = aircraft_triangle(screen, heading, icon_r + 2.0);
             painter.add(egui::Shape::convex_polygon(
                 halo_pts.to_vec(),
-                Color32::from_rgba_premultiplied(0, 0, 0, 160),
+                Color32::from_rgba_premultiplied(0, 0, 0, if stale { 80 } else { 160 }),
                 Stroke::NONE,
             ));
-            let pts = aircraft_triangle(screen, heading, ICON_R);
-            painter.add(egui::Shape::convex_polygon(
-                pts.to_vec(),
-                color,
-                Stroke::new(1.2, Color32::WHITE.linear_multiply(0.9)),
-            ));
+            let pts = aircraft_triangle(screen, heading, icon_r);
+            let outline = if stale {
+                Stroke::new(1.0, Color32::from_rgba_premultiplied(80, 90, 100, 120))
+            } else {
+                Stroke::new(1.2, Color32::WHITE.linear_multiply(0.9))
+            };
+            painter.add(egui::Shape::convex_polygon(pts.to_vec(), color, outline));
 
-            // Heading vector
-            if let Some(hdg) = ac.heading_deg {
-                let hdg_rad = (hdg as f64).to_radians();
-                let tip = screen
-                    + Vec2::new(
-                        (hdg_rad.sin() * 20.0) as f32,
-                        (-hdg_rad.cos() * 20.0) as f32,
+            // Heading vector (live only)
+            if !stale {
+                if let Some(hdg) = ac.heading_deg {
+                    let hdg_rad = (hdg as f64).to_radians();
+                    let tip = screen
+                        + Vec2::new(
+                            (hdg_rad.sin() * 20.0) as f32,
+                            (-hdg_rad.cos() * 20.0) as f32,
+                        );
+                    painter.line_segment(
+                        [screen, tip],
+                        Stroke::new(1.0, color.linear_multiply(0.7)),
                     );
-                painter.line_segment(
-                    [screen, tip],
-                    Stroke::new(1.0, color.linear_multiply(0.7)),
-                );
+                }
             }
 
             // Label (callsign / ICAO hex)
@@ -1203,31 +1284,40 @@ fn show_aircraft_detail(
     ui: &mut egui::Ui,
     ac: &AircraftState,
     flight: Option<&FlightLookupState>,
+    flight_expanded: &mut bool,
 ) -> bool {
     let muted = Color32::from_rgb(0x5A, 0x6A, 0x7A);
     let value_color = Color32::from_rgb(0xD8, 0xE8, 0xF0);
     let accent = Color32::from_rgb(0x4E, 0xC9, 0xE0);
+    let stale = ac.is_stale();
 
-    // ── ICAO address (click to copy) ─────────────────────────────────────────
+    // ── ICAO + stale badge ────────────────────────────────────────────────────
     let icao_str = format!("{:06X}", ac.icao);
-    let icao_resp = ui.add(
-        egui::Label::new(
-            RichText::new(&icao_str)
-                .monospace()
-                .size(18.0)
-                .color(accent),
-        )
-        .sense(Sense::click()),
-    );
-    if icao_resp.clicked() {
-        ui.ctx().copy_text(icao_str);
-        // Visual feedback via tooltip — egui doesn't have a toast API here
-    }
-    icao_resp.on_hover_text("Click to copy ICAO address");
+    ui.horizontal(|ui| {
+        let icao_resp = ui.add(
+            egui::Label::new(
+                RichText::new(&icao_str).monospace().size(18.0).color(accent),
+            )
+            .sense(Sense::click()),
+        );
+        if icao_resp.clicked() {
+            ui.ctx().copy_text(icao_str.clone());
+        }
+        icao_resp.on_hover_text("Click to copy ICAO address");
+
+        if stale {
+            ui.label(
+                RichText::new("LOST").small()
+                    .color(Color32::from_rgb(0xE8, 0xA0, 0x40))
+                    .background_color(Color32::from_rgba_premultiplied(60, 30, 0, 140)),
+            );
+        }
+    });
 
     // ── Callsign ─────────────────────────────────────────────────────────────
     let callsign = ac.callsign.as_deref().map(str::trim).unwrap_or("—");
-    ui.label(RichText::new(callsign).size(15.0).color(Color32::WHITE));
+    let cs_color = if stale { muted } else { Color32::WHITE };
+    ui.label(RichText::new(callsign).size(15.0).color(cs_color));
 
     ui.add_space(6.0);
     ui.separator();
@@ -1294,79 +1384,107 @@ fn show_aircraft_detail(
             ui.end_row();
         });
 
-    ui.add_space(8.0);
-    ui.separator();
     ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(4.0);
 
-    // ── Live flight data (adsb.lol + OpenSky) ────────────────────────────────
-    match flight {
-        None | Some(FlightLookupState::Fetching) => {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new("Looking up…").small().color(muted));
-            });
+    // ── FLIGHT DATA section (collapsible) ─────────────────────────────────────
+    ui.horizontal(|ui| {
+        // Painted triangle toggle
+        let expand_icon_rect = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover()).0;
+        let c = expand_icon_rect.center();
+        let tri_pts: Vec<egui::Pos2> = if *flight_expanded {
+            vec![egui::pos2(c.x - 4.0, c.y - 2.5), egui::pos2(c.x + 4.0, c.y - 2.5), egui::pos2(c.x, c.y + 3.0)]
+        } else {
+            vec![egui::pos2(c.x - 2.5, c.y - 4.0), egui::pos2(c.x + 3.0, c.y), egui::pos2(c.x - 2.5, c.y + 4.0)]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(tri_pts, muted, egui::Stroke::NONE));
+
+        let hdr = ui.add(
+            egui::Label::new(RichText::new("FLIGHT DATA").small().color(muted))
+                .sense(Sense::click()),
+        );
+        if hdr.clicked() { *flight_expanded = !*flight_expanded; }
+
+        // Status chip
+        match flight {
+            None | Some(FlightLookupState::Fetching) => { ui.spinner(); }
+            Some(FlightLookupState::Failed) => {
+                ui.label(RichText::new("—").small().color(muted));
+            }
+            Some(FlightLookupState::Ready(_)) => {
+                let (dot_r, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+                ui.painter().circle_filled(dot_r.center(), 3.0, Color32::from_rgb(0x73, 0xC9, 0x91));
+            }
         }
-        Some(FlightLookupState::Failed) => {
-            ui.label(RichText::new("Lookup failed").small().color(muted));
-        }
-        Some(FlightLookupState::Ready(info)) => {
-            // Route banner: ORD → JFK
-            match (&info.origin, &info.destination) {
-                (Some(o), Some(d)) => {
+    });
+
+    if *flight_expanded {
+        ui.add_space(4.0);
+        match flight {
+            None | Some(FlightLookupState::Fetching) => {
+                ui.label(RichText::new("  Looking up…").small().color(muted));
+            }
+            Some(FlightLookupState::Failed) => {
+                ui.label(RichText::new("  No data available").small().color(muted));
+            }
+            Some(FlightLookupState::Ready(info)) => {
+                // Route banner: KORD → KJFK
+                let has_route = info.origin.is_some() || info.destination.is_some();
+                if has_route {
+                    let origin = info.origin.as_deref().unwrap_or("???");
+                    let dest   = info.destination.as_deref().unwrap_or("???");
                     ui.label(
-                        RichText::new(format!("{o}  →  {d}"))
+                        RichText::new(format!("  {origin}  →  {dest}"))
                             .strong()
                             .color(Color32::WHITE),
                     );
+                    ui.add_space(2.0);
                 }
-                (Some(o), None) => {
-                    ui.label(RichText::new(format!("From {o}")).color(value_color));
+
+                // Registration + type on one row, operator below
+                let reg = info.registration.as_deref().unwrap_or("—");
+                let typ = info.aircraft_type.as_deref().unwrap_or("—");
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(reg).small().strong().color(accent));
+                    ui.label(RichText::new("·").small().color(muted));
+                    ui.label(RichText::new(typ).small().color(value_color));
+                });
+
+                if let Some(ref op) = info.operator {
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(op).small().color(value_color));
+                    });
                 }
-                (None, Some(d)) => {
-                    ui.label(RichText::new(format!("To {d}")).color(value_color));
+
+                if !has_route && info.registration.is_none() && info.operator.is_none() {
+                    ui.label(RichText::new("  No route data").small().color(muted));
                 }
-                _ => {}
-            }
-            // Registration + type
-            let reg = info.registration.as_deref().unwrap_or("—");
-            let typ = info.aircraft_type.as_deref().unwrap_or("—");
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(reg).small().strong().color(accent));
-                ui.label(RichText::new(typ).small().color(muted));
-            });
-            // Operator
-            if let Some(ref op) = info.operator {
-                ui.label(RichText::new(op).small().color(value_color));
             }
         }
+        ui.add_space(4.0);
     }
 
-    ui.add_space(4.0);
     ui.separator();
     ui.add_space(4.0);
 
     // ── External lookup ───────────────────────────────────────────────────────
     let icao_hex = format!("{:06X}", ac.icao);
-    let fa_url   = format!("https://flightaware.com/live/modes/{}/redirect", icao_hex.to_lowercase());
+    let fa_url    = format!("https://flightaware.com/live/modes/{}/redirect", icao_hex.to_lowercase());
     let adsbx_url = format!("https://globe.adsbexchange.com/?icao={}", icao_hex.to_lowercase());
-    let ps_url   = format!("https://www.planespotters.net/hex/{}", icao_hex.to_uppercase());
+    let ps_url    = format!("https://www.planespotters.net/hex/{}", icao_hex.to_uppercase());
 
-    ui.label(RichText::new("Look up").small().color(muted));
-    let btn_fill = Color32::from_rgb(0x18, 0x24, 0x34);
+    let btn_fill = Color32::from_rgb(0x16, 0x20, 0x2E);
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().button_padding = egui::Vec2::new(5.0, 3.0);
-        if ui.add(egui::Button::new(RichText::new("FlightAware").small().color(accent)).fill(btn_fill))
-            .on_hover_text(&fa_url).clicked() {
-            let _ = open::that(&fa_url);
-        }
-        if ui.add(egui::Button::new(RichText::new("ADS-B Exch.").small().color(accent)).fill(btn_fill))
-            .on_hover_text(&adsbx_url).clicked() {
-            let _ = open::that(&adsbx_url);
-        }
-        if ui.add(egui::Button::new(RichText::new("Planespotters").small().color(accent)).fill(btn_fill))
-            .on_hover_text(&ps_url).clicked() {
-            let _ = open::that(&ps_url);
-        }
+        ui.spacing_mut().button_padding = egui::Vec2::new(6.0, 3.0);
+        if ui.add(egui::Button::new(RichText::new("↗ FlightAware").small().color(accent)).fill(btn_fill))
+            .on_hover_text(&fa_url).clicked() { let _ = open::that(&fa_url); }
+        if ui.add(egui::Button::new(RichText::new("↗ ADS-B Exch.").small().color(accent)).fill(btn_fill))
+            .on_hover_text(&adsbx_url).clicked() { let _ = open::that(&adsbx_url); }
+        if ui.add(egui::Button::new(RichText::new("↗ Planespotters").small().color(accent)).fill(btn_fill))
+            .on_hover_text(&ps_url).clicked() { let _ = open::that(&ps_url); }
     });
 
     ui.add_space(6.0);

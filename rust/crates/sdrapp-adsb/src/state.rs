@@ -10,9 +10,12 @@ use std::time::{Duration, Instant};
 use crate::parser::{AdsbDecoded, AdsbMessage};
 use crate::cpr::{decode_global, decode_local, CprFrame};
 
-/// Expiry window for aircraft entries.  60 s gives aircraft time to pass
-/// through brief signal shadows without disappearing from the map.
-pub const EXPIRY: Duration = Duration::from_secs(60);
+/// Expiry window for aircraft entries.  5 min keeps aircraft visible long
+/// after they leave your coverage zone.
+pub const EXPIRY: Duration = Duration::from_secs(300);
+
+/// Aircraft are marked "stale" (signal lost) after this many seconds.
+pub const STALE_AFTER: Duration = Duration::from_secs(60);
 
 /// CPR frame window: pair must arrive within this interval to be decoded.
 const CPR_WINDOW: Duration = Duration::from_secs(60);
@@ -44,6 +47,13 @@ pub struct AircraftState {
 }
 
 impl AircraftState {
+    /// True when no message has been received for [`STALE_AFTER`] seconds.
+    /// Stale aircraft remain in the store until [`EXPIRY`] (5 min) and are
+    /// displayed as dimmed ghosts on the map.
+    pub fn is_stale(&self) -> bool {
+        self.last_seen.elapsed() >= STALE_AFTER
+    }
+
     fn new(icao: u32) -> Self {
         Self {
             icao,
