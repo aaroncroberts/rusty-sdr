@@ -19,7 +19,7 @@ impl SdrApp {
         let open = ui.ctx().data_mut(|d| *d.get_persisted_mut_or_insert_with(header_id, || true));
 
         ui.horizontal(|ui| {
-            let arrow = if open { "v" } else { ">" };
+            let arrow = if open { "▼" } else { "▶" };
             let header_text = RichText::new(format!("{arrow} BOOKMARKS")).color(theme::TEXT_MUTED).small();
             if ui.add(egui::Label::new(header_text).sense(egui::Sense::click())).clicked() {
                 ui.ctx().data_mut(|d| {

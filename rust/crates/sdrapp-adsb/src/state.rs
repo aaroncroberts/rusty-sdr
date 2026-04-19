@@ -15,7 +15,7 @@ use crate::cpr::{decode_global, CprFrame};
 pub const EXPIRY: Duration = Duration::from_secs(60);
 
 /// CPR frame window: pair must arrive within this interval to be decoded.
-const CPR_WINDOW: Duration = Duration::from_secs(10);
+const CPR_WINDOW: Duration = Duration::from_secs(60);
 
 /// Decoded state for one aircraft.
 #[derive(Debug, Clone)]

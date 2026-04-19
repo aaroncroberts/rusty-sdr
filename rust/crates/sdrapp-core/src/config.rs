@@ -547,19 +547,18 @@ impl AppConfig {
     /// Idempotent: only adds bookmarks whose name is not already in the list.
     /// Any user-created bookmarks in the same category are left untouched.
     fn migrate_bookmarks(&mut self) {
-        const SW_CAT: &str = "Shortwave / ML-31";
-
-        let sw_bookmarks: Vec<BookmarkConfig> = default_bookmarks()
+        // All default bookmarks are candidates for migration; filter by name to
+        // avoid duplicating anything the user may have renamed or already added.
+        let missing: Vec<BookmarkConfig> = default_bookmarks()
             .into_iter()
-            .filter(|b| b.category == SW_CAT)
             .filter(|b| !self.bookmarks.iter().any(|e| e.name == b.name))
             .collect();
-        if !sw_bookmarks.is_empty() {
+        if !missing.is_empty() {
             tracing::info!(
-                count = sw_bookmarks.len(),
-                "adding Shortwave / ML-31 bookmark presets"
+                count = missing.len(),
+                "adding missing default bookmark presets"
             );
-            self.bookmarks.extend(sw_bookmarks);
+            self.bookmarks.extend(missing);
         }
     }
 
