@@ -171,6 +171,8 @@ fn decode_loop(
     let decimate = decimation_factor(sample_rate);
     let mut demod = PpmDemodulator::new();
     let mut prune_counter: u32 = 0;
+    // DF distribution for diagnostic logging (logged every 4096 batches).
+    let mut df_counts = [0u32; 32];
 
     while running.load(Ordering::Relaxed) {
         match iq_rx.try_recv() {
@@ -190,6 +192,7 @@ fn decode_loop(
                     preamble_count.fetch_add(frames.len() as u64, Ordering::Relaxed);
                     let mut locked = store.lock();
                     for frame in &frames {
+                        df_counts[frame.df() as usize] += 1;
                         if frame.crc_ok {
                             crc_ok_count.fetch_add(1, Ordering::Relaxed);
                         }
@@ -204,6 +207,24 @@ fn decode_loop(
                 prune_counter = prune_counter.wrapping_add(1);
                 if prune_counter & 0x0FFF == 0 {
                     store.lock().prune_expired();
+
+                    // Log DF distribution so we can see if we're decoding real
+                    // Mode S (DFs 0,4,5,11,17-19 dominant) or noise (flat/random).
+                    let total: u32 = df_counts.iter().sum();
+                    if total > 0 {
+                        let dominant: Vec<String> = df_counts
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, &c)| c > 0)
+                            .map(|(df, &c)| format!("DF{df}={c}"))
+                            .collect();
+                        tracing::debug!(
+                            total,
+                            distribution = dominant.join(" "),
+                            "ADS-B DF distribution (last ~4096 batches)"
+                        );
+                    }
+                    df_counts = [0u32; 32];
                 }
             }
             Err(broadcast::error::TryRecvError::Empty) => {
