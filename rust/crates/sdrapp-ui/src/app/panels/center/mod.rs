@@ -760,6 +760,12 @@ impl SdrApp {
             is_running,
         );
 
+        // ── Demod / FM scan / Bookmark scanner strip ─────────────────────────
+        // Must be rendered BEFORE the waterfall so it gets space first.
+        // The waterfall uses available_height() which would consume all remaining
+        // space, making the strip invisible if it came after.
+        self.center_bottom_strip(ui);
+
         // ── Resizable split divider ───────────────────────────────────────────
         let divider_w = ui.available_width();
         let (div_rect, div_resp) = ui.allocate_exact_size(
@@ -968,9 +974,6 @@ impl SdrApp {
             }
         }
 
-        // ── Demod / FM scan / Bookmark scanner strip ─────────────────────────
-        self.center_bottom_strip(ui);
-
         // ── First-run onboarding overlay ──────────────────────────────────────
         if self.show_onboarding {
             let overlay_painter = ui.ctx().layer_painter(egui::LayerId::new(
@@ -1139,7 +1142,7 @@ impl SdrApp {
         ui.horizontal_top(|ui| {
             // ── Demod mode ─────────────────────────────────────────────────────
             ui.vertical(|ui| {
-                ui.set_width(strip_w * 0.25);
+                ui.set_width(strip_w * 0.30);
                 ui.label(RichText::new("DEMOD").color(theme::TEXT_MUTED).small());
                 let current_mode = self.shared.read().demod.demod_mode;
                 ui.horizontal(|ui| {

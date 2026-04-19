@@ -520,7 +520,7 @@ impl AppConfig {
     /// Load config from disk, or return defaults if the file doesn't exist or fails to parse.
     pub fn load_or_default() -> Self {
         let path = config_path();
-        match std::fs::read_to_string(&path) {
+        let mut cfg = match std::fs::read_to_string(&path) {
             Ok(json) => serde_json::from_str(&json).unwrap_or_else(|e| {
                 tracing::warn!(
                     path = %path.display(),
@@ -539,6 +539,31 @@ impl AppConfig {
                 tracing::warn!(path = %path.display(), error = %e, "config read failed — using defaults");
                 Self::default()
             }
+        };
+        cfg.migrate_bookmarks();
+        cfg
+    }
+
+    /// Merge any missing default bookmark categories into the loaded config.
+    ///
+    /// Called once after loading from disk.  Only adds bookmarks; never removes or
+    /// modifies existing ones.  Currently ensures the "Shortwave / ML-31" preset
+    /// set is present so users with an existing config get the shortwave bookmarks
+    /// added automatically on the first launch after this feature ships.
+    fn migrate_bookmarks(&mut self) {
+        const SW_CAT: &str = "Shortwave / ML-31";
+        let has_sw = self.bookmarks.iter()
+            .any(|b| b.category == SW_CAT);
+        if !has_sw {
+            let sw_bookmarks: Vec<BookmarkConfig> = default_bookmarks()
+                .into_iter()
+                .filter(|b| b.category == SW_CAT)
+                .collect();
+            tracing::info!(
+                count = sw_bookmarks.len(),
+                "migrating: adding Shortwave / ML-31 preset bookmarks"
+            );
+            self.bookmarks.extend(sw_bookmarks);
         }
     }
 
