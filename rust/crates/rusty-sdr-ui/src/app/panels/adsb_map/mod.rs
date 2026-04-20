@@ -55,6 +55,7 @@ pub struct AdsbMapWindow {
     pub set_home_pending: bool,
     /// Tracks whether the OS viewport window is open. Set to false when the OS window
     /// close button is pressed; caller resets to true when it re-opens the window.
+    #[allow(dead_code)]
     pub viewport_open: bool,
 
     // ── Decoder state (written by main app each frame) ────────────────────────
@@ -65,7 +66,7 @@ pub struct AdsbMapWindow {
     /// DF-17 frames that passed CRC.
     pub frame_count: u64,
     /// Frames where CRC-24 passed (any DF type).
-    /// > 0 means decoding is working.  If frame_count = 0 but crc_ok_count > 0,
+    /// `> 0` means decoding is working.  If frame_count = 0 but crc_ok_count > 0,
     /// we're decoding valid Mode S but no DF17 ADS-B squitter is present.
     pub crc_ok_count: u64,
     /// Preamble detections before CRC check.  > 0 means signal is present.
@@ -186,6 +187,33 @@ impl AdsbMapWindow {
     /// by the ⌖ reset button.  If the user clicks 📍 Set Home, `set_home_pending`
     /// is set to `true`; the caller should persist `center_lat()`/`center_lon()`
     /// back to config and clear the flag.
+    /// Embedded version: renders the map into the given `ui` area (Aircraft view center panel).
+    /// Call this from within a `CentralPanel::show_inside` closure.
+    pub fn show_embedded(
+        &mut self,
+        outer_ui: &mut egui::Ui,
+        aircraft: &[AircraftState],
+        home_lat: f64,
+        home_lon: f64,
+        atc_mode_active: bool,
+    ) -> Option<u32> {
+        outer_ui.ctx().request_repaint();
+        self.update_state(aircraft, home_lat, home_lon);
+
+        let mut clicked = None;
+        egui::CentralPanel::default()
+            .frame(
+                Frame::none()
+                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
+                    .inner_margin(egui::Margin { left: 6.0, right: 0.0, top: 4.0, bottom: 0.0 }),
+            )
+            .show_inside(outer_ui, |ui| {
+                clicked = self.show_content(ui, aircraft, home_lat, home_lon, atc_mode_active);
+            });
+        clicked
+    }
+
+    #[allow(dead_code)]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -200,11 +228,25 @@ impl AdsbMapWindow {
             *open = false;
         }
 
-        // Aircraft positions update continuously — request a repaint every frame.
-        // Without this, deferred viewports only repaint on OS events (mouse move, etc.)
-        // which means the map would appear static between interactions.
         ctx.request_repaint();
+        self.update_state(aircraft, home_lat, home_lon);
 
+        let mut clicked = None;
+
+        egui::CentralPanel::default()
+            .frame(
+                Frame::none()
+                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
+                    .inner_margin(egui::Margin { left: 6.0, right: 0.0, top: 4.0, bottom: 0.0 }),
+            )
+            .show(ctx, |ui| {
+                clicked = self.show_content(ui, aircraft, home_lat, home_lon, atc_mode_active);
+            });
+        clicked
+    }
+
+    /// Shared state update: drain async results, trigger lookups, query ATC freqs.
+    fn update_state(&mut self, aircraft: &[AircraftState], home_lat: f64, home_lon: f64) {
         // ── Drain flight info results ─────────────────────────────────────────
         while let Ok(result) = self.flight_info_rx.try_recv() {
             let state = match result.info {
@@ -217,15 +259,14 @@ impl AdsbMapWindow {
         // ── Trigger lookup when selection changes ─────────────────────────────
         if self.selected_icao != self.prev_selected_icao {
             self.prev_selected_icao = self.selected_icao;
-            // Clear ATC frequencies when selection changes; re-query below.
             self.selected_atc_freqs.clear();
             self.last_atc_query_pos = None;
             if let Some(icao) = self.selected_icao {
-                if !self.flight_info_cache.contains_key(&icao) {
+                if let std::collections::hash_map::Entry::Vacant(e) = self.flight_info_cache.entry(icao) {
                     let callsign = aircraft.iter()
                         .find(|a| a.icao == icao)
                         .and_then(|a| a.callsign.clone());
-                    self.flight_info_cache.insert(icao, FlightLookupState::Fetching);
+                    e.insert(FlightLookupState::Fetching);
                     fetch_flight_info_async(self.flight_info_tx.clone(), icao, callsign);
                 }
             }
@@ -250,17 +291,11 @@ impl AdsbMapWindow {
                 }
             }
         }
+    }
 
-        let mut clicked = None;
-
-        egui::CentralPanel::default()
-            .frame(
-                Frame::none()
-                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
-                    .inner_margin(egui::Margin { left: 6.0, right: 0.0, top: 4.0, bottom: 0.0 }),
-            )
-            .show(ctx, |ui| {
-                // Update trails for aircraft that have positions.
+    /// Shared UI content: toolbar, aircraft list panel, detail panel, status bar, map.
+    fn show_content(&mut self, ui: &mut egui::Ui, aircraft: &[AircraftState], home_lat: f64, home_lon: f64, atc_mode_active: bool) -> Option<u32> {
+        // Update trails for aircraft that have positions.
                 for ac in aircraft {
                     if let (Some(lat), Some(lon)) = (ac.lat, ac.lon) {
                         self.trails.entry(ac.icao).or_default().push(lat, lon);
@@ -674,15 +709,12 @@ impl AdsbMapWindow {
                 let (response, painter) = ui.allocate_painter(available, Sense::click_and_drag());
                 let rect = response.rect;
 
-                clicked = self.render_map(
+        self.render_map(
                     &painter,
                     rect,
                     &response,
                     aircraft,
-                );
-            });
-
-        clicked
+                )
     }
 
     /// Drain the tile fetch channel and upload newly arrived textures to GPU.
@@ -734,8 +766,8 @@ impl AdsbMapWindow {
         );
 
         // Safety: never try to render more than 9×9 tiles per frame.
-        let tile_w = (x_max - x_min + 1).min(9).max(0);
-        let tile_h = (y_max - y_min + 1).min(9).max(0);
+        let tile_w = (x_max - x_min + 1).clamp(0, 9);
+        let tile_h = (y_max - y_min + 1).clamp(0, 9);
         if tile_w * tile_h > 81 {
             return;
         }

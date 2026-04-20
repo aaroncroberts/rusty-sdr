@@ -32,11 +32,11 @@ pub struct AdsbDecoder {
     /// Total Mode S DF-17 frames that passed CRC (for status display).
     pub frame_count: Arc<AtomicU64>,
     /// Frames where CRC passed, regardless of DF type.
-    /// > 0 means decoding is working; if frame_count stays 0 with crc_ok_count > 0,
+    /// `> 0` means decoding is working; if frame_count stays 0 with crc_ok_count > 0,
     /// we're decoding valid Mode S but seeing no DF17 ADS-B extended squitter.
     pub crc_ok_count: Arc<AtomicU64>,
     /// Total preamble detections (before CRC check).
-    /// > 0 means signal is present; if crc_ok_count stays 0 with preambles > 0,
+    /// `> 0` means signal is present; if crc_ok_count stays 0 with preambles > 0,
     /// the signal is detected but all frames are failing CRC.
     pub preamble_count: Arc<AtomicU64>,
     /// Sample rate the decoder was started with (Hz).

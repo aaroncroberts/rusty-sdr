@@ -17,6 +17,7 @@ pub(super) mod settings;
 pub(super) mod status;
 pub(super) mod views;
 pub(super) mod mini_signal;
+pub(super) mod tune;
 
 use egui::{RichText, Ui};
 

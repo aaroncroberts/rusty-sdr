@@ -66,7 +66,7 @@ pub(super) fn fetch_flight_info_async(
                         // prefer this over the raw ICAO type code for display.
                         info.aircraft_desc = ac["desc"].as_str()
                             .filter(|s| !s.is_empty())
-                            .map(|s| titlecase(s));
+                            .map(titlecase);
                         info.operator = ac["ownOp"].as_str()
                             .filter(|s| !s.is_empty()).map(str::to_string);
                         // Callsign / flight number from live feed (may be more

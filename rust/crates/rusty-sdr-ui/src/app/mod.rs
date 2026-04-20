@@ -153,8 +153,6 @@ pub struct SdrApp {
     show_handbook: bool,
     /// ADS-B aircraft map window.
     adsb_map: std::sync::Arc<parking_lot::Mutex<panels::adsb_map::AdsbMapWindow>>,
-    /// Whether the ADS-B map window is open.
-    show_adsb_map: bool,
     /// Shared ADS-B aircraft store (populated when decoder is running).
     adsb_store: std::sync::Arc<parking_lot::Mutex<rusty_sdr_adsb::AircraftStore>>,
     /// IQ broadcast sender — held so the UI can call `.subscribe()` to obtain a
@@ -195,8 +193,6 @@ pub struct SdrApp {
     // ── Satellite map ─────────────────────────────────────────────────────────
     /// Orbcomm satellite map window.
     sat_map: std::sync::Arc<parking_lot::Mutex<panels::sat_map::SatMapWindow>>,
-    /// Whether the satellite map window is open.
-    show_sat_map: bool,
 
     // ── ATC tuning ────────────────────────────────────────────────────────────
     /// True when the SDR is tuned to an ATC frequency via the ADS-B map panel.
@@ -206,8 +202,6 @@ pub struct SdrApp {
     // ── NOAA APT ──────────────────────────────────────────────────────────────
     /// NOAA APT weather satellite pass viewer + image decoder window.
     noaa_apt: std::sync::Arc<parking_lot::Mutex<panels::noaa_apt::NoaaAptWindow>>,
-    /// Whether the NOAA APT window is open.
-    show_noaa_apt: bool,
 
     // ── View system ───────────────────────────────────────────────────────────
     /// Which top-level view is currently displayed (Listen / Aircraft / Satellite).
@@ -251,8 +245,6 @@ impl SdrApp {
         let handbook_section = config.ui.handbook_section;
         let handbook_page = config.ui.handbook_page;
         let show_handbook = config.ui.show_handbook;
-        let show_adsb_map = config.ui.show_adsb_map;
-        let show_sat_map = config.ui.show_sat_map;
         let sat_map_home_lat = config.ui.home_lat;
         let sat_map_home_lon = config.ui.home_lon;
         let adsb_map = panels::adsb_map::AdsbMapWindow::with_viewport(
@@ -330,7 +322,6 @@ impl SdrApp {
             )),
             show_handbook,
             adsb_map: std::sync::Arc::new(parking_lot::Mutex::new(adsb_map)),
-            show_adsb_map,
             adsb_store: std::sync::Arc::new(parking_lot::Mutex::new(
                 rusty_sdr_adsb::AircraftStore::new(),
             )),
@@ -348,12 +339,10 @@ impl SdrApp {
             sat_map: std::sync::Arc::new(parking_lot::Mutex::new(
                 panels::sat_map::SatMapWindow::new(sat_map_home_lat, sat_map_home_lon),
             )),
-            show_sat_map,
             atc_mode_active: false,
             noaa_apt: std::sync::Arc::new(parking_lot::Mutex::new(
                 panels::noaa_apt::NoaaAptWindow::new(),
             )),
-            show_noaa_apt: false,
             active_view: ActiveView::Listen,
             mini_signal: panels::mini_signal::MiniSignalStrip::new((fft_floor, fft_ceil)),
         }
@@ -365,7 +354,7 @@ pub(crate) const MAX_ORBCOMM_LOG: usize = 1_000;
 
 /// True when `freq_hz` falls in the Orbcomm downlink band (137.0–138.0 MHz).
 pub(crate) fn is_orbcomm_freq(freq_hz: u64) -> bool {
-    freq_hz >= 137_000_000 && freq_hz <= 138_000_000
+    (137_000_000..=138_000_000).contains(&freq_hz)
 }
 
 // ── eframe::App ───────────────────────────────────────────────────────────────
@@ -674,300 +663,6 @@ impl eframe::App for SdrApp {
                     mapper.show(ctx, &mut open, &shared_arc, &bindings);
                     if !open {
                         mapper.viewport_open = false;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                },
-            );
-        }
-
-        // ── ADS-B Aircraft Map window ─────────────────────────────────────────
-        // Process pending state from last frame (before show_viewport_deferred)
-        {
-            // Snapshot decoder state to push into the map window
-            let decoder_running = self
-                .adsb_decoder
-                .as_ref()
-                .map(|d| d.is_running())
-                .unwrap_or(false);
-            let frame_count = self
-                .adsb_decoder
-                .as_ref()
-                .map(|d| d.frames_decoded())
-                .unwrap_or(0);
-            let crc_ok_count = self
-                .adsb_decoder
-                .as_ref()
-                .map(|d| d.crc_ok_frames())
-                .unwrap_or(0);
-            let preamble_count = self
-                .adsb_decoder
-                .as_ref()
-                .map(|d| d.preambles_detected())
-                .unwrap_or(0);
-            let sr = self.shared.read().sample_rate_sps;
-
-            let (start_req, stop_req, tune_freq, window_closed) = {
-                let mut map = self.adsb_map.lock();
-
-                // Push current state so the map window can display it
-                map.decoder_running = decoder_running;
-                map.frame_count = frame_count;
-                map.crc_ok_count = crc_ok_count;
-                map.preamble_count = preamble_count;
-                map.sample_rate_ok = sr >= 2_000_000;
-                map.adsb_start_pending = self.adsb_start_pending;
-
-                let window_closed = if !map.viewport_open {
-                    self.show_adsb_map = false;
-                    map.viewport_open = true; // reset for next open
-                    true
-                } else {
-                    false
-                };
-                if map.set_home_pending {
-                    map.set_home_pending = false;
-                    self.config.ui.home_lat = map.center_lat();
-                    self.config.ui.home_lon = map.center_lon();
-                    self.config_dirty = true;
-                }
-                let (lat, lon, zoom) = (map.center_lat(), map.center_lon(), map.zoom_ppd());
-                if self.show_adsb_map
-                    && ((self.config.ui.adsb_map_lat - lat).abs() > 0.001
-                        || (self.config.ui.adsb_map_lon - lon).abs() > 0.001
-                        || (self.config.ui.adsb_map_zoom - zoom).abs() > 0.1)
-                {
-                    self.config.ui.adsb_map_lat = lat;
-                    self.config.ui.adsb_map_lon = lon;
-                    self.config.ui.adsb_map_zoom = zoom;
-                    self.config_dirty = true;
-                }
-
-                // Consume action requests set by the map's toolbar buttons
-                (
-                    std::mem::take(&mut map.start_requested),
-                    std::mem::take(&mut map.stop_requested),
-                    map.tune_frequency_hz.take(),
-                    window_closed,
-                )
-            };
-
-            // Window closed by user — stop decoder, return to listen
-            if window_closed {
-                self.adsb_stop_decoder();
-                self.atc_mode_active = false;
-            }
-
-            // ATC tune requested: set frequency + AM mode (or return to ADS-B)
-            if let Some(freq_hz) = tune_freq {
-                use rusty_sdr_core::signal_path::{DemodMode, ReceiverCmd};
-                use rusty_sdr_core::signal_path::HardwareCommand;
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq_hz).into());
-                if freq_hz == 1_090_000_000 {
-                    // Returning to ADS-B — switch back to ADS-B antenna (B = port 1)
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(1).into());
-                    // Re-mute if ADS-B owns the mute
-                    if self.adsb_did_mute && !self.muted {
-                        self.muted = true;
-                        let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
-                    }
-                    self.atc_mode_active = false;
-                } else {
-                    let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(DemodMode::Am).into());
-                    // Switch to ML-31 antenna (C = port 2) — optimised for VHF aviation band
-                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(2).into());
-                    // Unmute so the user can hear ATC audio
-                    if self.adsb_did_mute && self.muted {
-                        self.muted = false;
-                        let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(false).into());
-                    }
-                    self.config.ui.frequency_hz = freq_hz;
-                    self.frequency_widget = crate::frequency::FrequencyWidget::new(freq_hz);
-                    self.config_dirty = true;
-                    self.atc_mode_active = true;
-                }
-            }
-
-            // Deferred start: fires each frame until the hardware reaches ≥ 2 Msps
-            if self.adsb_start_pending && sr >= 2_000_000 {
-                self.adsb_start_pending = false;
-                self.adsb_start_decoder();
-            }
-
-            // Start requested by map toolbar
-            if start_req && !decoder_running && !self.adsb_start_pending {
-                self.adsb_start_sequence();
-            }
-
-            // Stop requested by map toolbar
-            if stop_req {
-                self.adsb_stop_decoder();
-            }
-        }
-        if self.show_adsb_map {
-            self.config.ui.show_adsb_map = true;
-            let map_arc = std::sync::Arc::clone(&self.adsb_map);
-            let store_arc = std::sync::Arc::clone(&self.adsb_store);
-            let home_lat = self.config.ui.home_lat;
-            let home_lon = self.config.ui.home_lon;
-            let atc_mode_active = self.atc_mode_active;
-            ctx.show_viewport_deferred(
-                egui::ViewportId::from_hash_of("adsb_map"),
-                egui::ViewportBuilder::default()
-                    .with_title("✈  ADS-B Aircraft Map")
-                    .with_inner_size([900.0, 560.0])
-                    .with_min_inner_size([600.0, 400.0]),
-                move |ctx, _class| {
-                    // Exclude Mode-S-only aircraft (DF11/DF5/DF21 transponder replies with
-                    // no ADS-B data).  They remain in the store so that a later DF17/18
-                    // frame can immediately enrich them, but showing bare ICAO addresses
-                    // with no position or callsign just clutters the list.
-                    let aircraft: Vec<_> = store_arc.lock().aircraft().into_iter()
-                        .filter(|a| !a.mode_s_only)
-                        .cloned().collect();
-                    let mut map = map_arc.lock();
-                    let mut open = true;
-                    map.show(ctx, &mut open, &aircraft, home_lat, home_lon, atc_mode_active);
-                    if !open {
-                        map.viewport_open = false;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                },
-            );
-        } else if self.config.ui.show_adsb_map {
-            self.config.ui.show_adsb_map = false;
-            self.config_dirty = true;
-        }
-
-        // ── Satellite map window ──────────────────────────────────────────────
-        {
-            let map = self.sat_map.lock();
-            if !map.viewport_open {
-                drop(map);
-                self.show_sat_map = false;
-                self.sat_map.lock().viewport_open = true;
-                // Window was closed by user — stop decoder, return to listen
-                self.orbcomm_stop_decoder();
-            } else if self.config.ui.show_sat_map != self.show_sat_map {
-                self.config.ui.show_sat_map = self.show_sat_map;
-                self.config_dirty = true;
-            }
-        }
-        if self.show_sat_map {
-            self.config.ui.show_sat_map = true;
-            let map_arc = std::sync::Arc::clone(&self.sat_map);
-            let home_lat = self.config.ui.home_lat;
-            let home_lon = self.config.ui.home_lon;
-            // Forward decoded NORAD IDs for flash effect + consume tune request.
-            let sat_tune_freq = {
-                let mut map = self.sat_map.lock();
-                for entry in &self.orbcomm_log {
-                    if let rusty_sdr_orbcomm::parser::PacketType::SatelliteTelemetry { sat_id, .. } =
-                        entry.packet.packet_type
-                    {
-                        if let Some(norad) = rusty_sdr_tle::orbcomm_norad_id(sat_id) {
-                            map.flash_norad_ids.push(norad);
-                        }
-                    }
-                }
-                map.tune_frequency_hz.take()
-            };
-            // Tune button: start hardware if needed, then tune to the requested frequency.
-            // For Orbcomm this is 137.500 MHz; for NOAA it's the satellite-specific APT freq.
-            if let Some(freq_hz) = sat_tune_freq {
-                if !self.shared.read().is_running {
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
-                }
-                self.apply_tune(freq_hz);
-            }
-            ctx.show_viewport_deferred(
-                egui::ViewportId::from_hash_of("sat_map"),
-                egui::ViewportBuilder::default()
-                    .with_title("🛰  Satellite Map")
-                    .with_inner_size([900.0, 560.0])
-                    .with_min_inner_size([600.0, 400.0]),
-                move |ctx, _class| {
-                    let mut map = map_arc.lock();
-                    let mut open = true;
-                    map.show(ctx, &mut open, home_lat, home_lon);
-                    if !open {
-                        map.viewport_open = false;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                },
-            );
-        } else if self.config.ui.show_sat_map {
-            self.config.ui.show_sat_map = false;
-            self.config_dirty = true;
-        }
-
-        // ── NOAA APT window ───────────────────────────────────────────────────
-        {
-            let (window_closed, tune_freq) = {
-                let mut w = self.noaa_apt.lock();
-                let closed = if !w.viewport_open {
-                    self.show_noaa_apt = false;
-                    w.viewport_open = true; // reset for next open
-                    true
-                } else {
-                    false
-                };
-                let tune = w.tune_frequency_hz.take();
-                (closed, tune)
-            };
-
-            if window_closed {
-                // Clear the audio tap and unmute when the window closes
-                self.shared.write().noaa_audio_tx = None;
-                if !self.muted {
-                    let _ = self.cmd_tx.try_send(
-                        rusty_sdr_core::signal_path::ReceiverCmd::SetMuted(false).into(),
-                    );
-                }
-                self.noaa_apt.lock().is_active = false;
-            }
-
-            // NOAA tune requested: set frequency + WFM mode + antenna C (ML-31) + mute speakers
-            if let Some(freq_hz) = tune_freq {
-                use rusty_sdr_core::signal_path::{DemodMode, HardwareCommand, ReceiverCmd};
-                if !self.shared.read().is_running {
-                    let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
-                }
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq_hz).into());
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(DemodMode::Wbfm).into());
-                let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(2).into());
-                // Mute speakers — APT subcarrier audio is not useful to hear
-                let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
-                // Wire audio to the NOAA decoder
-                let (noaa_tx, noaa_rx) = crossbeam_channel::bounded(32);
-                self.shared.write().noaa_audio_tx = Some(noaa_tx);
-                self.noaa_apt.lock().set_audio_rx(noaa_rx);
-                self.config.ui.frequency_hz = freq_hz;
-                self.frequency_widget = crate::frequency::FrequencyWidget::new(freq_hz);
-                self.config_dirty = true;
-                self.noaa_apt.lock().is_active = true;
-            }
-
-            // Drain audio into the NOAA decoder each frame when active
-            if self.noaa_apt.lock().is_active {
-                self.noaa_apt.lock().drain_audio();
-            }
-        }
-        if self.show_noaa_apt {
-            let noaa_arc = std::sync::Arc::clone(&self.noaa_apt);
-            let home_lat = self.config.ui.home_lat;
-            let home_lon = self.config.ui.home_lon;
-            ctx.show_viewport_deferred(
-                egui::ViewportId::from_hash_of("noaa_apt"),
-                egui::ViewportBuilder::default()
-                    .with_title("NOAA APT Weather Satellite")
-                    .with_inner_size([1000.0, 600.0])
-                    .with_min_inner_size([700.0, 400.0]),
-                move |ctx, _class| {
-                    let mut w = noaa_arc.lock();
-                    let mut open = true;
-                    w.show(ctx, &mut open, home_lat, home_lon);
-                    if !open {
-                        w.viewport_open = false;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 },

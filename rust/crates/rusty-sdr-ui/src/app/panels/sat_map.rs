@@ -191,6 +191,7 @@ pub struct SatMapWindow {
 
     // ── Public state written by main app ─────────────────────────────────────
     /// Set to false when OS viewport close button is pressed.
+    #[allow(dead_code)]
     pub viewport_open: bool,
     /// NORAD IDs of satellites that decoded a frame this frame (flash effect).
     pub flash_norad_ids: Vec<u32>,
@@ -232,12 +233,39 @@ impl SatMapWindow {
     }
 
     /// Show the satellite map window. Call each frame from the deferred viewport.
+    /// Embedded: renders sat map into the given ui area (Satellite view center panel).
+    pub fn show_embedded(&mut self, outer_ui: &mut egui::Ui, home_lat: f64, home_lon: f64) {
+        outer_ui.ctx().request_repaint_after(Duration::from_millis(500));
+        self.update_state(home_lat, home_lon);
+        let frame = Frame::none()
+            .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
+            .inner_margin(egui::Margin::ZERO);
+        egui::CentralPanel::default()
+            .frame(frame)
+            .show_inside(outer_ui, |ui| {
+                self.show_content(ui, home_lat, home_lon);
+            });
+    }
+
+    #[allow(dead_code)]
     pub fn show(&mut self, ctx: &egui::Context, open: &mut bool, home_lat: f64, home_lon: f64) {
         if ctx.input(|i| i.viewport().close_requested()) {
             *open = false;
         }
         ctx.request_repaint_after(Duration::from_millis(500));
+        self.update_state(home_lat, home_lon);
+        egui::CentralPanel::default()
+            .frame(
+                Frame::none()
+                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
+                    .inner_margin(egui::Margin::ZERO),
+            )
+            .show(ctx, |ui| {
+                self.show_content(ui, home_lat, home_lon);
+            });
+    }
 
+    fn update_state(&mut self, home_lat: f64, home_lon: f64) {
         // ── Drain TLE results ─────────────────────────────────────────────────
         if let Ok(result) = self.tle_rx.try_recv() {
             self.tles.clear();
@@ -293,27 +321,20 @@ impl SatMapWindow {
                 }
             }
         }
+    }
 
-        egui::CentralPanel::default()
-            .frame(
-                Frame::none()
-                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
-                    .inner_margin(egui::Margin::ZERO),
-            )
-            .show(ctx, |ui| {
-                let avail = ui.available_rect_before_wrap();
-                let map_rect = Rect::from_min_max(
-                    avail.min,
-                    Pos2::new(avail.max.x - PANEL_WIDTH, avail.max.y),
-                );
-                let panel_rect = Rect::from_min_max(
-                    Pos2::new(avail.max.x - PANEL_WIDTH, avail.min.y),
-                    avail.max,
-                );
-
-                self.draw_map(ui, map_rect, home_lat, home_lon);
-                self.draw_sidebar(ui, panel_rect);
-            });
+    fn show_content(&mut self, ui: &mut egui::Ui, home_lat: f64, home_lon: f64) {
+        let avail = ui.available_rect_before_wrap();
+        let map_rect = Rect::from_min_max(
+            avail.min,
+            Pos2::new(avail.max.x - PANEL_WIDTH, avail.max.y),
+        );
+        let panel_rect = Rect::from_min_max(
+            Pos2::new(avail.max.x - PANEL_WIDTH, avail.min.y),
+            avail.max,
+        );
+        self.draw_map(ui, map_rect, home_lat, home_lon);
+        self.draw_sidebar(ui, panel_rect);
     }
 
     // ── Map rendering ─────────────────────────────────────────────────────────

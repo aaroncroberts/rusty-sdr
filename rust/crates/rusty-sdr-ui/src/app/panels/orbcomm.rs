@@ -15,6 +15,7 @@ use crate::theme;
 ///
 /// Orbcomm OG2 satellites use IDs 0x01-0x17 (1-23).  OG1 spacecraft are
 /// effectively decommissioned so we map only the common OG2 IDs.
+#[allow(dead_code)]
 fn sat_name(id: u8) -> Option<&'static str> {
     match id {
         1  => Some("OG2-01"),
@@ -40,6 +41,7 @@ fn sat_name(id: u8) -> Option<&'static str> {
 }
 
 /// Format a UTC epoch (seconds since 1970-01-01) as `HH:MM:SS UTC`.
+#[allow(dead_code)]
 fn format_utc(secs: u32) -> String {
     let h = (secs / 3600) % 24;
     let m = (secs % 3600) / 60;
@@ -49,6 +51,7 @@ fn format_utc(secs: u32) -> String {
 
 impl SdrApp {
     /// Render the ORBCOMM section in the right panel.
+    #[allow(dead_code)]
     pub(in crate::app) fn orbcomm_section(&mut self, ui: &mut Ui) {
         // ── Section header ────────────────────────────────────────────────────
         ui.label(RichText::new("ORBCOMM").color(theme::TEXT_MUTED).small());
@@ -94,14 +97,14 @@ impl SdrApp {
                 {
                     self.orbcomm_log.clear();
                 }
-                // Map toggle
-                let map_lbl = if self.show_sat_map { "^ Map" } else { "🛰 Map" };
+                // Map toggle — switch to satellite view
+                let map_lbl = if self.active_view == crate::app::ActiveView::Satellite { "^ Map" } else { "🛰 Map" };
                 if ui
                     .small_button(RichText::new(map_lbl).small())
                     .on_hover_text("Show Orbcomm satellite map with ground tracks and pass schedule")
                     .clicked()
                 {
-                    self.show_sat_map = !self.show_sat_map;
+                    self.active_view = crate::app::ActiveView::Satellite;
                 }
             });
         });

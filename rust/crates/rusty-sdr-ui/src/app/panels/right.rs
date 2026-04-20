@@ -945,6 +945,7 @@ impl SdrApp {
 
     /// Full Orbcomm start sequence: ensure hardware running, tune to 137.500 MHz,
     /// then start the decoder.
+    #[allow(dead_code)]
     pub(in crate::app) fn orbcomm_start_sequence(&mut self) {
         if !self.shared.read().is_running {
             let _ = self.cmd_tx.try_send(SignalPathCommand::Start);

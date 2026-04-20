@@ -82,6 +82,7 @@ pub struct NoaaAptWindow {
     /// Save-PNG status message shown briefly after saving.
     save_status: Option<(String, Instant)>,
     /// Set to false when the OS viewport close button is pressed.
+    #[allow(dead_code)]
     pub viewport_open: bool,
 }
 
@@ -138,6 +139,23 @@ impl NoaaAptWindow {
     }
 
     /// Show the NOAA APT window. Call each frame from the deferred viewport.
+    /// Embedded: renders the NOAA APT panel into `outer_ui` (Satellite view sidebar / center).
+    pub fn show_embedded(&mut self, outer_ui: &mut egui::Ui, home_lat: f64, home_lon: f64) {
+        let ctx = outer_ui.ctx().clone();
+        ctx.request_repaint_after(Duration::from_millis(500));
+        self.update_state(&ctx, home_lat, home_lon);
+        egui::CentralPanel::default()
+            .frame(
+                Frame::none()
+                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
+                    .inner_margin(egui::Margin::ZERO),
+            )
+            .show_inside(outer_ui, |ui| {
+                self.show_content(ui, &ctx, home_lat, home_lon);
+            });
+    }
+
+    #[allow(dead_code)]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -149,12 +167,23 @@ impl NoaaAptWindow {
             *open = false;
         }
         ctx.request_repaint_after(Duration::from_millis(500));
+        self.update_state(ctx, home_lat, home_lon);
+        egui::CentralPanel::default()
+            .frame(
+                Frame::none()
+                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
+                    .inner_margin(egui::Margin::ZERO),
+            )
+            .show(ctx, |ui| {
+                self.show_content(ui, ctx, home_lat, home_lon);
+            });
+    }
 
+    fn update_state(&mut self, ctx: &egui::Context, home_lat: f64, home_lon: f64) {
         // ── Drain TLE results ─────────────────────────────────────────────────
         if let Ok(result) = self.tle_rx.try_recv() {
             self.tles = result.0;
             self.tle_loading = false;
-            // Trigger pass recompute on next frame
             for sd in &mut self.sat_passes {
                 sd.last_update = None;
             }
@@ -175,7 +204,6 @@ impl NoaaAptWindow {
                 .map(|t| t.elapsed() > Duration::from_secs(60))
                 .unwrap_or(true);
             if needs_update {
-                // Find the TLE for this NORAD ID
                 if let Some(tle) = self.tles.iter().find(|t| t.norad_id == sat_info.norad_id) {
                     let predictor = PassPredictor::new(tle.clone(), home_lat, home_lon);
                     sd.passes = predictor.predict(now, Duration::from_secs(24 * 3600), 3);
@@ -193,30 +221,21 @@ impl NoaaAptWindow {
             self.texture_rebuilt_at = line_count;
             self.texture_dirty = false;
         }
+    }
 
-        // ── Render UI ─────────────────────────────────────────────────────────
-        egui::CentralPanel::default()
-            .frame(
-                Frame::none()
-                    .fill(Color32::from_rgb(0x10, 0x14, 0x1A))
-                    .inner_margin(egui::Margin::ZERO),
-            )
-            .show(ctx, |ui| {
-                // Split: left sidebar + right image area
-                let avail = ui.available_rect_before_wrap();
-                let sidebar_width = 220.0_f32;
-                let sidebar_rect = egui::Rect::from_min_size(
-                    avail.min,
-                    egui::Vec2::new(sidebar_width, avail.height()),
-                );
-                let image_rect = egui::Rect::from_min_max(
-                    egui::Pos2::new(avail.min.x + sidebar_width, avail.min.y),
-                    avail.max,
-                );
-
-                self.draw_sidebar(ui, sidebar_rect, home_lat, home_lon);
-                self.draw_image_area(ui, image_rect, ctx);
-            });
+    fn show_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, home_lat: f64, home_lon: f64) {
+        let avail = ui.available_rect_before_wrap();
+        let sidebar_width = 220.0_f32;
+        let sidebar_rect = egui::Rect::from_min_size(
+            avail.min,
+            egui::Vec2::new(sidebar_width, avail.height()),
+        );
+        let image_rect = egui::Rect::from_min_max(
+            egui::Pos2::new(avail.min.x + sidebar_width, avail.min.y),
+            avail.max,
+        );
+        self.draw_sidebar(ui, sidebar_rect, home_lat, home_lon);
+        self.draw_image_area(ui, image_rect, ctx);
     }
 
     // ── Sidebar ───────────────────────────────────────────────────────────────
@@ -620,7 +639,7 @@ impl NoaaAptWindow {
         let filename = format!("noaa_apt_{now}.png");
 
         let save_dir = dirs::picture_dir()
-            .or_else(|| dirs::home_dir())
+            .or_else(dirs::home_dir)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let path = save_dir.join(&filename);
 
