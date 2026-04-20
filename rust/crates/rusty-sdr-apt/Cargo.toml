@@ -1,0 +1,12 @@
+[package]
+name = "rusty-sdr-apt"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+image = { version = "0.25", features = ["png"] }
+dirs = { workspace = true }

@@ -28,6 +28,31 @@ pub use predictor::{PassEvent, PassPredictor};
 pub const CELESTRAK_ORBCOMM_URL: &str =
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=orbcomm&FORMAT=tle";
 
+/// Celestrak URL for weather satellites (includes NOAA-15/18/19).
+pub const CELESTRAK_WEATHER_URL: &str =
+    "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle";
+
+/// NOAA APT satellites with their frequencies.
+pub const NOAA_APT_SATS: &[NoaaSat] = &[
+    NoaaSat { name: "NOAA 15", norad_id: 25338, freq_hz: 137_620_000 },
+    NoaaSat { name: "NOAA 18", norad_id: 28654, freq_hz: 137_912_500 },
+    NoaaSat { name: "NOAA 19", norad_id: 33591, freq_hz: 137_100_000 },
+];
+
+/// A NOAA APT satellite descriptor.
+#[derive(Debug, Clone, Copy)]
+pub struct NoaaSat {
+    pub name: &'static str,
+    pub norad_id: u32,
+    pub freq_hz: u64,
+}
+
+/// Fetch or load cached NOAA weather satellite TLEs.
+/// Uses the same 24-hour disk cache as the Orbcomm TLE fetch.
+pub fn fetch_noaa_tles() -> Vec<TleEntry> {
+    cache::fetch_from_url(CELESTRAK_WEATHER_URL, "weather.tle")
+}
+
 /// Map an Orbcomm telemetry `sat_id` byte to a NORAD catalog number.
 ///
 /// Orbcomm OG2 satellites use IDs 1-18 in their beacon frames.  The mapping

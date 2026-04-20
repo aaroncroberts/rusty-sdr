@@ -12,6 +12,7 @@ rusty-sdr-adsb = { path = "../rusty-sdr-adsb" }
 rusty-sdr-orbcomm = { path = "../rusty-sdr-orbcomm" }
 rusty-sdr-tle = { path = "../rusty-sdr-tle" }
 rusty-sdr-atc-db = { path = "../rusty-sdr-atc-db" }
+rusty-sdr-apt = { path = "../rusty-sdr-apt" }
 num-complex = { workspace = true }
 rusty-sdr-midi = { path = "../rusty-sdr-midi" }
 rusty-sdr-recorder = { path = "../rusty-sdr-recorder" }

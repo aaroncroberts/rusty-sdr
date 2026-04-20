@@ -238,6 +238,32 @@ impl SdrApp {
                     }
                 }
             });
+
+            // ── NOAA APT button ───────────────────────────────────────────────
+            ui.add_space(4.0);
+            {
+                let noaa_active = self.show_noaa_apt;
+                let noaa_accent = Color32::from_rgb(0x73, 0xC9, 0x91);
+                let noaa_color = if noaa_active { noaa_accent } else { theme::TEXT_MUTED };
+                let noaa_fill = if noaa_active { Color32::from_rgb(0x0A, 0x1E, 0x14) } else { theme::WIDGET_BG };
+                let noaa_stroke = Stroke::new(1.5, if noaa_active { noaa_accent } else { theme::BORDER });
+                let full_w = ui.available_width() - 4.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
+                    if ui
+                        .add_sized(Vec2::new(full_w, 28.0),
+                            egui::Button::new(RichText::new("NOAA APT").small().strong().color(noaa_color))
+                                .fill(noaa_fill).stroke(noaa_stroke))
+                        .on_hover_text("Open NOAA APT pass schedule and weather image decoder")
+                        .clicked()
+                    {
+                        self.show_noaa_apt = !self.show_noaa_apt;
+                        if self.show_noaa_apt {
+                            self.noaa_apt.lock().viewport_open = true;
+                        }
+                    }
+                });
+            }
         }
 
         // ── FM Band Scan ──────────────────────────────────────────────────────

@@ -200,6 +200,12 @@ pub struct SdrApp {
     /// True when the SDR is tuned to an ATC frequency via the ADS-B map panel.
     /// Controls visibility of the "Back to ADS-B" toolbar button.
     pub atc_mode_active: bool,
+
+    // ── NOAA APT ──────────────────────────────────────────────────────────────
+    /// NOAA APT weather satellite pass viewer + image decoder window.
+    noaa_apt: std::sync::Arc<parking_lot::Mutex<panels::noaa_apt::NoaaAptWindow>>,
+    /// Whether the NOAA APT window is open.
+    show_noaa_apt: bool,
 }
 
 impl SdrApp {
@@ -336,6 +342,10 @@ impl SdrApp {
             )),
             show_sat_map,
             atc_mode_active: false,
+            noaa_apt: std::sync::Arc::new(parking_lot::Mutex::new(
+                panels::noaa_apt::NoaaAptWindow::new(),
+            )),
+            show_noaa_apt: false,
         }
     }
 }
@@ -850,6 +860,64 @@ impl eframe::App for SdrApp {
         } else if self.config.ui.show_sat_map {
             self.config.ui.show_sat_map = false;
             self.config_dirty = true;
+        }
+
+        // ── NOAA APT window ───────────────────────────────────────────────────
+        {
+            let (window_closed, tune_freq) = {
+                let mut w = self.noaa_apt.lock();
+                let closed = if !w.viewport_open {
+                    self.show_noaa_apt = false;
+                    w.viewport_open = true; // reset for next open
+                    true
+                } else {
+                    false
+                };
+                let tune = w.tune_frequency_hz.take();
+                (closed, tune)
+            };
+
+            if window_closed {
+                // Mark decoder inactive when window is closed
+                self.noaa_apt.lock().is_active = false;
+            }
+
+            // NOAA tune requested: set frequency + WFM mode + antenna C (ML-31)
+            if let Some(freq_hz) = tune_freq {
+                use rusty_sdr_core::signal_path::{DemodMode, HardwareCommand, ReceiverCmd};
+                if !self.shared.read().is_running {
+                    let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
+                }
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq_hz).into());
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(DemodMode::Wbfm).into());
+                // Switch to ML-31 antenna (port C = 2)
+                let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(2).into());
+                self.config.ui.frequency_hz = freq_hz;
+                self.frequency_widget = crate::frequency::FrequencyWidget::new(freq_hz);
+                self.config_dirty = true;
+                self.noaa_apt.lock().is_active = true;
+            }
+        }
+        if self.show_noaa_apt {
+            let noaa_arc = std::sync::Arc::clone(&self.noaa_apt);
+            let home_lat = self.config.ui.home_lat;
+            let home_lon = self.config.ui.home_lon;
+            ctx.show_viewport_deferred(
+                egui::ViewportId::from_hash_of("noaa_apt"),
+                egui::ViewportBuilder::default()
+                    .with_title("NOAA APT Weather Satellite")
+                    .with_inner_size([1000.0, 600.0])
+                    .with_min_inner_size([700.0, 400.0]),
+                move |ctx, _class| {
+                    let mut w = noaa_arc.lock();
+                    let mut open = true;
+                    w.show(ctx, &mut open, home_lat, home_lon);
+                    if !open {
+                        w.viewport_open = false;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                },
+            );
         }
 
         // ── Operators Handbook window ─────────────────────────────────────────
