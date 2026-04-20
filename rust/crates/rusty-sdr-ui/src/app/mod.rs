@@ -713,9 +713,12 @@ impl eframe::App for SdrApp {
             // ATC tune requested: set frequency + AM mode (or return to ADS-B)
             if let Some(freq_hz) = tune_freq {
                 use rusty_sdr_core::signal_path::{DemodMode, ReceiverCmd};
+                use rusty_sdr_core::signal_path::HardwareCommand;
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq_hz).into());
                 if freq_hz == 1_090_000_000 {
-                    // Returning to ADS-B — re-mute if ADS-B owns the mute
+                    // Returning to ADS-B — switch back to ADS-B antenna (B = port 1)
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(1).into());
+                    // Re-mute if ADS-B owns the mute
                     if self.adsb_did_mute && !self.muted {
                         self.muted = true;
                         let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
@@ -723,6 +726,8 @@ impl eframe::App for SdrApp {
                     self.atc_mode_active = false;
                 } else {
                     let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(DemodMode::Am).into());
+                    // Switch to ML-31 antenna (C = port 2) — optimised for VHF aviation band
+                    let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(2).into());
                     // Unmute so the user can hear ATC audio
                     if self.adsb_did_mute && self.muted {
                         self.muted = false;
