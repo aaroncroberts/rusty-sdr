@@ -70,6 +70,22 @@ impl WaterfallWidget {
         }
     }
 
+    /// Create with a custom row height and colormap — used for mini signal strips
+    /// that show fewer rows of history in a compact display area.
+    pub fn new_with_height_colormap(width: usize, db_range: (f32, f32), height_rows: usize) -> Self {
+        let height_rows = height_rows.max(4);
+        let pixels = vec![0u8; width * height_rows * 4];
+        let colormap = build_simple_colormap();
+        Self {
+            pixels,
+            width,
+            height: height_rows,
+            texture: None,
+            db_range,
+            colormap,
+        }
+    }
+
     /// Push a new FFT row at the top, shifting all existing rows down.
     ///
     /// `zoom_level` (0.0 < z ≤ 1.0) selects which portion of the FFT to render.

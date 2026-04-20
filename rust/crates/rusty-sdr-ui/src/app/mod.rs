@@ -33,8 +33,10 @@ use crate::{
 
 mod midi_mapper;
 mod panels;
+pub mod view;
 
 use midi_mapper::MidiMapperWindow;
+pub use view::ActiveView;
 
 pub struct SdrApp {
     config: AppConfig,
@@ -206,6 +208,12 @@ pub struct SdrApp {
     noaa_apt: std::sync::Arc<parking_lot::Mutex<panels::noaa_apt::NoaaAptWindow>>,
     /// Whether the NOAA APT window is open.
     show_noaa_apt: bool,
+
+    // ── View system ───────────────────────────────────────────────────────────
+    /// Which top-level view is currently displayed (Listen / Aircraft / Satellite).
+    pub active_view: ActiveView,
+    /// Compact spectrum + waterfall strip shown at the bottom of Aircraft and Satellite views.
+    mini_signal: panels::mini_signal::MiniSignalStrip,
 }
 
 impl SdrApp {
@@ -346,6 +354,8 @@ impl SdrApp {
                 panels::noaa_apt::NoaaAptWindow::new(),
             )),
             show_noaa_apt: false,
+            active_view: ActiveView::Listen,
+            mini_signal: panels::mini_signal::MiniSignalStrip::new((fft_floor, fft_ceil)),
         }
     }
 }
@@ -548,6 +558,29 @@ impl eframe::App for SdrApp {
             )
             .show(ctx, |ui| self.status_bar(ui));
 
+        // ── View tab bar ──────────────────────────────────────────────────────
+        egui::TopBottomPanel::top("view_tab_bar")
+            .exact_height(32.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::PANEL_BG)
+                    .inner_margin(egui::Margin::symmetric(8.0, 4.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    for view in [ActiveView::Listen, ActiveView::Aircraft, ActiveView::Satellite] {
+                        let selected = self.active_view == view;
+                        let label = egui::RichText::new(view.label())
+                            .color(if selected { theme::ACCENT } else { theme::TEXT_MUTED });
+                        let btn = egui::SelectableLabel::new(selected, label);
+                        if ui.add(btn).clicked() {
+                            self.active_view = view;
+                        }
+                        ui.add_space(8.0);
+                    }
+                });
+            });
+
         // Left panel (scrollable so controls are always reachable)
         egui::SidePanel::left("left_panel")
             .resizable(true)
@@ -586,14 +619,18 @@ impl eframe::App for SdrApp {
                     });
             });
 
-        // Center spectrum + waterfall
+        // Center area — content depends on active view
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
                     .fill(theme::BG)
                     .inner_margin(egui::Margin::same(0.0)),
             )
-            .show(ctx, |ui| self.center_panel(ui));
+            .show(ctx, |ui| match self.active_view {
+                ActiveView::Listen => self.center_panel(ui),
+                ActiveView::Aircraft => self.aircraft_view_center(ui),
+                ActiveView::Satellite => self.satellite_view_center(ui),
+            });
 
         // ── Help panel (floating window) ──────────────────────────────────────
         let mut help_open = self.shared.read().help_panel_open;

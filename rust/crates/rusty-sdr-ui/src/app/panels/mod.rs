@@ -15,6 +15,8 @@ mod left_device;
 pub(super) mod right;
 pub(super) mod settings;
 pub(super) mod status;
+pub(super) mod views;
+pub(super) mod mini_signal;
 
 use egui::{RichText, Ui};
 
