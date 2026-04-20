@@ -563,12 +563,16 @@ impl AdsbMapWindow {
                                 .inner_margin(Margin::same(10.0)),
                         )
                         .show_inside(ui, |ui| {
-                            close_detail = show_aircraft_detail(
-                                ui, ac, selected_flight_info,
-                                &mut self.flight_info_expanded,
-                                &self.selected_atc_freqs,
-                                &mut self.tune_frequency_hz,
-                            );
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    close_detail = show_aircraft_detail(
+                                        ui, ac, selected_flight_info,
+                                        &mut self.flight_info_expanded,
+                                        &self.selected_atc_freqs,
+                                        &mut self.tune_frequency_hz,
+                                    );
+                                });
                         });
                 }
                 if close_detail {
