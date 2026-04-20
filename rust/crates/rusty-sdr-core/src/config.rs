@@ -48,6 +48,7 @@ fn default_bookmarks() -> Vec<BookmarkConfig> {
     vec![
         // ── General / Antenna A ────────────────────────────────────────────────
         BookmarkConfig::new("BBC Radio 4 — 93.5 MHz", 93_500_000, "Wbfm"),
+        BookmarkConfig::new("WCLV 90.3 — Classical (Cleveland OH)", 90_300_000, "Wbfm"),
         BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm"),
         // NOAA Weather Radio KEC93 – Cleveland/NE Ohio (162.550 MHz, NFM 25 kHz)
         BookmarkConfig::new("NOAA Weather — KEC93", 162_550_000, "Nfm")

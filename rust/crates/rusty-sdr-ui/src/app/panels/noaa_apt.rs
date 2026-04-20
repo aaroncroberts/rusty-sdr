@@ -123,6 +123,26 @@ pub struct NoaaAptWindow {
     gallery: Vec<GalleryEntry>,
     /// Set by `deactivate()` when there are image lines to save; consumed next frame by `update_state`.
     pending_gallery_save: bool,
+
+    // ── Full image viewer ─────────────────────────────────────────────────────
+    /// True when the full-panel viewer overlay is open.
+    viewer_open: bool,
+    /// Which gallery index is being viewed (None = live image).
+    viewer_gallery_idx: Option<usize>,
+    /// Viewer pan offset in pixels (image-space origin).
+    viewer_pan: egui::Vec2,
+    /// Viewer zoom (1.0 = fit-to-panel).
+    viewer_zoom: f32,
+    /// Channel display mode: 0 = side-by-side, 1 = Ch-A only, 2 = Ch-B only.
+    viewer_channel: u8,
+    /// Histogram equalization enabled.
+    viewer_hist_eq: bool,
+    /// False-color composite enabled.
+    viewer_false_color: bool,
+    /// Post-processed texture for the viewer (rebuilt when settings change).
+    viewer_texture: Option<TextureHandle>,
+    /// True when `viewer_texture` needs to be rebuilt.
+    viewer_dirty: bool,
 }
 
 impl NoaaAptWindow {
@@ -152,6 +172,15 @@ impl NoaaAptWindow {
             auto_tune_armed: false,
             gallery: Vec::new(),
             pending_gallery_save: false,
+            viewer_open: false,
+            viewer_gallery_idx: None,
+            viewer_pan: egui::Vec2::ZERO,
+            viewer_zoom: 1.0,
+            viewer_channel: 0,
+            viewer_hist_eq: false,
+            viewer_false_color: false,
+            viewer_texture: None,
+            viewer_dirty: false,
         }
     }
 
