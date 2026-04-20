@@ -194,8 +194,22 @@ impl AircraftStore {
                     };
 
                     if let Some((lat, lon)) = global_pos {
-                        entry.lat = Some(lat);
-                        entry.lon = Some(lon);
+                        // Sanity-check the global decode against home position.
+                        // Global CPR can produce geographically impossible results
+                        // when frames arrive from noisy or ambiguous receptions.
+                        // Accept the result only if it is within a generous box
+                        // around home (≈2000 nm); reject silently and wait for
+                        // home-bootstrap on the next frame.
+                        let accepted = match (self.home_lat, self.home_lon) {
+                            (Some(hlat), Some(hlon)) => {
+                                (lat - hlat).abs() < 25.0 && (lon - hlon).abs() < 35.0
+                            }
+                            _ => true, // no home set: accept unconditionally
+                        };
+                        if accepted {
+                            entry.lat = Some(lat);
+                            entry.lon = Some(lon);
+                        }
                     } else if let (Some(hlat), Some(hlon)) = (self.home_lat, self.home_lon) {
                         // Bootstrap from home position: decode this single frame locally.
                         // Accept the result if it falls within ~350 nm of home (5° lat / 8° lon).

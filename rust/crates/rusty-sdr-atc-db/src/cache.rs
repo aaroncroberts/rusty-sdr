@@ -4,6 +4,7 @@
 //! stale cache is used so the app keeps working offline after first fetch.
 
 use std::fs;
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -45,7 +46,10 @@ fn fetch_csv(url: &str, filename: &str) -> String {
         .call()
     {
         Ok(resp) => {
-            if let Ok(text) = resp.into_string() {
+            // Use into_reader() to avoid ureq's 10 MiB into_string() cap.
+            // airports.csv is ~12 MiB, which exceeds that limit.
+            let mut text = String::new();
+            if resp.into_reader().read_to_string(&mut text).is_ok() {
                 if let Some(ref p) = cache_path {
                     let _ = ensure_parent(p).and_then(|_| fs::write(p, &text).ok());
                 }
