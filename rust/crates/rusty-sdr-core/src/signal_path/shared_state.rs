@@ -347,6 +347,12 @@ pub struct SharedState {
     pub scheduled_record_delay_secs: Option<u64>,
     /// Scheduled recording duration in seconds.
     pub scheduled_record_duration_secs: u32,
+    /// Optional audio tap for the NOAA APT decoder.
+    ///
+    /// When `Some`, the signal path sends each 48 kHz audio frame here in
+    /// addition to the speaker sink.  The sender is set by the UI when the
+    /// NOAA panel is active and cleared when it closes.
+    pub noaa_audio_tx: Option<crossbeam_channel::Sender<Vec<f32>>>,
     // ── Sub-structs ───────────────────────────────────────────────────
     pub hardware: HardwareState,
     pub demod: DemodState,

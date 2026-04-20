@@ -1104,6 +1104,11 @@ impl SignalPath {
                             let _ = tx.try_send(Arc::clone(&frame));
                         }
                     }
+                    // NOAA APT audio tap — send mono f32 samples when active.
+                    if let Some(ref tx) = shared_clone.read().noaa_audio_tx {
+                        let mono: Vec<f32> = frame.iter().map(|s| (s.left + s.right) * 0.5).collect();
+                        let _ = tx.try_send(mono);
+                    }
                 }
             }
 

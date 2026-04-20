@@ -878,11 +878,17 @@ impl eframe::App for SdrApp {
             };
 
             if window_closed {
-                // Mark decoder inactive when window is closed
+                // Clear the audio tap and unmute when the window closes
+                self.shared.write().noaa_audio_tx = None;
+                if !self.muted {
+                    let _ = self.cmd_tx.try_send(
+                        rusty_sdr_core::signal_path::ReceiverCmd::SetMuted(false).into(),
+                    );
+                }
                 self.noaa_apt.lock().is_active = false;
             }
 
-            // NOAA tune requested: set frequency + WFM mode + antenna C (ML-31)
+            // NOAA tune requested: set frequency + WFM mode + antenna C (ML-31) + mute speakers
             if let Some(freq_hz) = tune_freq {
                 use rusty_sdr_core::signal_path::{DemodMode, HardwareCommand, ReceiverCmd};
                 if !self.shared.read().is_running {
@@ -890,12 +896,22 @@ impl eframe::App for SdrApp {
                 }
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq_hz).into());
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(DemodMode::Wbfm).into());
-                // Switch to ML-31 antenna (port C = 2)
                 let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(2).into());
+                // Mute speakers — APT subcarrier audio is not useful to hear
+                let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
+                // Wire audio to the NOAA decoder
+                let (noaa_tx, noaa_rx) = crossbeam_channel::bounded(32);
+                self.shared.write().noaa_audio_tx = Some(noaa_tx);
+                self.noaa_apt.lock().set_audio_rx(noaa_rx);
                 self.config.ui.frequency_hz = freq_hz;
                 self.frequency_widget = crate::frequency::FrequencyWidget::new(freq_hz);
                 self.config_dirty = true;
                 self.noaa_apt.lock().is_active = true;
+            }
+
+            // Drain audio into the NOAA decoder each frame when active
+            if self.noaa_apt.lock().is_active {
+                self.noaa_apt.lock().drain_audio();
             }
         }
         if self.show_noaa_apt {

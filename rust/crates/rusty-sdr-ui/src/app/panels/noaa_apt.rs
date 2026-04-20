@@ -56,6 +56,8 @@ pub struct NoaaAptWindow {
     tle_tx: Sender<TleFetchResult>,
     tle_rx: Receiver<TleFetchResult>,
     tle_fetch_started: bool,
+    /// True while the TLE background fetch is in flight.
+    tle_loading: bool,
 
     // ── APT decoder ───────────────────────────────────────────────────────────
     decoder: rusty_sdr_apt::AptDecoder,
@@ -67,6 +69,8 @@ pub struct NoaaAptWindow {
     texture_dirty: bool,
     /// Line count at which the texture was last rebuilt.
     texture_rebuilt_at: usize,
+    /// Audio tap receiver — set by the main app when a NOAA frequency is tuned.
+    audio_rx: Option<crossbeam_channel::Receiver<Vec<f32>>>,
 
     // ── UI state ──────────────────────────────────────────────────────────────
     /// When set, the main app should tune to this frequency.
@@ -90,11 +94,13 @@ impl NoaaAptWindow {
             tle_tx,
             tle_rx,
             tle_fetch_started: false,
+            tle_loading: false,
             decoder: rusty_sdr_apt::AptDecoder::new(),
             image_lines: Vec::new(),
             image_texture: None,
             texture_dirty: false,
             texture_rebuilt_at: 0,
+            audio_rx: None,
             tune_frequency_hz: None,
             is_active: false,
             selected_sat: 0,
@@ -103,13 +109,22 @@ impl NoaaAptWindow {
         }
     }
 
-    /// Push audio samples into the decoder (called by the main app when active).
-    #[allow(dead_code)]
-    pub fn push_audio(&mut self, audio: &[f32]) {
-        let new_lines = self.decoder.push_audio(audio);
-        if !new_lines.is_empty() {
-            self.image_lines.extend(new_lines);
-            self.texture_dirty = true;
+    /// Set the audio receiver wired from the signal path.  Called by the main
+    /// app when a NOAA frequency is tuned; cleared when NOAA mode exits.
+    pub fn set_audio_rx(&mut self, rx: crossbeam_channel::Receiver<Vec<f32>>) {
+        self.audio_rx = Some(rx);
+    }
+
+    /// Drain buffered audio into the APT decoder.  Call once per frame when active.
+    pub fn drain_audio(&mut self) {
+        if let Some(ref rx) = self.audio_rx {
+            while let Ok(batch) = rx.try_recv() {
+                let new_lines = self.decoder.push_audio(&batch);
+                if !new_lines.is_empty() {
+                    self.image_lines.extend(new_lines);
+                    self.texture_dirty = true;
+                }
+            }
         }
     }
 
@@ -138,6 +153,7 @@ impl NoaaAptWindow {
         // ── Drain TLE results ─────────────────────────────────────────────────
         if let Ok(result) = self.tle_rx.try_recv() {
             self.tles = result.0;
+            self.tle_loading = false;
             // Trigger pass recompute on next frame
             for sd in &mut self.sat_passes {
                 sd.last_update = None;
@@ -147,6 +163,7 @@ impl NoaaAptWindow {
         // Start TLE fetch on first show.
         if !self.tle_fetch_started {
             self.tle_fetch_started = true;
+            self.tle_loading = true;
             fetch_tles_async(self.tle_tx.clone());
         }
 
@@ -255,7 +272,7 @@ impl NoaaAptWindow {
                         .unwrap_or_else(|_| "overhead".to_string())
                 })
                 .unwrap_or_else(|| {
-                    if self.tles.is_empty() { "Loading…".to_string() } else { "No pass in 24h".to_string() }
+                    if self.tle_loading { "Fetching TLEs…".to_string() } else { "No pass in 24h".to_string() }
                 });
 
             let max_el_str = passes.first()

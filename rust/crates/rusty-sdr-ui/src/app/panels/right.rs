@@ -690,12 +690,6 @@ impl SdrApp {
         ui.separator();
         ui.add_space(6.0);
 
-        // ── Orbcomm pass log ──────────────────────────────────────────────────
-        self.orbcomm_section(ui);
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(6.0);
-
         // ── Device Settings ───────────────────────────────────────────────────
         {
             let (dev_running, dev_demo) = {
