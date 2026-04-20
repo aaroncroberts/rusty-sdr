@@ -187,83 +187,16 @@ impl SdrApp {
                             .strong(),
                     );
                 }
-            });
-            ui.add_space(4.0);
-
-            ui.horizontal(|ui| {
-                ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
-                let btn_w = (ui.available_width() - 4.0) / 2.0 - 4.0;
-
-                // ── Aircraft button ───────────────────────────────────────────
-                let ac_lbl = if self.adsb_start_pending { "Aircraft…" } else { "Aircraft" };
-                let ac_color = if adsb_active { theme::ACCENT } else { theme::TEXT_MUTED };
-                let ac_fill = if adsb_active { Color32::from_rgb(0x0E, 0x20, 0x34) } else { theme::WIDGET_BG };
-                let ac_stroke = Stroke::new(1.5, if adsb_active { theme::ACCENT } else { theme::BORDER });
-                if ui
-                    .add_sized(Vec2::new(btn_w, 28.0),
-                        egui::Button::new(RichText::new(ac_lbl).small().strong().color(ac_color))
-                            .fill(ac_fill).stroke(ac_stroke))
-                    .on_hover_text("Tune 1090 MHz · start ADS-B decoder · open aircraft map")
-                    .clicked()
-                {
-                    if adsb_active {
-                        self.adsb_stop_decoder();
-                        self.show_adsb_map = false;
-                    } else {
-                        self.adsb_start_sequence();
-                        self.show_adsb_map = true;
-                    }
-                }
-
-                ui.add_space(4.0);
-
-                // ── Satellite button ──────────────────────────────────────────
-                let sat_accent = Color32::from_rgb(0x4C, 0xAF, 0xFF);
-                let sat_color = if orbcomm_active { sat_accent } else { theme::TEXT_MUTED };
-                let sat_fill = if orbcomm_active { Color32::from_rgb(0x0A, 0x18, 0x2C) } else { theme::WIDGET_BG };
-                let sat_stroke = Stroke::new(1.5, if orbcomm_active { sat_accent } else { theme::BORDER });
-                if ui
-                    .add_sized(Vec2::new(btn_w, 28.0),
-                        egui::Button::new(RichText::new("Satellite").small().strong().color(sat_color))
-                            .fill(sat_fill).stroke(sat_stroke))
-                    .on_hover_text("Tune 137.500 MHz · start Orbcomm decoder · open satellite map")
-                    .clicked()
-                {
-                    if orbcomm_active {
-                        self.orbcomm_stop_decoder();
-                        self.show_sat_map = false;
-                    } else {
-                        self.orbcomm_start_sequence();
-                        self.show_sat_map = true;
-                    }
+                if orbcomm_active {
+                    ui.label(RichText::new("· Orbcomm").color(Color32::from_rgb(0x4C, 0xAF, 0xFF)).small().strong());
                 }
             });
-
-            // ── NOAA APT button ───────────────────────────────────────────────
             ui.add_space(4.0);
-            {
-                let noaa_active = self.show_noaa_apt;
-                let noaa_accent = Color32::from_rgb(0x73, 0xC9, 0x91);
-                let noaa_color = if noaa_active { noaa_accent } else { theme::TEXT_MUTED };
-                let noaa_fill = if noaa_active { Color32::from_rgb(0x0A, 0x1E, 0x14) } else { theme::WIDGET_BG };
-                let noaa_stroke = Stroke::new(1.5, if noaa_active { noaa_accent } else { theme::BORDER });
-                let full_w = ui.available_width() - 4.0;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
-                    if ui
-                        .add_sized(Vec2::new(full_w, 28.0),
-                            egui::Button::new(RichText::new("NOAA APT").small().strong().color(noaa_color))
-                                .fill(noaa_fill).stroke(noaa_stroke))
-                        .on_hover_text("Open NOAA APT pass schedule and weather image decoder")
-                        .clicked()
-                    {
-                        self.show_noaa_apt = !self.show_noaa_apt;
-                        if self.show_noaa_apt {
-                            self.noaa_apt.lock().viewport_open = true;
-                        }
-                    }
-                });
-            }
+            ui.label(
+                RichText::new("Use the Aircraft and Satellite tabs to control decoders.")
+                    .color(theme::TEXT_MUTED)
+                    .small(),
+            );
         }
 
         // ── FM Band Scan ──────────────────────────────────────────────────────
