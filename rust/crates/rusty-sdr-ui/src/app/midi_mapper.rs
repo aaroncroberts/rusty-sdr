@@ -471,12 +471,22 @@ fn colors_for_state(
 
 // ── Shape renderers ───────────────────────────────────────────────────────────
 
-/// Shorten an action name to at most `max` characters for display inside a control.
-fn short_action(action: &str, max: usize) -> &str {
-    if action.len() <= max {
-        action
+/// Extract the first camelCase word from an action name, capped at `max` chars.
+///
+/// `"TuneCoarseUp"` → `"Tune"`, `"WaterfallSpeedSet"` → `"Waterf"`,
+/// `"BookmarkNext"` → `"Bookm"` (capped at max).
+fn first_camel_word(action: &str, max: usize) -> &str {
+    let end = action
+        .char_indices()
+        .skip(1) // skip the first char so it doesn't trigger on itself
+        .find(|(_, c)| c.is_uppercase())
+        .map(|(i, _)| i)
+        .unwrap_or(action.len());
+    let word = &action[..end];
+    if word.len() <= max {
+        word
     } else {
-        &action[..max]
+        &word[..max]
     }
 }
 
@@ -510,7 +520,7 @@ fn draw_knob(
         painter.text(
             Pos2::new(center.x, rect.max.y + 10.0),
             egui::Align2::CENTER_TOP,
-            short_action(act, 8),
+            first_camel_word(act, 7),
             egui::FontId::proportional(6.0),
             theme::STATUS_OK,
         );
@@ -547,14 +557,14 @@ fn draw_fader(
         painter.text(
             Pos2::new(rect.center().x, rect.max.y + 10.0),
             egui::Align2::CENTER_TOP,
-            short_action(act, 6),
+            first_camel_word(act, 6),
             egui::FontId::proportional(6.0),
             theme::STATUS_OK,
         );
     }
 }
 
-/// Draw a push button: rounded rect with centred label.
+/// Draw a push button: rounded rect with hardware label inside, action word below.
 fn draw_button(
     painter: &Painter,
     rect: Rect,
@@ -565,15 +575,26 @@ fn draw_button(
 ) {
     painter.rect(rect, Rounding::same(3.0), fill, stroke);
 
-    let font_size = (rect.height() * 0.5).clamp(6.0, 9.0);
-    let display_label = action.map_or(label, |a| short_action(a, 5));
+    // Always show the hardware label (S1, STOP, ▶, etc.) inside the button.
+    let font_size = (rect.height() * 0.5).clamp(5.0, 9.0);
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        display_label,
+        label,
         egui::FontId::proportional(font_size),
         theme::TEXT_PRIMARY,
     );
+
+    // Action shorthand shown below the button (outside) — same pattern as knobs/faders.
+    if let Some(act) = action {
+        painter.text(
+            Pos2::new(rect.center().x, rect.max.y + 2.0),
+            egui::Align2::CENTER_TOP,
+            first_camel_word(act, 6),
+            egui::FontId::proportional(6.0),
+            theme::STATUS_OK,
+        );
+    }
 }
 
 /// Small coloured dot for the legend.
