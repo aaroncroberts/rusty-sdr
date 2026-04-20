@@ -241,7 +241,7 @@ impl AdsbMapWindow {
                     if needs_query {
                         let alt_ft = ac.altitude_ft.unwrap_or(0) as f32;
                         self.selected_atc_freqs =
-                            self.atc_db.query_nearby(lat, lon, alt_ft, 50.0);
+                            self.atc_db.query_nearby(lat, lon, alt_ft, 50.0, home_lat, home_lon);
                         self.last_atc_query_pos = Some((lat, lon));
                     }
                 }

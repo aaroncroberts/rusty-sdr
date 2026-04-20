@@ -226,29 +226,62 @@ pub(super) fn show_aircraft_detail(
         if atc_freqs.is_empty() {
             ui.label(RichText::new("No nearby airports found").small().color(muted));
         } else {
+            // VHF AM ground stations have ~50–100 nm line-of-sight range.
+            // Airports beyond this threshold from the receiver home position
+            // are physically unlikely to be receivable.
+            const MAX_RECEIVABLE_NM: f32 = 150.0;
+
+            let warn_color = Color32::from_rgb(0xFF, 0x88, 0x44);
+
             // Group by airport (walk in order — already sorted by distance)
             let mut last_ident = "";
             for f in atc_freqs {
                 if f.airport_ident != last_ident {
                     last_ident = &f.airport_ident;
-                    let dist_label = format!(
-                        "{} · {:.0} nm",
-                        f.airport_name, f.distance_nm
-                    );
+                    let receivable = f.home_distance_nm <= MAX_RECEIVABLE_NM;
+                    let hdr_color = if receivable { accent } else { muted };
                     ui.add_space(4.0);
-                    ui.label(RichText::new(&dist_label).small().color(accent));
+                    ui.label(RichText::new(&f.airport_name).small().color(hdr_color));
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("acft {:.0} nm", f.distance_nm))
+                                .size(9.0)
+                                .color(muted),
+                        );
+                        ui.label(RichText::new("·").size(9.0).color(muted));
+                        let home_color = if receivable { muted } else { warn_color };
+                        ui.label(
+                            RichText::new(format!("home {:.0} nm", f.home_distance_nm))
+                                .size(9.0)
+                                .color(home_color),
+                        );
+                        if !receivable {
+                            ui.label(
+                                RichText::new("⚠ likely out of VHF range")
+                                    .size(9.0)
+                                    .color(warn_color),
+                            );
+                        }
+                    });
                 }
                 let freq_mhz = f.freq_hz as f64 / 1_000_000.0;
                 let btn_label = format!("[{}] {:.3}", f.freq_type, freq_mhz);
+                let receivable = f.home_distance_nm <= MAX_RECEIVABLE_NM;
+                let btn_color = if receivable { value_color } else { muted };
+                let hover = if receivable {
+                    format!("Tune to {freq_mhz:.3} MHz AM · pauses ADS-B")
+                } else {
+                    format!(
+                        "Tune to {freq_mhz:.3} MHz AM · ground station is {:.0} nm away — may not be receivable",
+                        f.home_distance_nm
+                    )
+                };
                 if ui
                     .add(
-                        egui::Button::new(RichText::new(&btn_label).small().color(value_color))
+                        egui::Button::new(RichText::new(&btn_label).small().color(btn_color))
                             .fill(Color32::from_rgb(0x10, 0x1E, 0x30))
                     )
-                    .on_hover_text(format!(
-                        "Tune to {:.3} MHz AM · pauses ADS-B",
-                        freq_mhz
-                    ))
+                    .on_hover_text(hover)
                     .clicked()
                 {
                     *tune_frequency_hz = Some(f.freq_hz);

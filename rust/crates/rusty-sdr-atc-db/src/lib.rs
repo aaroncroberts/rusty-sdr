@@ -58,7 +58,11 @@ pub struct AtcFrequency {
     pub freq_type: String,
     pub airport_name: String,
     pub airport_ident: String,
+    /// Distance from the queried aircraft position (nautical miles).
     pub distance_nm: f32,
+    /// Distance from the receiver home position (nautical miles).
+    /// Used to indicate whether the frequency is likely receivable.
+    pub home_distance_nm: f32,
 }
 
 /// In-memory ATC frequency database.
@@ -98,7 +102,8 @@ impl AtcDb {
     ///
     /// * `lat`, `lon` — aircraft position in decimal degrees
     /// * `alt_ft` — altitude in feet (determines TWR/APP vs CTR/ENRT)
-    /// * `radius_nm` — search radius in nautical miles
+    /// * `radius_nm` — search radius around the aircraft (nautical miles)
+    /// * `home_lat`, `home_lon` — receiver location; populates `home_distance_nm`
     ///
     /// Results are sorted by `distance_nm` ascending.
     pub fn query_nearby(
@@ -107,6 +112,8 @@ impl AtcDb {
         lon: f64,
         alt_ft: f32,
         radius_nm: f32,
+        home_lat: f64,
+        home_lon: f64,
     ) -> Vec<AtcFrequency> {
         let allowed_types: &[&str] = if alt_ft >= TRANSITION_ALT_FT {
             HIGH_ALT_TYPES
@@ -146,6 +153,7 @@ impl AtcDb {
                     airport_name: airport.name.clone(),
                     airport_ident: airport.ident.clone(),
                     distance_nm: dist,
+                    home_distance_nm: haversine_nm(home_lat, home_lon, airport.lat, airport.lon),
                 });
             }
         }
@@ -246,7 +254,7 @@ mod tests {
     fn low_altitude_returns_twr_app_gnd_not_ctr() {
         let db = AtcDb::from_data(sample_airports(), sample_frequencies());
         // Position right at SFO, altitude 5000 ft
-        let results = db.query_nearby(37.6189, -122.375, 5_000.0, 50.0);
+        let results = db.query_nearby(37.6189, -122.375, 5_000.0, 50.0, 37.6189, -122.375);
         let types: Vec<&str> = results.iter().map(|r| r.freq_type.as_str()).collect();
         assert!(types.contains(&"TWR"), "should include TWR at low alt");
         assert!(types.contains(&"APP"), "should include APP at low alt");
@@ -258,7 +266,7 @@ mod tests {
     fn high_altitude_returns_ctr_not_twr() {
         let db = AtcDb::from_data(sample_airports(), sample_frequencies());
         // Position right at SFO, altitude 35000 ft
-        let results = db.query_nearby(37.6189, -122.375, 35_000.0, 50.0);
+        let results = db.query_nearby(37.6189, -122.375, 35_000.0, 50.0, 37.6189, -122.375);
         let types: Vec<&str> = results.iter().map(|r| r.freq_type.as_str()).collect();
         assert!(types.contains(&"CTR"), "should include CTR at high alt");
         assert!(!types.contains(&"TWR"), "should NOT include TWR at high alt");
@@ -269,7 +277,7 @@ mod tests {
     fn results_sorted_by_distance_ascending() {
         let db = AtcDb::from_data(sample_airports(), sample_frequencies());
         // Between SFO and OAK, closer to SFO
-        let results = db.query_nearby(37.65, -122.31, 3_000.0, 50.0);
+        let results = db.query_nearby(37.65, -122.31, 3_000.0, 50.0, 37.6189, -122.375);
         assert!(!results.is_empty());
         for window in results.windows(2) {
             assert!(
@@ -285,7 +293,7 @@ mod tests {
     fn radius_excludes_distant_airports() {
         let db = AtcDb::from_data(sample_airports(), sample_frequencies());
         // At SFO with 50 nm radius — KDNV is in Illinois, >1000 nm away
-        let results = db.query_nearby(37.6189, -122.375, 3_000.0, 50.0);
+        let results = db.query_nearby(37.6189, -122.375, 3_000.0, 50.0, 37.6189, -122.375);
         assert!(
             results.iter().all(|r| r.airport_ident != "KDNV"),
             "KDNV should be excluded by radius"
@@ -295,7 +303,7 @@ mod tests {
     #[test]
     fn freq_hz_conversion_correct() {
         let db = AtcDb::from_data(sample_airports(), sample_frequencies());
-        let results = db.query_nearby(37.6189, -122.375, 3_000.0, 10.0);
+        let results = db.query_nearby(37.6189, -122.375, 3_000.0, 10.0, 37.6189, -122.375);
         let twr = results
             .iter()
             .find(|r| r.airport_ident == "KSFO" && r.freq_type == "TWR");
@@ -313,7 +321,7 @@ mod tests {
             freq_mhz: 5.680, // HF — below VHF ATC band
         });
         let db = AtcDb::from_data(sample_airports(), freqs);
-        let results = db.query_nearby(37.6189, -122.375, 3_000.0, 10.0);
+        let results = db.query_nearby(37.6189, -122.375, 3_000.0, 10.0, 37.6189, -122.375);
         assert!(
             results.iter().all(|r| r.freq_hz >= VHF_ATC_MIN_HZ),
             "HF frequency should be excluded"
@@ -333,7 +341,7 @@ mod tests {
     #[test]
     fn empty_db_returns_empty_results() {
         let db = AtcDb::from_data(vec![], vec![]);
-        let results = db.query_nearby(37.6189, -122.375, 3_000.0, 50.0);
+        let results = db.query_nearby(37.6189, -122.375, 3_000.0, 50.0, 37.6189, -122.375);
         assert!(results.is_empty());
     }
 
@@ -341,8 +349,8 @@ mod tests {
     fn transition_altitude_boundary() {
         let db = AtcDb::from_data(sample_airports(), sample_frequencies());
         // Exactly at transition altitude
-        let results_at = db.query_nearby(37.6189, -122.375, TRANSITION_ALT_FT, 10.0);
-        let results_below = db.query_nearby(37.6189, -122.375, TRANSITION_ALT_FT - 1.0, 10.0);
+        let results_at = db.query_nearby(37.6189, -122.375, TRANSITION_ALT_FT, 10.0, 37.6189, -122.375);
+        let results_below = db.query_nearby(37.6189, -122.375, TRANSITION_ALT_FT - 1.0, 10.0, 37.6189, -122.375);
 
         let at_types: Vec<&str> = results_at.iter().map(|r| r.freq_type.as_str()).collect();
         let below_types: Vec<&str> = results_below.iter().map(|r| r.freq_type.as_str()).collect();
