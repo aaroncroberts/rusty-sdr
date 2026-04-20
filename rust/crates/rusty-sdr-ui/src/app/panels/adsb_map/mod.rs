@@ -83,6 +83,8 @@ pub struct AdsbMapWindow {
     /// Set when the user clicks an ATC frequency button; main app tunes SDR and clears.
     pub tune_frequency_hz: Option<u64>,
 
+    /// Whether airport icons are drawn on the map.
+    show_airports: bool,
     /// Whether the FLIGHT DATA section in the detail panel is expanded.
     flight_info_expanded: bool,
 
@@ -150,6 +152,7 @@ impl AdsbMapWindow {
             start_requested: false,
             stop_requested: false,
             tune_frequency_hz: None,
+            show_airports: true,
             tile_cache: HashMap::new(),
             pending_tiles: HashSet::new(),
             tile_tx,
@@ -364,6 +367,16 @@ impl AdsbMapWindow {
                         .clicked()
                     {
                         self.map_dim = !self.map_dim;
+                    }
+                    let ap_active = self.show_airports;
+                    let ap_fill = if ap_active { Color32::from_rgb(0x10, 0x28, 0x3A) } else { btn_fill };
+                    if ui.add(egui::Button::new(
+                            RichText::new("Airports").color(if ap_active { accent } else { muted })
+                        ).fill(ap_fill))
+                        .on_hover_text(if ap_active { "Airport icons: ON" } else { "Airport icons: OFF" })
+                        .clicked()
+                    {
+                        self.show_airports = !self.show_airports;
                     }
 
                     // ── Back to ADS-B (visible only in ATC mode) ─────────────
@@ -824,6 +837,76 @@ impl AdsbMapWindow {
         for ac in aircraft {
             if let Some(trail) = self.trails.get(&ac.icao) {
                 self.draw_trail(painter, rect, trail, ac);
+            }
+        }
+
+        // ── Airport icons ─────────────────────────────────────────────────────
+        // Only render when zoomed in enough to be useful (>8 ppd) and toggled on.
+        if self.show_airports && self.zoom_ppd > 8.0 {
+            // Compute visible lat/lon bounds for a quick pre-filter before
+            // projecting to screen — avoids calling geo_to_screen on all 77k airports.
+            let half_w_lon = rect.width() as f64 / self.zoom_ppd as f64;
+            let half_h_lat = rect.height() as f64
+                / merc_scale(self.center_lat, self.zoom_ppd) as f64;
+            let lat_min = self.center_lat - half_h_lat - 1.0;
+            let lat_max = self.center_lat + half_h_lat + 1.0;
+            let lon_min = self.center_lon - half_w_lon - 1.0;
+            let lon_max = self.center_lon + half_w_lon + 1.0;
+
+            let ap_color = Color32::from_rgba_premultiplied(0x5A, 0xC8, 0xD8, 0xB0);
+            let ap_r = 4.0_f32;
+            let tick = 3.0_f32;
+            let show_label = self.zoom_ppd > 40.0;
+
+            let atc_db = Arc::clone(&self.atc_db);
+            for airport in atc_db.airports() {
+                // Fast bounding-box pre-filter
+                if airport.lat < lat_min || airport.lat > lat_max
+                    || airport.lon < lon_min || airport.lon > lon_max
+                {
+                    continue;
+                }
+                // Only show airports that have at least one VHF ATC frequency
+                if !atc_db.has_frequencies(&airport.ident) {
+                    continue;
+                }
+
+                let screen = geo_to_screen(
+                    rect, airport.lat, airport.lon,
+                    self.center_lat, self.center_lon, self.zoom_ppd,
+                );
+                if !rect.expand(20.0).contains(screen) {
+                    continue;
+                }
+
+                // Classic aerodrome symbol: circle with N/S/E/W tick marks
+                painter.circle_stroke(screen, ap_r, egui::Stroke::new(1.0, ap_color));
+                painter.line_segment(
+                    [screen + Vec2::new(0.0, -ap_r - tick), screen + Vec2::new(0.0, -ap_r)],
+                    egui::Stroke::new(1.0, ap_color),
+                );
+                painter.line_segment(
+                    [screen + Vec2::new(0.0, ap_r), screen + Vec2::new(0.0, ap_r + tick)],
+                    egui::Stroke::new(1.0, ap_color),
+                );
+                painter.line_segment(
+                    [screen + Vec2::new(-ap_r - tick, 0.0), screen + Vec2::new(-ap_r, 0.0)],
+                    egui::Stroke::new(1.0, ap_color),
+                );
+                painter.line_segment(
+                    [screen + Vec2::new(ap_r, 0.0), screen + Vec2::new(ap_r + tick, 0.0)],
+                    egui::Stroke::new(1.0, ap_color),
+                );
+
+                if show_label {
+                    painter.text(
+                        screen + Vec2::new(ap_r + tick + 3.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        &airport.ident,
+                        FontId::proportional(9.0),
+                        ap_color,
+                    );
+                }
             }
         }
 

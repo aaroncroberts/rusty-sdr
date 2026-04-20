@@ -69,6 +69,9 @@ pub struct AtcFrequency {
 pub struct AtcDb {
     airports: Vec<Airport>,
     frequencies: Vec<AirportFrequency>,
+    /// Pre-computed set of airport idents that have at least one VHF ATC frequency.
+    /// Used to filter the map display to real controlled/towered airports.
+    idents_with_freqs: std::collections::HashSet<String>,
 }
 
 impl AtcDb {
@@ -84,18 +87,33 @@ impl AtcDb {
             frequencies = frequencies.len(),
             "ATC database loaded"
         );
-        Self {
-            airports,
-            frequencies,
-        }
+        Self::from_data(airports, frequencies)
     }
 
     /// Build directly from pre-parsed data (useful for tests).
     pub fn from_data(airports: Vec<Airport>, frequencies: Vec<AirportFrequency>) -> Self {
+        let idents_with_freqs = frequencies.iter()
+            .map(|f| f.airport_ident.clone())
+            .collect();
         Self {
             airports,
             frequencies,
+            idents_with_freqs,
         }
+    }
+
+    /// All airports in the database.
+    ///
+    /// Filter with [`AtcDb::has_frequencies`] to limit to controlled airports.
+    pub fn airports(&self) -> &[Airport] {
+        &self.airports
+    }
+
+    /// Returns `true` if the airport has at least one VHF ATC frequency on file.
+    ///
+    /// Use this to filter map display to towered/controlled airports only.
+    pub fn has_frequencies(&self, ident: &str) -> bool {
+        self.idents_with_freqs.contains(ident)
     }
 
     /// Return nearby ATC frequencies for a given position and altitude.
