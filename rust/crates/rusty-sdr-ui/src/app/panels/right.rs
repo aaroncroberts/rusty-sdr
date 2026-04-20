@@ -166,39 +166,6 @@ impl SdrApp {
         let level = self.vu_peak * self.config.ui.volume;
         self.draw_vu_meter(ui, level, level * 0.92, self.muted, is_running);
 
-        // ── Decoders ─────────────────────────────────────────────────────────
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        {
-            let adsb_active = self.adsb_decoder.as_ref().map(|d| d.is_running()).unwrap_or(false)
-                || self.adsb_start_pending;
-            let orbcomm_active = self.orbcomm_decoder.as_ref().map(|d| d.is_running()).unwrap_or(false);
-            let adsb_count = self.adsb_store.lock().len();
-
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("DECODERS").color(theme::TEXT_MUTED).small());
-                if adsb_active && adsb_count > 0 {
-                    ui.label(
-                        RichText::new(format!("· {adsb_count} ac"))
-                            .color(theme::STATUS_OK)
-                            .small()
-                            .strong(),
-                    );
-                }
-                if orbcomm_active {
-                    ui.label(RichText::new("· Orbcomm").color(Color32::from_rgb(0x4C, 0xAF, 0xFF)).small().strong());
-                }
-            });
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("Use the Aircraft and Satellite tabs to control decoders.")
-                    .color(theme::TEXT_MUTED)
-                    .small(),
-            );
-        }
-
         // ── FM Band Scan ──────────────────────────────────────────────────────
         ui.add_space(8.0);
         ui.separator();
@@ -345,70 +312,6 @@ impl SdrApp {
             } else if scan_bm_count == 0 {
                 ui.add_space(2.0);
                 ui.label(RichText::new("Add bookmarks to enable scanning").color(theme::DANGER).small());
-            }
-        }
-
-        // ── RDS (FM only) ─────────────────────────────────────────────────────
-        let (demod_mode, rds_ps, rds_pty, rds_ta, rds_rt) = {
-            let s = self.shared.read();
-            let pty = s.rds.pty.map(|c| rusty_sdr_core::dsp::rds::pty_to_str(c).to_string());
-            (s.demod.demod_mode, s.rds.ps_name.clone(), pty, s.rds.ta, s.rds.rt.clone())
-        };
-
-        if demod_mode == DemodMode::Wbfm {
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(6.0);
-
-            ui.label(RichText::new("RDS").color(theme::TEXT_MUTED).small());
-            ui.add_space(4.0);
-
-            if rds_ps.is_some() || rds_rt.is_some() {
-                // Station name + PTY + TA badge
-                ui.horizontal(|ui| {
-                    if let Some(ref ps) = rds_ps {
-                        ui.label(RichText::new(ps).color(theme::TEXT_PRIMARY).strong());
-                    }
-                    if let Some(ref pty) = rds_pty {
-                        ui.label(RichText::new(pty).color(theme::TEXT_MUTED).small());
-                    }
-                    if rds_ta {
-                        ui.label(RichText::new("TA").color(theme::AMBER).small().strong());
-                    }
-                });
-                // RadioText — marquee scrolls when text is wider than panel
-                if let Some(ref rt) = rds_rt {
-                    let avail_w = ui.available_width();
-                    let font_id = egui::TextStyle::Small.resolve(ui.style());
-                    let galley = ui.fonts(|f| {
-                        f.layout_no_wrap(rt.clone(), font_id, theme::TEXT_MUTED)
-                    });
-                    let text_w = galley.rect.width();
-                    let text_h = galley.rect.height();
-                    if text_w <= avail_w {
-                        ui.label(RichText::new(rt.as_str()).color(theme::TEXT_MUTED).small());
-                    } else {
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(avail_w, text_h),
-                            egui::Sense::hover(),
-                        );
-                        let gap = 40.0_f32;
-                        let cycle_w = text_w + gap;
-                        let speed = 30.0_f32; // px/sec
-                        let t = ui.ctx().input(|i| i.time) as f32;
-                        let offset = (t * speed) % cycle_w;
-                        let painter = ui.painter().with_clip_rect(rect);
-                        painter.galley(egui::pos2(rect.min.x - offset, rect.min.y), galley.clone(), theme::TEXT_MUTED);
-                        painter.galley(egui::pos2(rect.min.x - offset + cycle_w, rect.min.y), galley, theme::TEXT_MUTED);
-                        ui.ctx().request_repaint();
-                    }
-                }
-            } else {
-                ui.label(
-                    RichText::new("Waiting for signal…")
-                        .color(theme::TEXT_DISABLED)
-                        .small(),
-                );
             }
         }
 
@@ -633,6 +536,13 @@ impl SdrApp {
                 );
             }
         });
+
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // ── MIDI Controller ───────────────────────────────────────────────────
+        self.midi_section(ui);
 
         ui.add_space(4.0);
         ui.separator();

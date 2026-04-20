@@ -524,6 +524,14 @@ impl SdrApp {
             let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
         }
 
+        // If NOAA APT is active, stop it cleanly before switching away
+        if self.noaa_apt.lock().is_active {
+            self.stop_noaa_decode();
+        }
+        // Ensure hardware mute matches app state (NOAA mutes hardware without
+        // updating self.muted; a bookmark recall should always be audible)
+        let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(self.muted).into());
+
         if let Some(ref ant) = bm_antenna {
             let port: u8 = match ant.as_str() { "B" => 1, "C" => 2, _ => 0 };
             if self.config.source.antenna != *ant {
