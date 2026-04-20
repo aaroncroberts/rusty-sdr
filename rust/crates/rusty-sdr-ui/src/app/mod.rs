@@ -565,7 +565,18 @@ impl eframe::App for SdrApp {
                         let label = egui::RichText::new(view.label())
                             .color(if selected { theme::ACCENT } else { theme::TEXT_MUTED });
                         let btn = egui::SelectableLabel::new(selected, label);
-                        if ui.add(btn).clicked() {
+                        if ui.add(btn).clicked() && !selected {
+                            // Stop decoders tied to the view we're leaving.
+                            match self.active_view {
+                                ActiveView::Aircraft => {
+                                    self.adsb_stop_decoder();
+                                    self.atc_mode_active = false;
+                                }
+                                ActiveView::Satellite => {
+                                    self.stop_noaa_decode();
+                                }
+                                ActiveView::Listen => {}
+                            }
                             self.active_view = view;
                         }
                         ui.add_space(8.0);
@@ -592,8 +603,9 @@ impl eframe::App for SdrApp {
 
         // Right panel (scrollable so controls are always reachable)
         egui::SidePanel::right("right_panel")
-            .min_width(190.0)
-            .max_width(260.0)
+            .default_width(210.0)
+            .min_width(180.0)
+            .max_width(360.0)
             .frame(
                 egui::Frame::none()
                     .fill(theme::PANEL_BG)
