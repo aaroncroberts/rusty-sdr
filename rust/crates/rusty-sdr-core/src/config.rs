@@ -47,12 +47,16 @@ fn default_bookmarks() -> Vec<BookmarkConfig> {
     let sat = "Satellite";
     vec![
         // ── General / Antenna A ────────────────────────────────────────────────
-        BookmarkConfig::new("BBC Radio 4 — 93.5 MHz", 93_500_000, "Wbfm"),
-        BookmarkConfig::new("WCLV 90.3 — Classical (Cleveland OH)", 90_300_000, "Wbfm"),
-        BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm"),
+        BookmarkConfig::new("BBC Radio 4 — 93.5 MHz", 93_500_000, "Wbfm")
+            .with_antenna("A"),
+        BookmarkConfig::new("WCLV 90.3 — Classical (Cleveland OH)", 90_300_000, "Wbfm")
+            .with_antenna("A"),
+        BookmarkConfig::new("WMJI 105.7 (Cleveland OH)", 105_700_000, "Wbfm")
+            .with_antenna("A"),
         // NOAA Weather Radio KEC93 – Cleveland/NE Ohio (162.550 MHz, NFM 25 kHz)
         BookmarkConfig::new("NOAA Weather — KEC93", 162_550_000, "Nfm")
             .with_nfm_settings(25_000, -60.0, false)
+            .with_antenna("A")
             .with_category("Weather"),
         // ── Satellite — Antenna A (Rattlesnake M6 or similar VHF/UHF) ─────────
         // ISS voice + APRS downlink: 145.825 MHz NFM.
@@ -61,24 +65,29 @@ fn default_bookmarks() -> Vec<BookmarkConfig> {
         // Best passes are 5–10 min windows — use an ISS tracking app for timing.
         BookmarkConfig::new("ISS Voice / APRS 145.825 MHz", 145_825_000, "Nfm")
             .with_nfm_settings(25_000, -80.0, false)
+            .with_antenna("A")
             .with_category(sat),
         // Orbcomm LEO data satellites: 137–138 MHz downlink.
         // Audible as rapid BPSK warble bursts during passes (~20 sec per burst).
         // 137.62125 MHz is the highest-activity downlink channel.
         BookmarkConfig::new("Orbcomm 137.500 MHz", 137_500_000, "Nfm")
             .with_nfm_settings(25_000, -80.0, false)
+            .with_antenna("A")
             .with_category(sat),
         BookmarkConfig::new("Orbcomm 137.525 MHz", 137_525_000, "Nfm")
             .with_nfm_settings(25_000, -80.0, false)
+            .with_antenna("A")
             .with_category(sat),
         BookmarkConfig::new("Orbcomm 137.621 MHz", 137_621_250, "Nfm")
             .with_nfm_settings(25_000, -80.0, false)
+            .with_antenna("A")
             .with_category(sat),
         // GOES-16/17 weather satellite: 1694.1 MHz LRIT/EMWIN downlink.
         // Requires L-band LNA + dish or GOES-specific patch antenna.
         // Tune here to confirm signal presence; decode with goestools or XRIT.
         BookmarkConfig::new("GOES-16/17 LRIT 1694.1 MHz", 1_694_100_000, "Nfm")
             .with_nfm_settings(25_000, -100.0, false)
+            .with_antenna("A")
             .with_category(sat),
         // ── Shortwave / ML-31 — Antenna C ─────────────────────────────────────
         // NIST time signals (WWV Fort Collins CO): 2.5, 5, 10, 15, 20 MHz AM
@@ -730,8 +739,8 @@ mod tests {
             .expect("ISS 145.825 MHz bookmark must exist");
         assert_eq!(iss.mode, "Nfm");
         assert_eq!(iss.category, "Satellite");
-        // No antenna override — uses default port (Antenna A / Rattlesnake M6)
-        assert!(iss.antenna.is_none());
+        // Explicit Antenna A so bookmark recall always switches from C/B if needed
+        assert_eq!(iss.antenna.as_deref(), Some("A"));
         assert_eq!(iss.nfm_bandwidth_hz, Some(25_000));
     }
 

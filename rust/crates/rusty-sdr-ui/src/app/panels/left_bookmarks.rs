@@ -4,7 +4,7 @@ use egui::{RichText, Ui, Vec2};
 
 use rusty_sdr_core::{
     config::BookmarkConfig,
-    signal_path::{BookmarkCmd, DemodMode, HardwareCommand, ReceiverCmd},
+    signal_path::{BookmarkCmd, DemodMode, HardwareCommand, ReceiverCmd, SignalPathCommand},
 };
 
 use super::super::SdrApp;
@@ -518,20 +518,29 @@ impl SdrApp {
             let bm = &s.bookmarks[i];
             (bm.freq_hz, bm.mode, bm.nfm_bandwidth_hz, bm.squelch_threshold_dbfs, bm.ctcss_enabled, bm.antenna.clone())
         };
+
+        // Start signal path if not already running
+        if !self.shared.read().is_running {
+            let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
+        }
+
         if let Some(ref ant) = bm_antenna {
             let port: u8 = match ant.as_str() { "B" => 1, "C" => 2, _ => 0 };
             if self.config.source.antenna != *ant {
                 self.bookmark_prev_antenna = Some(self.config.source.antenna.clone());
-                self.config.source.antenna = ant.clone();
-                self.config_dirty = true;
-                let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port).into());
-                tracing::info!(antenna = port, bookmark = i, "bookmark antenna override applied");
             }
+            // Always send the antenna command — even if config already matches,
+            // the hardware may be on a different port after NOAA/ATC sessions.
+            self.config.source.antenna = ant.clone();
+            self.config_dirty = true;
+            let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port).into());
+            tracing::info!(antenna = port, bookmark = i, "bookmark antenna applied");
         } else {
             self.restore_bookmark_antenna();
         }
         let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(bm_freq).into());
         let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(bm_mode).into());
+        self.config.ui.demod_mode = format!("{bm_mode:?}");
         if bm_mode == DemodMode::Nfm {
             if let Some(bw) = bm_nfm_bw {
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetNfmBandwidth(bw).into());

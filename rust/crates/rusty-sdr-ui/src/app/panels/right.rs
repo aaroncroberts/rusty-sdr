@@ -376,17 +376,32 @@ impl SdrApp {
                         ui.label(RichText::new("TA").color(theme::AMBER).small().strong());
                     }
                 });
-                // RadioText (scrolling song/program text)
+                // RadioText — marquee scrolls when text is wider than panel
                 if let Some(ref rt) = rds_rt {
-                    let rt_display = if rt.len() > 28 {
-                        format!("{}…", &rt[..27])
+                    let avail_w = ui.available_width();
+                    let font_id = egui::TextStyle::Small.resolve(ui.style());
+                    let galley = ui.fonts(|f| {
+                        f.layout_no_wrap(rt.clone(), font_id, theme::TEXT_MUTED)
+                    });
+                    let text_w = galley.rect.width();
+                    let text_h = galley.rect.height();
+                    if text_w <= avail_w {
+                        ui.label(RichText::new(rt.as_str()).color(theme::TEXT_MUTED).small());
                     } else {
-                        rt.clone()
-                    };
-                    ui.label(
-                        RichText::new(rt_display).color(theme::TEXT_MUTED).small(),
-                    )
-                    .on_hover_text(rt.as_str());
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(avail_w, text_h),
+                            egui::Sense::hover(),
+                        );
+                        let gap = 40.0_f32;
+                        let cycle_w = text_w + gap;
+                        let speed = 30.0_f32; // px/sec
+                        let t = ui.ctx().input(|i| i.time) as f32;
+                        let offset = (t * speed) % cycle_w;
+                        let painter = ui.painter().with_clip_rect(rect);
+                        painter.galley(egui::pos2(rect.min.x - offset, rect.min.y), galley.clone(), theme::TEXT_MUTED);
+                        painter.galley(egui::pos2(rect.min.x - offset + cycle_w, rect.min.y), galley, theme::TEXT_MUTED);
+                        ui.ctx().request_repaint();
+                    }
                 }
             } else {
                 ui.label(
