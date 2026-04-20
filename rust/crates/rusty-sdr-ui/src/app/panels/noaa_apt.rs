@@ -32,6 +32,25 @@ fn fetch_tles_async(tx: Sender<TleFetchResult>) {
     });
 }
 
+// ── Session image gallery ─────────────────────────────────────────────────────
+
+/// One completed NOAA pass, auto-saved at the end of reception.
+struct GalleryEntry {
+    satellite_name: String,
+    /// Unix epoch seconds at which the pass ended.
+    timestamp_utc: u64,
+    /// Maximum elevation observed during the pass (degrees).
+    max_el_deg: f64,
+    /// Number of APT lines decoded.
+    line_count: usize,
+    /// Path where the PNG was saved, if successful.
+    save_path: Option<std::path::PathBuf>,
+    /// Error message if save failed.
+    save_error: Option<String>,
+    /// Downscaled preview texture (≤80 px wide).
+    thumbnail: Option<TextureHandle>,
+}
+
 // ── Per-satellite pass cache ──────────────────────────────────────────────────
 
 struct SatPassData {
@@ -98,6 +117,12 @@ pub struct NoaaAptWindow {
     pub auto_tune_threshold_deg: f32,
     /// True once auto-tune has fired for the current pass, reset when elevation drops below threshold.
     auto_tune_armed: bool,
+
+    // ── Session gallery ───────────────────────────────────────────────────────
+    /// Completed passes this session, newest last.
+    gallery: Vec<GalleryEntry>,
+    /// Set by `deactivate()` when there are image lines to save; consumed next frame by `update_state`.
+    pending_gallery_save: bool,
 }
 
 impl NoaaAptWindow {
@@ -125,6 +150,8 @@ impl NoaaAptWindow {
             signal_level: 0.0,
             auto_tune_threshold_deg: 25.0,
             auto_tune_armed: false,
+            gallery: Vec::new(),
+            pending_gallery_save: false,
         }
     }
 
@@ -155,10 +182,100 @@ impl NoaaAptWindow {
 
     /// Deactivate NOAA decoding: clear audio tap, reset flags.
     /// Called by `stop_noaa_decode` in `tune.rs` to avoid accessing the private `audio_rx` field.
+    /// If there are decoded image lines, schedules an auto-save for the next frame.
     pub fn deactivate(&mut self) {
         self.audio_rx = None;
         self.is_active = false;
         self.stop_requested = false;
+        if !self.image_lines.is_empty() {
+            self.pending_gallery_save = true;
+        }
+    }
+
+    /// Save the current image, build a thumbnail, and add a gallery entry.
+    /// Called from `update_state` (which has ctx) the frame after `deactivate()`.
+    fn do_gallery_save(&mut self, ctx: &egui::Context) {
+        self.pending_gallery_save = false;
+        if self.image_lines.is_empty() {
+            return;
+        }
+
+        let sat_name = NOAA_APT_SATS[self.selected_sat].name.to_string();
+        let now_secs = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let ts = format_iso_utc(now_secs);
+        // e.g. "noaa_apt_NOAA15_20260420T142200Z.png"
+        let filename = format!(
+            "noaa_apt_{}_{}.png",
+            sat_name.replace(['-', ' '], ""),
+            ts,
+        );
+
+        let save_dir = dirs::picture_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let path = save_dir.join(&filename);
+
+        let (save_path, save_error) = match rusty_sdr_apt::save_png(&self.image_lines, &path) {
+            Ok(()) => {
+                tracing::info!(path = %path.display(), satellite = %sat_name, "NOAA APT pass auto-saved");
+                (Some(path), None)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, satellite = %sat_name, "NOAA APT pass auto-save failed");
+                (None, Some(e.to_string()))
+            }
+        };
+
+        let max_el = self.sat_passes[self.selected_sat].passes.first()
+            .map(|p| p.max_el_deg)
+            .unwrap_or(0.0);
+
+        let thumb_key = format!("noaa_gallery_{}", self.gallery.len());
+        let thumbnail = self.make_thumbnail(ctx, 80, &thumb_key);
+
+        self.gallery.push(GalleryEntry {
+            satellite_name: sat_name,
+            timestamp_utc: now_secs,
+            max_el_deg: max_el,
+            line_count: self.image_lines.len(),
+            save_path,
+            save_error,
+            thumbnail,
+        });
+    }
+
+    /// Downscale the current `image_lines` to a grayscale texture ≤ `max_width` px wide.
+    fn make_thumbnail(&self, ctx: &egui::Context, max_width: usize, key: &str) -> Option<TextureHandle> {
+        if self.image_lines.is_empty() {
+            return None;
+        }
+        let full_w = rusty_sdr_apt::CHAN_A_WIDTH + rusty_sdr_apt::CHAN_B_WIDTH;
+        let full_h = self.image_lines.len();
+        let stride_x = (full_w / max_width).max(1);
+        let thumb_w = (full_w / stride_x).max(1);
+        let stride_y = stride_x; // keep aspect roughly square pixels
+        let thumb_h = (full_h / stride_y).max(1);
+
+        let mut pixels = vec![0u8; thumb_w * thumb_h];
+        for ty in 0..thumb_h {
+            let fy = (ty * stride_y).min(full_h - 1);
+            let line = &self.image_lines[fy];
+            for tx in 0..thumb_w {
+                let fx = (tx * stride_x).min(full_w - 1);
+                let px = if fx < rusty_sdr_apt::CHAN_A_WIDTH {
+                    line.pixels[rusty_sdr_apt::CHAN_A_RANGE.start + fx]
+                } else {
+                    line.pixels[rusty_sdr_apt::CHAN_B_RANGE.start + (fx - rusty_sdr_apt::CHAN_A_WIDTH)]
+                };
+                pixels[ty * thumb_w + tx] = px;
+            }
+        }
+
+        let img = ColorImage::from_gray([thumb_w, thumb_h], &pixels);
+        Some(ctx.load_texture(key, img, TextureOptions::LINEAR))
     }
 
     /// Reset the decoder and clear the current image (call when starting a new pass).
@@ -269,6 +386,11 @@ impl NoaaAptWindow {
                 // All satellites below threshold — reset arm so next pass can fire
                 self.auto_tune_armed = false;
             }
+        }
+
+        // ── Auto-save on pass end ─────────────────────────────────────────────
+        if self.pending_gallery_save {
+            self.do_gallery_save(ctx);
         }
 
         // ── Rebuild texture if needed ─────────────────────────────────────────
@@ -687,6 +809,98 @@ impl NoaaAptWindow {
                 self.reset_decoder();
             }
         }
+
+        // ── Session gallery ───────────────────────────────────────────────────
+        if !self.gallery.is_empty() {
+            sidebar_ui.add_space(6.0);
+            sidebar_ui.separator();
+            sidebar_ui.label(
+                RichText::new(format!("Gallery ({} passes)", self.gallery.len()))
+                    .color(Color32::GRAY)
+                    .small()
+                    .strong(),
+            );
+
+            let gallery_height = panel_rect.height() - sidebar_ui.next_widget_position().y
+                + panel_rect.min.y - 8.0;
+            let gallery_height = gallery_height.max(60.0).min(200.0);
+
+            egui::ScrollArea::vertical()
+                .id_salt("noaa_gallery_scroll")
+                .max_height(gallery_height)
+                .show(&mut sidebar_ui, |scroll_ui| {
+                    // Iterate newest first
+                    for entry in self.gallery.iter().rev() {
+                        scroll_ui.add_space(3.0);
+                        let ts_str = format_utc_hms(entry.timestamp_utc);
+                        let short_date = {
+                            let iso = format_iso_utc(entry.timestamp_utc);
+                            iso[..8].to_string() // YYYYMMDD
+                        };
+                        scroll_ui.horizontal(|ui| {
+                            // Thumbnail
+                            if let Some(ref tex) = entry.thumbnail {
+                                let tex_size = tex.size();
+                                let th_w = tex_size[0] as f32;
+                                let th_h = tex_size[1] as f32;
+                                let display_w = 50.0_f32;
+                                let display_h = (display_w * th_h / th_w.max(1.0)).max(10.0);
+                                ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(display_w, display_h)));
+                            } else {
+                                ui.add_space(50.0);
+                            }
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{} {short_date}", entry.satellite_name))
+                                        .small()
+                                        .color(Color32::WHITE),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{ts_str}  max {:.0}°  {} lines",
+                                        entry.max_el_deg, entry.line_count,
+                                    ))
+                                    .size(9.0)
+                                    .color(Color32::GRAY),
+                                );
+                                match (&entry.save_path, &entry.save_error) {
+                                    (Some(path), _) => {
+                                        let path_str = path.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("saved");
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new("📂 View")
+                                                        .size(9.0)
+                                                        .color(Color32::from_rgb(0x4E, 0xC9, 0xE0)),
+                                                )
+                                                .fill(Color32::TRANSPARENT),
+                                            )
+                                            .on_hover_text(path.display().to_string())
+                                            .clicked()
+                                        {
+                                            let _ = std::process::Command::new("open")
+                                                .arg(path_str)
+                                                .current_dir(path.parent().unwrap_or(std::path::Path::new(".")))
+                                                .spawn();
+                                        }
+                                    }
+                                    (None, Some(err)) => {
+                                        ui.label(
+                                            RichText::new(format!("⚠ {err}"))
+                                                .size(9.0)
+                                                .color(Color32::from_rgb(0xFF, 0x66, 0x44)),
+                                        );
+                                    }
+                                    (None, None) => {}
+                                }
+                            });
+                        });
+                        scroll_ui.separator();
+                    }
+                });
+        }
     }
 
     // ── Image area ────────────────────────────────────────────────────────────
@@ -840,6 +1054,30 @@ fn format_utc_hms(unix_secs: u64) -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
+/// Format Unix seconds as `YYYYMMDDTHHMMSSZ` for filenames.
+fn format_iso_utc(unix_secs: u64) -> String {
+    // Days since Unix epoch → Gregorian date via proleptic Gregorian calendar
+    let days = unix_secs / 86400;
+    let time_of_day = unix_secs % 86400;
+    let h = time_of_day / 3600;
+    let m = (time_of_day / 60) % 60;
+    let s = time_of_day % 60;
+
+    // Gregorian algorithm (works for any date after 1970-01-01)
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mo <= 2 { y + 1 } else { y };
+
+    format!("{y:04}{mo:02}{d:02}T{h:02}{m:02}{s:02}Z")
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -873,6 +1111,17 @@ mod tests {
     #[test]
     fn noaa_sat_count() {
         assert_eq!(NOAA_APT_SATS.len(), 3);
+    }
+
+    #[test]
+    fn format_iso_utc_epoch() {
+        assert_eq!(format_iso_utc(0), "19700101T000000Z");
+    }
+
+    #[test]
+    fn format_iso_utc_known() {
+        // 2026-04-20 14:22:00 UTC = 1776694920
+        assert_eq!(format_iso_utc(1_776_694_920), "20260420T142200Z");
     }
 
     #[test]
