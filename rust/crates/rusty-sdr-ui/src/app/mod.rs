@@ -715,10 +715,19 @@ impl eframe::App for SdrApp {
                 use rusty_sdr_core::signal_path::{DemodMode, ReceiverCmd};
                 let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq_hz).into());
                 if freq_hz == 1_090_000_000 {
-                    // Returning to ADS-B — decoder restart handled by start_req above
+                    // Returning to ADS-B — re-mute if ADS-B owns the mute
+                    if self.adsb_did_mute && !self.muted {
+                        self.muted = true;
+                        let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
+                    }
                     self.atc_mode_active = false;
                 } else {
                     let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(DemodMode::Am).into());
+                    // Unmute so the user can hear ATC audio
+                    if self.adsb_did_mute && self.muted {
+                        self.muted = false;
+                        let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(false).into());
+                    }
                     self.config.ui.frequency_hz = freq_hz;
                     self.frequency_widget = crate::frequency::FrequencyWidget::new(freq_hz);
                     self.config_dirty = true;
