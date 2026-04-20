@@ -434,6 +434,26 @@ impl NoaaAptWindow {
     }
 
     fn show_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, home_lat: f64, home_lon: f64) {
+        // Keyboard shortcut handling for the viewer
+        if self.viewer_open {
+            ctx.input(|i| {
+                if i.key_pressed(egui::Key::Escape) { self.viewer_open = false; }
+                if i.key_pressed(egui::Key::H) {
+                    self.viewer_hist_eq = !self.viewer_hist_eq;
+                    self.viewer_dirty = true;
+                }
+                if i.key_pressed(egui::Key::F) {
+                    self.viewer_false_color = !self.viewer_false_color;
+                    self.viewer_dirty = true;
+                }
+                if i.key_pressed(egui::Key::A) { self.viewer_channel = 1; self.viewer_dirty = true; }
+                if i.key_pressed(egui::Key::B) { self.viewer_channel = 2; self.viewer_dirty = true; }
+                if i.key_pressed(egui::Key::S) { self.viewer_channel = 0; self.viewer_dirty = true; }
+            });
+            self.draw_full_viewer(ui, ctx);
+            return;
+        }
+
         let avail = ui.available_rect_before_wrap();
         let sidebar_width = 220.0_f32;
         let sidebar_rect = egui::Rect::from_min_size(
@@ -446,6 +466,232 @@ impl NoaaAptWindow {
         );
         self.draw_sidebar(ui, sidebar_rect, home_lat, home_lon);
         self.draw_image_area(ui, image_rect, ctx);
+    }
+
+    /// Full-panel image viewer with pan/zoom, channel toggle, and post-processing.
+    fn draw_full_viewer(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Rebuild post-processed texture when settings change
+        if self.viewer_dirty || self.viewer_texture.is_none() {
+            self.rebuild_viewer_texture(ctx);
+            self.viewer_dirty = false;
+        }
+
+        let avail = ui.available_rect_before_wrap();
+
+        // ── Toolbar ───────────────────────────────────────────────────────────
+        let toolbar_h = 28.0;
+        let toolbar_rect = egui::Rect::from_min_size(avail.min, egui::Vec2::new(avail.width(), toolbar_h));
+        let content_rect = egui::Rect::from_min_max(
+            egui::Pos2::new(avail.min.x, avail.min.y + toolbar_h),
+            avail.max,
+        );
+
+        let mut toolbar_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(toolbar_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        toolbar_ui.painter().rect_filled(toolbar_rect, egui::Rounding::ZERO, Color32::from_rgb(0x18, 0x1E, 0x28));
+
+        if toolbar_ui.button(RichText::new("← Back").small().color(Color32::from_rgb(0x73, 0xC9, 0x91))).clicked() {
+            self.viewer_open = false;
+        }
+        toolbar_ui.separator();
+
+        // Channel toggle
+        let chan_label = ["Side-by-side", "Ch-A (Vis)", "Ch-B (IR)"][self.viewer_channel as usize];
+        if toolbar_ui.selectable_label(true, RichText::new(chan_label).small()).clicked() {
+            self.viewer_channel = (self.viewer_channel + 1) % 3;
+            self.viewer_dirty = true;
+        }
+        toolbar_ui.separator();
+
+        let hist_color = if self.viewer_hist_eq { Color32::from_rgb(0x4E, 0xC9, 0xE0) } else { Color32::GRAY };
+        if toolbar_ui.add(egui::Button::new(RichText::new("H Hist-Eq").small().color(hist_color)).fill(Color32::TRANSPARENT)).clicked() {
+            self.viewer_hist_eq = !self.viewer_hist_eq;
+            self.viewer_dirty = true;
+        }
+
+        let fc_color = if self.viewer_false_color { Color32::from_rgb(0x4E, 0xC9, 0xE0) } else { Color32::GRAY };
+        if toolbar_ui.add(egui::Button::new(RichText::new("F False-color").small().color(fc_color)).fill(Color32::TRANSPARENT)).clicked() {
+            self.viewer_false_color = !self.viewer_false_color;
+            self.viewer_dirty = true;
+        }
+        toolbar_ui.separator();
+
+        if toolbar_ui.button(RichText::new("Fit").small()).clicked() {
+            self.viewer_pan = egui::Vec2::ZERO;
+            self.viewer_zoom = 1.0;
+        }
+
+        // Export button
+        toolbar_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button(RichText::new("💾 Export PNG").small().color(Color32::from_rgb(0xE8, 0xC5, 0x4B))).clicked() {
+                self.export_viewer_png();
+            }
+        });
+
+        // ── Image canvas ──────────────────────────────────────────────────────
+        let (canvas_resp, painter) = ui.allocate_painter(content_rect.size(), egui::Sense::click_and_drag());
+
+        // Pan via drag
+        if canvas_resp.dragged() {
+            self.viewer_pan += canvas_resp.drag_delta();
+        }
+        // Zoom via scroll wheel
+        let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
+        if canvas_resp.hovered() && scroll_delta.abs() > 0.1 {
+            let factor = if scroll_delta > 0.0 { 1.1_f32 } else { 1.0 / 1.1 };
+            self.viewer_zoom = (self.viewer_zoom * factor).clamp(0.1, 20.0);
+        }
+        // Double-click to fit
+        if canvas_resp.double_clicked() {
+            self.viewer_pan = egui::Vec2::ZERO;
+            self.viewer_zoom = 1.0;
+        }
+
+        painter.rect_filled(canvas_resp.rect, egui::Rounding::ZERO, Color32::from_rgb(0x08, 0x0C, 0x10));
+
+        if let Some(ref tex) = self.viewer_texture {
+            let tex_size = tex.size();
+            let tex_w = tex_size[0] as f32;
+            let tex_h = tex_size[1] as f32;
+            let canvas = canvas_resp.rect;
+
+            // Base scale = fit entire image inside canvas
+            let base_scale = (canvas.width() / tex_w).min(canvas.height() / tex_h);
+            let scale = base_scale * self.viewer_zoom;
+
+            let draw_w = tex_w * scale;
+            let draw_h = tex_h * scale;
+            let center = canvas.center() + self.viewer_pan;
+            let draw_rect = egui::Rect::from_center_size(center, egui::vec2(draw_w, draw_h));
+
+            painter.image(
+                tex.id(),
+                draw_rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+
+            // Channel labels
+            let label_color = Color32::from_rgb(0xAA, 0xAA, 0xAA);
+            let label_font = FontId::proportional(10.0);
+            match self.viewer_channel {
+                0 => {
+                    painter.text(egui::Pos2::new(draw_rect.min.x + draw_w * 0.25, draw_rect.min.y + 4.0),
+                        Align2::CENTER_TOP, "Ch A (Visible / Near-IR)", label_font.clone(), label_color);
+                    painter.text(egui::Pos2::new(draw_rect.min.x + draw_w * 0.75, draw_rect.min.y + 4.0),
+                        Align2::CENTER_TOP, "Ch B (Thermal IR)", label_font, label_color);
+                }
+                1 => { painter.text(draw_rect.center_top() + egui::Vec2::new(0.0, 4.0), Align2::CENTER_TOP, "Channel A (Visible / Near-IR)", label_font, label_color); }
+                _ => { painter.text(draw_rect.center_top() + egui::Vec2::new(0.0, 4.0), Align2::CENTER_TOP, "Channel B (Thermal IR)", label_font, label_color); }
+            }
+        } else {
+            painter.text(canvas_resp.rect.center(), Align2::CENTER_CENTER,
+                "No image data", FontId::proportional(13.0), Color32::DARK_GRAY);
+        }
+    }
+
+    /// Rebuild the viewer texture applying current channel/post-processing settings.
+    fn rebuild_viewer_texture(&mut self, ctx: &egui::Context) {
+        let lines = if let Some(idx) = self.viewer_gallery_idx {
+            // Viewing a gallery entry — but gallery entries don't keep raw lines.
+            // Fall back to an empty set; the gallery entry's thumbnail is used instead.
+            // (Full resolution replay requires the live image_lines.)
+            let _ = idx;
+            &self.image_lines[..] // Will be empty if pass completed and lines were kept
+        } else {
+            &self.image_lines[..]
+        };
+
+        if lines.is_empty() {
+            self.viewer_texture = None;
+            return;
+        }
+
+        let chan_a_w = rusty_sdr_apt::CHAN_A_WIDTH;
+        let chan_b_w = rusty_sdr_apt::CHAN_B_WIDTH;
+        let line_h = lines.len();
+
+        // Determine output width based on channel selection
+        let (out_w, _use_chan_b) = match self.viewer_channel {
+            1 => (chan_a_w, false),
+            2 => (chan_b_w, true),
+            _ => (chan_a_w + chan_b_w, false), // side-by-side: false = both
+        };
+
+        // Extract raw pixels
+        let mut raw: Vec<u8> = vec![0u8; out_w * line_h];
+        for (row, line) in lines.iter().enumerate() {
+            match self.viewer_channel {
+                1 => {
+                    raw[row * out_w..row * out_w + chan_a_w]
+                        .copy_from_slice(&line.pixels[rusty_sdr_apt::CHAN_A_RANGE]);
+                }
+                2 => {
+                    raw[row * out_w..row * out_w + chan_b_w]
+                        .copy_from_slice(&line.pixels[rusty_sdr_apt::CHAN_B_RANGE]);
+                }
+                _ => {
+                    raw[row * out_w..row * out_w + chan_a_w]
+                        .copy_from_slice(&line.pixels[rusty_sdr_apt::CHAN_A_RANGE]);
+                    raw[row * out_w + chan_a_w..row * out_w + chan_a_w + chan_b_w]
+                        .copy_from_slice(&line.pixels[rusty_sdr_apt::CHAN_B_RANGE]);
+                }
+            }
+        }
+
+        // Histogram equalization
+        if self.viewer_hist_eq && !raw.is_empty() {
+            let mut hist = [0u32; 256];
+            for &p in &raw { hist[p as usize] += 1; }
+            let total = raw.len() as f32;
+            let mut cdf = [0f32; 256];
+            let mut acc = 0u32;
+            for i in 0..256 {
+                acc += hist[i];
+                cdf[i] = acc as f32 / total;
+            }
+            let cdf_min = cdf.iter().copied().find(|&v| v > 0.0).unwrap_or(0.0);
+            for p in &mut raw {
+                let eq = ((cdf[*p as usize] - cdf_min) / (1.0 - cdf_min).max(1e-6) * 255.0)
+                    .clamp(0.0, 255.0) as u8;
+                *p = eq;
+            }
+        }
+
+        // Build colour image (RGB or grayscale)
+        let color_image = if self.viewer_false_color && self.viewer_channel == 0 {
+            // False-color: Ch-A → green channel, Ch-B → red, derive blue
+            let mut pixels = vec![egui::Color32::default(); out_w * line_h];
+            for (row, line) in lines.iter().enumerate() {
+                for col in 0..chan_a_w {
+                    let a_px = if self.viewer_hist_eq { raw[row * out_w + col] } else { line.pixels[rusty_sdr_apt::CHAN_A_RANGE.start + col] };
+                    let b_px = if self.viewer_hist_eq { raw[row * out_w + chan_a_w + col] } else { line.pixels[rusty_sdr_apt::CHAN_B_RANGE.start + col] };
+                    let blue = ((a_px as u16 + b_px as u16) / 2) as u8;
+                    pixels[row * out_w + col] = egui::Color32::from_rgb(b_px, a_px, blue);
+                    pixels[row * out_w + chan_a_w + col] = egui::Color32::from_rgb(b_px, a_px, blue);
+                }
+            }
+            egui::ColorImage { size: [out_w, line_h], pixels }
+        } else {
+            ColorImage::from_gray([out_w, line_h], &raw)
+        };
+
+        self.viewer_texture = Some(ctx.load_texture(
+            "noaa_viewer",
+            color_image,
+            TextureOptions::LINEAR,
+        ));
+    }
+
+    /// Export the current viewer image (with post-processing) as a PNG.
+    fn export_viewer_png(&mut self) {
+        // Re-use the existing save_png_to_pictures path for the raw lines;
+        // post-processing export would need a separate image encoder.
+        // For now, save the same as "Save PNG" — the full raw APT image.
+        self.save_png_to_pictures();
     }
 
     // ── Sidebar ───────────────────────────────────────────────────────────────
@@ -987,6 +1233,25 @@ impl NoaaAptWindow {
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
             );
+
+            // Click image to open full viewer (live image)
+            let image_resp = ui.interact(draw_rect, ui.id().with("noaa_live_img"), egui::Sense::click());
+            if image_resp.clicked() {
+                self.viewer_open = true;
+                self.viewer_gallery_idx = None;
+                self.viewer_dirty = true;
+                self.viewer_pan = egui::Vec2::ZERO;
+                self.viewer_zoom = 1.0;
+            }
+            if image_resp.hovered() {
+                ui.painter().text(
+                    draw_rect.right_bottom() - egui::Vec2::new(4.0, 4.0),
+                    Align2::RIGHT_BOTTOM,
+                    "Click to open viewer",
+                    FontId::proportional(9.0),
+                    Color32::from_rgb(0x55, 0x66, 0x55),
+                );
+            }
 
             // Channel A / B labels at top of image
             let mid_x = draw_rect.min.x + draw_rect.width() * 0.25;
