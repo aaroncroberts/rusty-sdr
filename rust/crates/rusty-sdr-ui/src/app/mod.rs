@@ -821,7 +821,7 @@ impl eframe::App for SdrApp {
             let home_lat = self.config.ui.home_lat;
             let home_lon = self.config.ui.home_lon;
             // Forward decoded NORAD IDs for flash effect + consume tune request.
-            let sat_tune_requested = {
+            let sat_tune_freq = {
                 let mut map = self.sat_map.lock();
                 for entry in &self.orbcomm_log {
                     if let rusty_sdr_orbcomm::parser::PacketType::SatelliteTelemetry { sat_id, .. } =
@@ -832,19 +832,20 @@ impl eframe::App for SdrApp {
                         }
                     }
                 }
-                std::mem::take(&mut map.tune_requested)
+                map.tune_frequency_hz.take()
             };
-            // "Tune 137.500 MHz" button: start hardware if needed, then tune + start decoder.
-            if sat_tune_requested {
+            // Tune button: start hardware if needed, then tune to the requested frequency.
+            // For Orbcomm this is 137.500 MHz; for NOAA it's the satellite-specific APT freq.
+            if let Some(freq_hz) = sat_tune_freq {
                 if !self.shared.read().is_running {
                     let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
                 }
-                self.apply_tune(137_500_000);
+                self.apply_tune(freq_hz);
             }
             ctx.show_viewport_deferred(
                 egui::ViewportId::from_hash_of("sat_map"),
                 egui::ViewportBuilder::default()
-                    .with_title("🛰  Orbcomm Satellite Map")
+                    .with_title("🛰  Satellite Map")
                     .with_inner_size([900.0, 560.0])
                     .with_min_inner_size([600.0, 400.0]),
                 move |ctx, _class| {

@@ -1,9 +1,9 @@
-//! Orbcomm satellite map panel.
+//! Satellite map panel showing Orbcomm OG2 and NOAA APT satellites.
 //!
 //! Renders a Mercator-projected map showing:
-//! - Current ground-track position for each Orbcomm OG2 satellite.
+//! - Current ground-track position for each Orbcomm OG2 and NOAA-15/18/19 satellite.
 //! - A ±90-minute orbital arc (ground track) for the selected satellite.
-//! - A circular coverage footprint (~2000 km radius) at the sub-satellite point.
+//! - A circular coverage footprint at the sub-satellite point.
 //! - Home location marker.
 //! - Pass schedule sidebar: next 3 passes for the selected satellite.
 //!
@@ -23,6 +23,7 @@ use rusty_sdr_tle::{
     parser::TleEntry,
     predictor::{PassEvent, PassPredictor},
     propagator::SatPosition,
+    NOAA_APT_SATS,
 };
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -36,7 +37,9 @@ const TRACK_HALF_DURATION: Duration = Duration::from_secs(90 * 60);
 /// Ground-track step: a point every 30 s gives smooth curves.
 const TRACK_STEP: Duration = Duration::from_secs(30);
 /// Coverage footprint radius for Orbcomm OG2 (~750 km altitude, 5° min el).
-const FOOTPRINT_KM: f64 = 2_200.0;
+const FOOTPRINT_KM_ORBCOMM: f64 = 2_200.0;
+/// Coverage footprint radius for NOAA APT (~850 km altitude, 5° min el).
+const FOOTPRINT_KM_NOAA: f64 = 2_800.0;
 /// Earth radius for footprint circle projection.
 const EARTH_R_KM: f64 = 6_371.0;
 /// Recompute ground tracks / passes no more often than this.
@@ -115,12 +118,16 @@ fn geo_to_screen(
 
 // ── TLE fetch ─────────────────────────────────────────────────────────────────
 
-struct TleFetchResult(Vec<TleEntry>);
+struct TleFetchResult {
+    orbcomm: Vec<TleEntry>,
+    noaa: Vec<TleEntry>,
+}
 
 fn fetch_tles_async(tx: Sender<TleFetchResult>) {
     std::thread::spawn(move || {
-        let tles = rusty_sdr_tle::cache::fetch_orbcomm_tles();
-        let _ = tx.send(TleFetchResult(tles));
+        let orbcomm = rusty_sdr_tle::cache::fetch_orbcomm_tles();
+        let noaa = rusty_sdr_tle::fetch_noaa_tles();
+        let _ = tx.send(TleFetchResult { orbcomm, noaa });
     });
 }
 
@@ -141,6 +148,14 @@ impl SatData {
     fn new() -> Self {
         Self { pos: None, track: Vec::new(), passes: Vec::new(), last_track_update: None }
     }
+}
+
+// ── Satellite type ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+enum SatType {
+    Orbcomm,
+    Noaa { freq_hz: u64 },
 }
 
 // ── Main widget ───────────────────────────────────────────────────────────────
@@ -168,6 +183,8 @@ pub struct SatMapWindow {
     // ── TLE / propagation data ────────────────────────────────────────────────
     tles: Vec<TleEntry>,
     sat_data: Vec<SatData>,
+    /// Satellite type parallel to `tles` — Orbcomm or NOAA with frequency.
+    sat_types: Vec<SatType>,
     tle_tx: Sender<TleFetchResult>,
     tle_rx: Receiver<TleFetchResult>,
     tle_fetch_started: bool,
@@ -179,8 +196,10 @@ pub struct SatMapWindow {
     pub flash_norad_ids: Vec<u32>,
     /// NORAD IDs we have successfully decoded at least once this session.
     heard_norad_ids: HashSet<u32>,
-    /// Set by the "Tune 137.500 MHz" button; consumed by main app each frame.
-    pub tune_requested: bool,
+    /// Set by the tune button; consumed by main app each frame.
+    /// Carries the target frequency in Hz (e.g. 137_500_000 for Orbcomm,
+    /// 137_620_000 for NOAA-15, etc.).
+    pub tune_frequency_hz: Option<u64>,
 }
 
 impl SatMapWindow {
@@ -201,13 +220,14 @@ impl SatMapWindow {
             evicted_tiles: Vec::new(),
             tles: Vec::new(),
             sat_data: Vec::new(),
+            sat_types: Vec::new(),
             tle_tx,
             tle_rx,
             tle_fetch_started: false,
             viewport_open: true,
             flash_norad_ids: Vec::new(),
             heard_norad_ids: HashSet::new(),
-            tune_requested: false,
+            tune_frequency_hz: None,
         }
     }
 
@@ -220,7 +240,23 @@ impl SatMapWindow {
 
         // ── Drain TLE results ─────────────────────────────────────────────────
         if let Ok(result) = self.tle_rx.try_recv() {
-            self.tles = result.0;
+            self.tles.clear();
+            self.sat_types.clear();
+
+            // Add Orbcomm entries.
+            for tle in result.orbcomm {
+                self.sat_types.push(SatType::Orbcomm);
+                self.tles.push(tle);
+            }
+
+            // Add NOAA entries — only the 3 APT satellites by NORAD ID.
+            for tle in &result.noaa {
+                if let Some(noaa_sat) = NOAA_APT_SATS.iter().find(|s| s.norad_id == tle.norad_id) {
+                    self.sat_types.push(SatType::Noaa { freq_hz: noaa_sat.freq_hz });
+                    self.tles.push(tle.clone());
+                }
+            }
+
             self.sat_data = self.tles.iter().map(|_| SatData::new()).collect();
             if self.selected_idx.is_none() && !self.tles.is_empty() {
                 self.selected_idx = Some(0);
@@ -327,11 +363,24 @@ impl SatMapWindow {
                     .collect();
 
                 // Draw track as segmented line — break on large jumps (antimeridian wrap).
-                self.draw_track_segments(&painter, &sd.track, map_rect);
+                // NOAA tracks use green; Orbcomm tracks use blue.
+                let is_noaa = self.sat_types.get(idx).map(|t| matches!(t, SatType::Noaa { .. })).unwrap_or(false);
+                let track_color = if is_noaa {
+                    Color32::from_rgba_unmultiplied(0x55, 0xCC, 0x55, 0x90)
+                } else {
+                    Color32::from_rgba_unmultiplied(0x4C, 0xAF, 0xFF, 0x90)
+                };
+                self.draw_track_segments(&painter, &sd.track, map_rect, track_color);
 
                 // Coverage footprint circle for selected satellite.
                 if let Some(pos) = &sd.pos {
-                    self.draw_footprint(&painter, pos, map_rect);
+                    let footprint_km = if is_noaa { FOOTPRINT_KM_NOAA } else { FOOTPRINT_KM_ORBCOMM };
+                    let footprint_color = if is_noaa {
+                        Color32::from_rgba_unmultiplied(0x55, 0xCC, 0x55, 0x50)
+                    } else {
+                        Color32::from_rgba_unmultiplied(0x4C, 0xAF, 0xFF, 0x50)
+                    };
+                    self.draw_footprint(&painter, pos, map_rect, footprint_km, footprint_color);
                 }
                 let _ = pts;
             }
@@ -339,9 +388,11 @@ impl SatMapWindow {
 
         // ── Draw all satellite dots ───────────────────────────────────────────
         // Three visual states:
-        //   HEARD    — decoded at least once this session → cyan filled ring
+        //   HEARD    — decoded at least once this session → cyan/teal filled ring
         //   VISIBLE  — above our horizon (el > 0°) but not yet heard → green dot
         //   BELOW    — below horizon → dim gray dot (small, de-emphasised)
+        // NOAA satellites use a slightly different palette (cyan / mint green)
+        // to distinguish them from Orbcomm (teal / green).
         for (i, (tle, sd)) in self.tles.iter().zip(self.sat_data.iter()).enumerate() {
             let Some(ref pos) = sd.pos else { continue };
             let screen = geo_to_screen(
@@ -354,8 +405,9 @@ impl SatMapWindow {
             let is_flashing = self.flash_norad_ids.contains(&tle.norad_id);
             let heard = self.heard_norad_ids.contains(&tle.norad_id);
             let above_horizon = pos.el_deg > 0.0;
+            let is_noaa = self.sat_types.get(i).map(|t| matches!(t, SatType::Noaa { .. })).unwrap_or(false);
 
-            // Dot size and color by state
+            // Dot size and color by state (NOAA uses cyan palette, Orbcomm uses teal/green)
             let (dot_r, fill_color, stroke_color) = if is_flashing {
                 // Actively decoding right now — large yellow burst
                 (9.0, Color32::from_rgb(0xFF, 0xFF, 0x44), Color32::from_rgb(0xFF, 0xCC, 0x00))
@@ -363,11 +415,17 @@ impl SatMapWindow {
                 (8.0, Color32::from_rgb(0x22, 0xDD, 0xCC), Color32::WHITE)
             } else if is_selected {
                 (8.0, Color32::from_rgb(0x4C, 0xAF, 0xFF), Color32::WHITE)
+            } else if heard && is_noaa {
+                // NOAA heard — bright cyan
+                (6.0, Color32::from_rgb(0x4E, 0xC9, 0xE0), Color32::from_rgb(0x88, 0xEE, 0xFF))
             } else if heard {
-                // Heard but not selected — teal filled dot with ring
+                // Orbcomm heard — teal filled dot with ring
                 (6.0, Color32::from_rgb(0x22, 0xBB, 0xAA), Color32::from_rgb(0x44, 0xFF, 0xEE))
+            } else if above_horizon && is_noaa {
+                // NOAA above horizon — mint green
+                (5.0, Color32::from_rgb(0x73, 0xC9, 0x91), Color32::from_rgb(0xAA, 0xFF, 0xCC))
             } else if above_horizon {
-                // Above horizon — bright green
+                // Orbcomm above horizon — bright green
                 (5.0, Color32::from_rgb(0x55, 0xCC, 0x55), Color32::from_rgb(0x88, 0xFF, 0x88))
             } else {
                 // Below horizon — dim, small
@@ -384,7 +442,12 @@ impl SatMapWindow {
             // Label for selected satellite
             if is_selected {
                 let status = if heard { " [contact]" } else if above_horizon { " [visible]" } else { "" };
-                let label = format!("{}{}\n{:.1}° el", tle.name.trim(), status, pos.el_deg);
+                let freq_str = if let Some(SatType::Noaa { freq_hz }) = self.sat_types.get(i) {
+                    format!("\n{:.3} MHz", *freq_hz as f64 / 1_000_000.0)
+                } else {
+                    String::new()
+                };
+                let label = format!("{}{}\n{:.1}° el{}", tle.name.trim(), status, pos.el_deg, freq_str);
                 painter.text(
                     screen + Vec2::new(dot_r + 3.0, -8.0),
                     Align2::LEFT_TOP,
@@ -456,7 +519,7 @@ impl SatMapWindow {
         }
     }
 
-    fn draw_track_segments(&self, painter: &Painter, track: &[(f64, f64)], map_rect: Rect) {
+    fn draw_track_segments(&self, painter: &Painter, track: &[(f64, f64)], map_rect: Rect, color: Color32) {
         if track.len() < 2 { return }
 
         let to_screen = |lat: f64, lon: f64| -> Pos2 {
@@ -470,16 +533,16 @@ impl SatMapWindow {
             if (cur.x - prev.x).abs() < map_rect.width() * 0.5 {
                 painter.line_segment(
                     [prev, cur],
-                    Stroke::new(1.5, Color32::from_rgba_unmultiplied(0x4C, 0xAF, 0xFF, 0x90)),
+                    Stroke::new(1.5, color),
                 );
             }
             prev = cur;
         }
     }
 
-    fn draw_footprint(&self, painter: &Painter, pos: &SatPosition, map_rect: Rect) {
+    fn draw_footprint(&self, painter: &Painter, pos: &SatPosition, map_rect: Rect, footprint_km: f64, color: Color32) {
         // Angular radius of footprint on Earth's surface (central angle in radians).
-        let rho = FOOTPRINT_KM / EARTH_R_KM;
+        let rho = footprint_km / EARTH_R_KM;
 
         // Project footprint circle in geographic space: 36 points around the satellite.
         let sat_lat = pos.lat_deg.to_radians();
@@ -507,7 +570,7 @@ impl SatMapWindow {
             if (a.x - b.x).abs() < map_rect.width() * 0.5 {
                 painter.line_segment(
                     [a, b],
-                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(0x4C, 0xAF, 0xFF, 0x50)),
+                    Stroke::new(1.0, color),
                 );
             }
         }
@@ -524,7 +587,7 @@ impl SatMapWindow {
                 .layout(egui::Layout::top_down(egui::Align::LEFT)),
         );
 
-        sidebar_ui.label(RichText::new("ORBCOMM OG2").strong().color(Color32::from_rgb(0x4C, 0xAF, 0xFF)));
+        sidebar_ui.label(RichText::new("SATELLITES").strong().color(Color32::from_rgb(0x4C, 0xAF, 0xFF)));
         sidebar_ui.separator();
 
         if self.tles.is_empty() {
@@ -562,6 +625,7 @@ impl SatMapWindow {
             .show(&mut sidebar_ui, |ui| {
                 let mut showed_above_hdr = n_heard == 0; // skip "Above" header if no heard group
                 let mut showed_below_hdr = false;
+                let mut last_group_was_orbcomm: Option<bool> = None;
 
                 for &i in &sat_indices {
                     let tle = &self.tles[i];
@@ -569,17 +633,32 @@ impl SatMapWindow {
                     let is_selected = self.selected_idx == Some(i);
                     let heard = self.heard_norad_ids.contains(&tle.norad_id);
                     let above = sd.pos.as_ref().map(|p| p.el_deg > 0.0).unwrap_or(false);
+                    let is_noaa = self.sat_types.get(i).map(|t| matches!(t, SatType::Noaa { .. })).unwrap_or(false);
 
-                    // Group headers
+                    // Group headers (heard / above / below)
                     if !heard && above && !showed_above_hdr && n_above > 0 {
                         if n_heard > 0 { ui.add_space(3.0); }
                         ui.label(RichText::new("Above horizon").size(9.0).color(Color32::from_rgb(0x55, 0xCC, 0x55)));
                         showed_above_hdr = true;
+                        last_group_was_orbcomm = None; // reset sub-group tracker
                     }
                     if !heard && !above && !showed_below_hdr {
                         ui.add_space(3.0);
                         ui.label(RichText::new("Below horizon").size(9.0).color(Color32::from_rgb(0x55, 0x55, 0x55)));
                         showed_below_hdr = true;
+                        last_group_was_orbcomm = None;
+                    }
+
+                    // Sub-group headers: ORBCOMM / NOAA APT
+                    let this_is_orbcomm = !is_noaa;
+                    if last_group_was_orbcomm != Some(this_is_orbcomm) {
+                        ui.add_space(2.0);
+                        if this_is_orbcomm {
+                            ui.label(RichText::new("ORBCOMM").size(8.0).color(Color32::from_rgb(0x4C, 0xAF, 0xFF)));
+                        } else {
+                            ui.label(RichText::new("NOAA APT").size(8.0).color(Color32::from_rgb(0x4E, 0xC9, 0xE0)));
+                        }
+                        last_group_was_orbcomm = Some(this_is_orbcomm);
                     }
 
                     let el_str = sd.pos.as_ref()
@@ -587,7 +666,9 @@ impl SatMapWindow {
                         .unwrap_or_else(|| "—".to_string());
 
                     // Dot color matches map
-                    let dot_color = if heard { Color32::from_rgb(0x22, 0xBB, 0xAA) }
+                    let dot_color = if heard && is_noaa { Color32::from_rgb(0x4E, 0xC9, 0xE0) }
+                                    else if heard { Color32::from_rgb(0x22, 0xBB, 0xAA) }
+                                    else if above && is_noaa { Color32::from_rgb(0x73, 0xC9, 0x91) }
                                     else if above { Color32::from_rgb(0x55, 0xCC, 0x55) }
                                     else { Color32::from_rgba_premultiplied(70, 90, 70, 180) };
                     let text_color = if is_selected { Color32::WHITE }
@@ -607,7 +688,13 @@ impl SatMapWindow {
                         } else {
                             ui.painter().circle_stroke(c, 2.5, Stroke::new(1.0, dot_color));
                         }
-                        let label = format!("{} el {}", tle.name.trim(), el_str);
+                        // For NOAA satellites, show the APT frequency alongside elevation
+                        let freq_suffix = if let Some(SatType::Noaa { freq_hz }) = self.sat_types.get(i) {
+                            format!(" {:.3}MHz", *freq_hz as f64 / 1_000_000.0)
+                        } else {
+                            String::new()
+                        };
+                        let label = format!("{} el {}{}", tle.name.trim(), el_str, freq_suffix);
                         let text_resp = ui.add(
                             egui::Label::new(RichText::new(label).small().color(
                                 if is_selected { Color32::WHITE } else { text_color }
@@ -702,21 +789,47 @@ impl SatMapWindow {
         }
 
         // ── Tune button ───────────────────────────────────────────────────────
+        // When a NOAA satellite is selected, show its specific frequency.
+        // When an Orbcomm satellite (or nothing) is selected, show 137.500 MHz.
         sidebar_ui.add_space(6.0);
         sidebar_ui.separator();
         sidebar_ui.add_space(4.0);
+        let (tune_label, tune_hover, tune_freq) = if let Some(idx) = self.selected_idx {
+            match self.sat_types.get(idx) {
+                Some(SatType::Noaa { freq_hz }) => {
+                    let name = self.tles.get(idx).map(|t| t.name.trim().to_string()).unwrap_or_default();
+                    let mhz = *freq_hz as f64 / 1_000_000.0;
+                    (
+                        format!("📻  Tune {} — {:.3} MHz", name, mhz),
+                        format!("Tune radio to {:.3} MHz for {} APT", mhz, name),
+                        *freq_hz,
+                    )
+                }
+                _ => (
+                    "📻  Tune 137.500 MHz".to_string(),
+                    "Tune radio to 137.500 MHz and start Orbcomm decoder".to_string(),
+                    137_500_000u64,
+                ),
+            }
+        } else {
+            (
+                "📻  Tune 137.500 MHz".to_string(),
+                "Tune radio to 137.500 MHz and start Orbcomm decoder".to_string(),
+                137_500_000u64,
+            )
+        };
         let tune_btn = egui::Button::new(
-            RichText::new("📻  Tune 137.500 MHz")
+            RichText::new(tune_label)
                 .small()
                 .color(Color32::from_rgb(0x4E, 0xC9, 0xE0)),
         )
         .fill(Color32::from_rgb(0x0E, 0x1A, 0x2A));
         if sidebar_ui
             .add(tune_btn)
-            .on_hover_text("Tune radio to 137.500 MHz and start Orbcomm decoder")
+            .on_hover_text(tune_hover)
             .clicked()
         {
-            self.tune_requested = true;
+            self.tune_frequency_hz = Some(tune_freq);
         }
     }
 
