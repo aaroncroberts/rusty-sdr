@@ -150,10 +150,16 @@ impl SdrApp {
             self.handle_sat_tune(freq_hz);
         }
 
-        // Consume tune request from NOAA panel
-        let noaa_tune_freq = self.noaa_apt.lock().tune_frequency_hz.take();
+        // Consume action requests from NOAA panel
+        let (noaa_tune_freq, noaa_stop) = {
+            let mut noaa = self.noaa_apt.lock();
+            (noaa.tune_frequency_hz.take(), std::mem::take(&mut noaa.stop_requested))
+        };
         if let Some(freq_hz) = noaa_tune_freq {
             self.handle_noaa_tune(freq_hz);
+        }
+        if noaa_stop {
+            self.stop_noaa_decode();
         }
     }
 }

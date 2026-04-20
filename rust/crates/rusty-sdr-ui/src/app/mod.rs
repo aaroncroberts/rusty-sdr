@@ -202,6 +202,8 @@ pub struct SdrApp {
     // ── NOAA APT ──────────────────────────────────────────────────────────────
     /// NOAA APT weather satellite pass viewer + image decoder window.
     noaa_apt: std::sync::Arc<parking_lot::Mutex<panels::noaa_apt::NoaaAptWindow>>,
+    /// Antenna port saved before entering NOAA mode so we can restore on exit.
+    noaa_prev_antenna: Option<String>,
 
     // ── View system ───────────────────────────────────────────────────────────
     /// Which top-level view is currently displayed (Listen / Aircraft / Satellite).
@@ -343,6 +345,7 @@ impl SdrApp {
             noaa_apt: std::sync::Arc::new(parking_lot::Mutex::new(
                 panels::noaa_apt::NoaaAptWindow::new(),
             )),
+            noaa_prev_antenna: None,
             active_view: ActiveView::Listen,
             mini_signal: panels::mini_signal::MiniSignalStrip::new((fft_floor, fft_ceil)),
         }

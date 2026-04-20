@@ -37,11 +37,13 @@ fn fetch_tles_async(tx: Sender<TleFetchResult>) {
 struct SatPassData {
     passes: Vec<PassEvent>,
     last_update: Option<Instant>,
+    /// Current elevation (degrees) above observer's horizon.
+    current_el_deg: f64,
 }
 
 impl SatPassData {
     fn new() -> Self {
-        Self { passes: Vec::new(), last_update: None }
+        Self { passes: Vec::new(), last_update: None, current_el_deg: -90.0 }
     }
 }
 
@@ -77,6 +79,8 @@ pub struct NoaaAptWindow {
     pub tune_frequency_hz: Option<u64>,
     /// True when the NOAA APT panel is actively tuned and ready to decode.
     pub is_active: bool,
+    /// Set by the Stop Decode button; consumed by the satellite view each frame.
+    pub stop_requested: bool,
     /// Selected satellite index (into NOAA_APT_SATS).
     selected_sat: usize,
     /// Save-PNG status message shown briefly after saving.
@@ -84,6 +88,16 @@ pub struct NoaaAptWindow {
     /// Set to false when the OS viewport close button is pressed.
     #[allow(dead_code)]
     pub viewport_open: bool,
+
+    // ── Signal quality ────────────────────────────────────────────────────────
+    /// Exponential moving average of audio RMS — proxy for SNR (0.0–1.0).
+    signal_level: f32,
+
+    // ── Auto-tune ─────────────────────────────────────────────────────────────
+    /// Minimum elevation (degrees) required to trigger auto-tune (0–90, default 25).
+    pub auto_tune_threshold_deg: f32,
+    /// True once auto-tune has fired for the current pass, reset when elevation drops below threshold.
+    auto_tune_armed: bool,
 }
 
 impl NoaaAptWindow {
@@ -104,9 +118,13 @@ impl NoaaAptWindow {
             audio_rx: None,
             tune_frequency_hz: None,
             is_active: false,
+            stop_requested: false,
             selected_sat: 0,
             save_status: None,
             viewport_open: true,
+            signal_level: 0.0,
+            auto_tune_threshold_deg: 25.0,
+            auto_tune_armed: false,
         }
     }
 
@@ -117,9 +135,15 @@ impl NoaaAptWindow {
     }
 
     /// Drain buffered audio into the APT decoder.  Call once per frame when active.
+    /// Also updates `signal_level` (EMA of audio RMS) as a proxy for SNR.
     pub fn drain_audio(&mut self) {
         if let Some(ref rx) = self.audio_rx {
             while let Ok(batch) = rx.try_recv() {
+                // RMS amplitude → update signal_level EMA (α ≈ 0.05 per batch)
+                if !batch.is_empty() {
+                    let rms = (batch.iter().map(|&s| s * s).sum::<f32>() / batch.len() as f32).sqrt();
+                    self.signal_level = self.signal_level * 0.95 + rms.min(1.0) * 0.05;
+                }
                 let new_lines = self.decoder.push_audio(&batch);
                 if !new_lines.is_empty() {
                     self.image_lines.extend(new_lines);
@@ -127,6 +151,14 @@ impl NoaaAptWindow {
                 }
             }
         }
+    }
+
+    /// Deactivate NOAA decoding: clear audio tap, reset flags.
+    /// Called by `stop_noaa_decode` in `tune.rs` to avoid accessing the private `audio_rx` field.
+    pub fn deactivate(&mut self) {
+        self.audio_rx = None;
+        self.is_active = false;
+        self.stop_requested = false;
     }
 
     /// Reset the decoder and clear the current image (call when starting a new pass).
@@ -196,19 +228,46 @@ impl NoaaAptWindow {
             fetch_tles_async(self.tle_tx.clone());
         }
 
-        // ── Update pass predictions ───────────────────────────────────────────
+        // ── Update pass predictions and current elevation ─────────────────────
         let now = SystemTime::now();
         for (sat_idx, sat_info) in NOAA_APT_SATS.iter().enumerate() {
             let sd = &mut self.sat_passes[sat_idx];
             let needs_update = sd.last_update
                 .map(|t| t.elapsed() > Duration::from_secs(60))
                 .unwrap_or(true);
-            if needs_update {
-                if let Some(tle) = self.tles.iter().find(|t| t.norad_id == sat_info.norad_id) {
+            if let Some(tle) = self.tles.iter().find(|t| t.norad_id == sat_info.norad_id) {
+                if needs_update {
                     let predictor = PassPredictor::new(tle.clone(), home_lat, home_lon);
                     sd.passes = predictor.predict(now, Duration::from_secs(24 * 3600), 3);
                     sd.last_update = Some(Instant::now());
                 }
+                // Current elevation — cheap SGP4 call, ~0.1 ms
+                if let Some(pos) = rusty_sdr_tle::propagator::position_at(tle, now, home_lat, home_lon) {
+                    sd.current_el_deg = pos.el_deg;
+                }
+            }
+        }
+
+        // ── Auto-tune ─────────────────────────────────────────────────────────
+        // When a satellite rises above the configured threshold and we're not
+        // already active, trigger a tune automatically.
+        if !self.is_active && !self.stop_requested {
+            let threshold = self.auto_tune_threshold_deg as f64;
+            // Find the highest satellite currently above threshold
+            let best = NOAA_APT_SATS.iter().enumerate()
+                .filter_map(|(i, sat)| {
+                    let el = self.sat_passes[i].current_el_deg;
+                    if el >= threshold { Some((el, sat)) } else { None }
+                })
+                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some((_, sat)) = best {
+                if !self.auto_tune_armed {
+                    self.auto_tune_armed = true;
+                    self.tune_frequency_hz = Some(sat.freq_hz);
+                }
+            } else {
+                // All satellites below threshold — reset arm so next pass can fire
+                self.auto_tune_armed = false;
             }
         }
 
@@ -438,7 +497,7 @@ impl NoaaAptWindow {
             }
         }
 
-        // ── Decoder status ────────────────────────────────────────────────────
+        // ── Decoder status + SNR gauge ────────────────────────────────────────
         sidebar_ui.add_space(6.0);
         sidebar_ui.separator();
 
@@ -453,24 +512,131 @@ impl NoaaAptWindow {
             ui.colored_label(dot_color, "●");
             ui.label(RichText::new(status_text).color(Color32::GRAY).small());
             if line_count > 0 {
-                ui.label(
-                    RichText::new(format!("{line_count} lines"))
+                // Estimate time remaining: 2 lines/sec, find active pass LOS
+                let now = SystemTime::now();
+                let time_left_s = self.sat_passes[self.selected_sat].passes.first()
+                    .and_then(|p| p.los.duration_since(now).ok())
+                    .map(|d| d.as_secs());
+                if let Some(secs) = time_left_s {
+                    ui.label(
+                        RichText::new(format!("{line_count} lines · {secs}s left"))
+                            .color(Color32::from_rgb(0x88, 0x88, 0x88))
+                            .small(),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(format!("{line_count} lines"))
+                            .color(Color32::from_rgb(0x88, 0x88, 0x88))
+                            .small(),
+                    );
+                }
+            }
+        });
+
+        // SNR gauge: colored progress bar derived from audio RMS EMA
+        if self.is_active {
+            if line_count == 0 {
+                sidebar_ui.label(
+                    RichText::new("Waiting for sync…")
                         .color(Color32::from_rgb(0x88, 0x88, 0x88))
                         .small(),
                 );
             }
+            let snr_width = panel_rect.width() - 24.0;
+            let snr_bar_w = (snr_width * (self.signal_level * 3.0).min(1.0)).max(0.0);
+            let snr_color = if self.signal_level > 0.25 {
+                Color32::from_rgb(0x44, 0xDD, 0x66) // strong signal
+            } else if self.signal_level > 0.10 {
+                Color32::from_rgb(0xE8, 0xC5, 0x4B) // moderate
+            } else {
+                Color32::from_rgb(0xAA, 0x44, 0x44) // weak
+            };
+            sidebar_ui.horizontal(|ui| {
+                ui.label(RichText::new("SNR").color(Color32::DARK_GRAY).size(9.0));
+            });
+            let (bar_rect, _) = sidebar_ui.allocate_exact_size(
+                Vec2::new(snr_width, 6.0),
+                egui::Sense::hover(),
+            );
+            sidebar_ui.painter().rect_filled(bar_rect, Rounding::same(3.0), Color32::from_rgb(0x20, 0x28, 0x30));
+            let filled = egui::Rect::from_min_size(bar_rect.min, Vec2::new(snr_bar_w, 6.0));
+            sidebar_ui.painter().rect_filled(filled, Rounding::same(3.0), snr_color);
+        }
+
+        // ── Stop Decode button ────────────────────────────────────────────────
+        if self.is_active {
+            sidebar_ui.add_space(4.0);
+            if sidebar_ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("⏹  Stop Decode").small().color(Color32::from_rgb(0xFF, 0x88, 0x88)),
+                    )
+                    .fill(Color32::from_rgb(0x22, 0x10, 0x10))
+                    .min_size(Vec2::new(panel_rect.width() - 24.0, 22.0)),
+                )
+                .on_hover_text("Stop decoding and restore previous antenna/mode")
+                .clicked()
+            {
+                self.stop_requested = true;
+            }
+        }
+
+        // ── Auto-tune controls ────────────────────────────────────────────────
+        sidebar_ui.add_space(6.0);
+        sidebar_ui.separator();
+        sidebar_ui.label(RichText::new("Auto-tune").color(Color32::GRAY).small().strong());
+
+        sidebar_ui.horizontal(|ui| {
+            ui.label(RichText::new("Threshold").color(Color32::DARK_GRAY).size(9.5));
+            ui.add(
+                egui::Slider::new(&mut self.auto_tune_threshold_deg, 0.0_f32..=90.0_f32)
+                    .suffix("°")
+                    .text("")
+                    .max_decimals(0),
+            );
         });
 
-        if self.is_active && line_count == 0 {
-            sidebar_ui.label(
-                RichText::new("Waiting for sync…")
-                    .color(Color32::from_rgb(0x88, 0x88, 0x88))
-                    .small(),
-            );
+        // Current elevations for each satellite
+        for (idx, sat) in NOAA_APT_SATS.iter().enumerate() {
+            let el = self.sat_passes[idx].current_el_deg;
+            if el > -5.0 {
+                let el_color = if el >= self.auto_tune_threshold_deg as f64 {
+                    Color32::from_rgb(0x44, 0xDD, 0x66)
+                } else {
+                    Color32::DARK_GRAY
+                };
+                sidebar_ui.label(
+                    RichText::new(format!("{}: {:.0}°", sat.name, el))
+                        .size(9.5)
+                        .color(el_color),
+                );
+            }
+        }
+
+        // Force Tune Now button (selected satellite)
+        let force_sat = &NOAA_APT_SATS[self.selected_sat];
+        let force_mhz = force_sat.freq_hz as f64 / 1_000_000.0;
+        sidebar_ui.add_space(2.0);
+        if sidebar_ui
+            .add(
+                egui::Button::new(
+                    RichText::new(format!("⚡ Force Tune {:.3} MHz", force_mhz))
+                        .small()
+                        .color(Color32::from_rgb(0x4E, 0xC9, 0xE0)),
+                )
+                .fill(Color32::from_rgb(0x0E, 0x1A, 0x2A))
+                .min_size(Vec2::new(panel_rect.width() - 24.0, 22.0)),
+            )
+            .on_hover_text("Tune immediately, bypassing elevation threshold")
+            .clicked()
+        {
+            self.tune_frequency_hz = Some(force_sat.freq_hz);
+            self.auto_tune_armed = true;
         }
 
         // ── Save PNG button ───────────────────────────────────────────────────
         sidebar_ui.add_space(6.0);
+        sidebar_ui.separator();
 
         let save_enabled = !self.image_lines.is_empty();
         let save_btn = egui::Button::new(

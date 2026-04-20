@@ -51,22 +51,49 @@ impl SdrApp {
     }
 
     /// NOAA APT tune: WBFM + antenna C (ML-31) + mute speakers + wire audio to decoder.
+    /// Saves the current antenna port so `stop_noaa_decode` can restore it.
     pub(in crate::app) fn handle_noaa_tune(&mut self, freq_hz: u64) {
         if !self.shared.read().is_running {
             let _ = self.cmd_tx.try_send(SignalPathCommand::Start);
         }
+        // Save current antenna before switching to ML-31 (port C)
+        if self.noaa_prev_antenna.is_none() {
+            self.noaa_prev_antenna = Some(self.config.source.antenna.clone());
+        }
         let _ = self.cmd_tx.try_send(ReceiverCmd::SetFrequency(freq_hz).into());
         let _ = self.cmd_tx.try_send(ReceiverCmd::SetDemodMode(DemodMode::Wbfm).into());
         let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(2).into());
+        self.config.source.antenna = "C".into();
+        self.config_dirty = true;
         // Mute speakers — APT subcarrier audio is not useful to hear
         let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(true).into());
         // Wire audio to the NOAA decoder
         let (noaa_tx, noaa_rx) = crossbeam_channel::bounded(32);
         self.shared.write().noaa_audio_tx = Some(noaa_tx);
         self.noaa_apt.lock().set_audio_rx(noaa_rx);
+        self.noaa_apt.lock().reset_decoder();
         self.config.ui.frequency_hz = freq_hz;
         self.frequency_widget = crate::frequency::FrequencyWidget::new(freq_hz);
         self.config_dirty = true;
         self.noaa_apt.lock().is_active = true;
+    }
+
+    /// Stop NOAA APT decoding: clear audio tap, restore previous antenna + demod mode.
+    pub(in crate::app) fn stop_noaa_decode(&mut self) {
+        // Clear audio pipeline
+        self.shared.write().noaa_audio_tx = None;
+        self.noaa_apt.lock().deactivate();
+        // Unmute speakers
+        if !self.muted {
+            let _ = self.cmd_tx.try_send(ReceiverCmd::SetMuted(false).into());
+        }
+        // Restore previous antenna port
+        if let Some(prev) = self.noaa_prev_antenna.take() {
+            let port: u8 = match prev.as_str() { "B" => 1, "C" => 2, _ => 0 };
+            self.config.source.antenna = prev;
+            self.config_dirty = true;
+            let _ = self.cmd_tx.try_send(HardwareCommand::SetAntenna(port).into());
+            tracing::info!(antenna = port, "NOAA stop: restoring previous antenna");
+        }
     }
 }
